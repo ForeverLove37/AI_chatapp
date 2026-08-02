@@ -14,6 +14,8 @@ Adaptive Chat is built and deployed. The Android client, real upstream relay, pe
 - Next.js administration console for manual users, client keys, provider key pools, routing, connections, and model mappings.
 - Docker Compose stack with persistent PostgreSQL and Redis volumes, loopback-only application ports, and restart policies.
 - Nginx host configuration and active Let's Encrypt certificates for the public console and API.
+- Admin Console timeout hardening across the browser relay, Next.js proxy, and Nginx upstream configuration.
+- Professional Android application identity under `com.zengjunjie.adaptivechat`, developer metadata for `zengjunjie`, and adaptive/legacy launcher icons derived from `icons/logo.png`.
 
 ## Verification
 
@@ -29,6 +31,8 @@ The following checks completed successfully:
 - A real deployed relay request returned `container relay verified` with `DEMO_MODE=false`.
 - A gateway restart retained the persisted request metric, confirming that relay state does not reset with the process.
 - Public HTTPS checks for the API and Basic-Auth-protected admin console.
+- Post-hardening public console checks: immediate HTTP Basic Auth challenge, authenticated page/API/static asset responses, and a healthy Docker/Next.js proxy path.
+- APK archive validation for application ID `com.zengjunjie.adaptivechat`, version `1.0.0`, developer metadata, adaptive icon XML, and `mdpi` through `xxxhdpi` launcher assets.
 
 The debug APK is available at `app/build/outputs/apk/debug/app-debug.apk`.
 

@@ -1,4 +1,4 @@
-package com.adaptivechat.data
+package com.zengjunjie.adaptivechat.data
 
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect

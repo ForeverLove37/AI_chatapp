@@ -1,4 +1,4 @@
-package com.adaptivechat.ui
+package com.zengjunjie.adaptivechat.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -7,7 +7,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
-import com.adaptivechat.data.ProviderMode
+import com.zengjunjie.adaptivechat.data.ProviderMode
 
 private val ChatGptLight = lightColorScheme(
     primary = Color(0xFF1A1A1A),

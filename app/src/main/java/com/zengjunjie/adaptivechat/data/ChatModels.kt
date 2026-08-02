@@ -1,4 +1,4 @@
-package com.adaptivechat.data
+package com.zengjunjie.adaptivechat.data
 
 import java.util.UUID
 

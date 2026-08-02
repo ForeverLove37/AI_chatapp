@@ -106,6 +106,7 @@ const sections: { name: Section; icon: typeof Activity }[] = [
 
 const number = new Intl.NumberFormat("en-US");
 const compactNumber = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+const requestTimeoutMs = 12_000;
 
 function statusClass(status: string) {
   return status === "active" || status === "ok" || status === "success" ? "status status-good" : "status status-muted";
@@ -118,13 +119,26 @@ function secondsLabel(seconds: number) {
 }
 
 async function request<T>(path: string, options: RequestInit = {}) {
-  const response = await fetch(`/api/admin/${path}`, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...options.headers },
-  });
-  const payload = await response.json().catch(() => ({})) as T & { error?: { message?: string } };
-  if (!response.ok) throw new Error(payload.error?.message ?? "The operation failed.");
-  return payload;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), requestTimeoutMs);
+
+  try {
+    const response = await fetch(`/api/admin/${path}`, {
+      ...options,
+      headers: { "Content-Type": "application/json", ...options.headers },
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({})) as T & { error?: { message?: string } };
+    if (!response.ok) throw new Error(payload.error?.message ?? "The operation failed.");
+    return payload;
+  } catch (reason) {
+    if (reason instanceof DOMException && reason.name === "AbortError") {
+      throw new Error("The console request timed out. Check the gateway connection and try again.");
+    }
+    throw reason;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 export default function AdminPage() {

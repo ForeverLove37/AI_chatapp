@@ -1,10 +1,10 @@
-package com.adaptivechat
+package com.zengjunjie.adaptivechat
 
 import android.app.Application
 import androidx.room.Room
-import com.adaptivechat.data.ChatApi
-import com.adaptivechat.data.ChatDatabase
-import com.adaptivechat.data.ChatRepository
+import com.zengjunjie.adaptivechat.data.ChatApi
+import com.zengjunjie.adaptivechat.data.ChatDatabase
+import com.zengjunjie.adaptivechat.data.ChatRepository
 
 class AdaptiveChatApplication : Application() {
     private val database by lazy {

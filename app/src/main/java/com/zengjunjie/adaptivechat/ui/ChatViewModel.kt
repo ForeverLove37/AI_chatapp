@@ -1,13 +1,13 @@
-package com.adaptivechat.ui
+package com.zengjunjie.adaptivechat.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.adaptivechat.data.ChatMessage
-import com.adaptivechat.data.ChatModel
-import com.adaptivechat.data.ChatRepository
-import com.adaptivechat.data.ChatSession
-import com.adaptivechat.data.ProviderMode
+import com.zengjunjie.adaptivechat.data.ChatMessage
+import com.zengjunjie.adaptivechat.data.ChatModel
+import com.zengjunjie.adaptivechat.data.ChatRepository
+import com.zengjunjie.adaptivechat.data.ChatSession
+import com.zengjunjie.adaptivechat.data.ProviderMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow

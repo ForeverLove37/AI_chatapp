@@ -1,4 +1,4 @@
-package com.adaptivechat.ui
+package com.zengjunjie.adaptivechat.ui
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -89,11 +89,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.adaptivechat.data.ChatMessage
-import com.adaptivechat.data.ChatModel
-import com.adaptivechat.data.ChatSession
-import com.adaptivechat.data.MessageRole
-import com.adaptivechat.data.ProviderMode
+import com.zengjunjie.adaptivechat.data.ChatMessage
+import com.zengjunjie.adaptivechat.data.ChatModel
+import com.zengjunjie.adaptivechat.data.ChatSession
+import com.zengjunjie.adaptivechat.data.MessageRole
+import com.zengjunjie.adaptivechat.data.ProviderMode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 

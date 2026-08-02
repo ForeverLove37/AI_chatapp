@@ -12,6 +12,8 @@ The Kotlin/Compose client persists conversations in Room and keeps the selected 
 
 The client keeps a bounded local context window and exposes an animated time-to-first-token waiting state. It never receives upstream provider credentials.
 
+The distributable debug APK is `app/build/outputs/apk/debug/app-debug.apk`. It is version `1.0.0`, uses the application identity `com.zengjunjie.adaptivechat`, and packages adaptive plus `mdpi` through `xxxhdpi` launcher icons generated from `icons/logo.png`.
+
 Build the Android client without launching an emulator:
 
 ```bash
@@ -62,3 +64,5 @@ Production endpoints:
 - API gateway: `https://chatapi.zengjunjie.com`
 
 The console is protected by HTTP Basic Auth with username `admin` and the `ADMIN_API_KEY` value in the server `.env`. Certbot uses `CERTBOT_EMAIL` when supplied; otherwise it runs in explicit no-email mode and retains its scheduled renewal task.
+
+The console proxy and its internal admin API relay use bounded connection/read deadlines, so a dependency stall produces an actionable error instead of an indefinite browser loading state.

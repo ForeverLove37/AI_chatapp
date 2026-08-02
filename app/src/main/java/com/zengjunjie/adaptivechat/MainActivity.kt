@@ -1,4 +1,4 @@
-package com.adaptivechat
+package com.zengjunjie.adaptivechat
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -9,9 +9,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.adaptivechat.ui.AdaptiveChatTheme
-import com.adaptivechat.ui.ChatScreen
-import com.adaptivechat.ui.ChatViewModel
+import com.zengjunjie.adaptivechat.ui.AdaptiveChatTheme
+import com.zengjunjie.adaptivechat.ui.ChatScreen
+import com.zengjunjie.adaptivechat.ui.ChatViewModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -1,4 +1,4 @@
-package com.adaptivechat.data
+package com.zengjunjie.adaptivechat.data
 
 import androidx.room.Dao
 import androidx.room.Database

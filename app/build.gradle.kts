@@ -5,15 +5,17 @@ plugins {
 }
 
 android {
-    namespace = "com.adaptivechat"
+    namespace = "com.zengjunjie.adaptivechat"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.adaptivechat"
+        applicationId = "com.zengjunjie.adaptivechat"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.0.0"
+
+        buildConfigField("String", "DEVELOPER_NAME", "\"zengjunjie\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -21,11 +23,11 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:8787\"")
+            buildConfigField("String", "API_BASE_URL", "\"https://chatapi.zengjunjie.com\"")
         }
         release {
             isMinifyEnabled = false
-            buildConfigField("String", "API_BASE_URL", "\"https://api.example.com\"")
+            buildConfigField("String", "API_BASE_URL", "\"https://chatapi.zengjunjie.com\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

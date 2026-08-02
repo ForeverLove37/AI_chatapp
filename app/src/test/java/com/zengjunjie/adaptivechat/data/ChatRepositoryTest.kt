@@ -1,4 +1,4 @@
-package com.adaptivechat.data
+package com.zengjunjie.adaptivechat.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
