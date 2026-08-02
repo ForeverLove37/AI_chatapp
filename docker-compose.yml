@@ -1,0 +1,74 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    env_file:
+      - .env
+    environment:
+      API_PORT: 8787
+      DEMO_MODE: ${DEMO_MODE:-false}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}
+      UPSTREAM_KEY_ENCRYPTION_SECRET: ${UPSTREAM_KEY_ENCRYPTION_SECRET:?Set UPSTREAM_KEY_ENCRYPTION_SECRET in .env}
+      REQUIRE_CLIENT_AUTH: ${REQUIRE_CLIENT_AUTH:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://console.zengjunjie.com}
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://${POSTGRES_USER:-adaptive_chat}:${POSTGRES_PASSWORD:-adaptive_chat}@postgres:5432/${POSTGRES_DB:-adaptive_chat}
+    ports:
+      - "127.0.0.1:8787:8787"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  admin:
+    build:
+      context: .
+      dockerfile: apps/admin/Dockerfile
+    environment:
+      BACKEND_URL: http://api:8787
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-adaptive_chat}
+      POSTGRES_USER: ${POSTGRES_USER:-adaptive_chat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-adaptive_chat}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-adaptive_chat} -d ${POSTGRES_DB:-adaptive_chat}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

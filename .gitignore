@@ -1,0 +1,14 @@
+.tooling/
+.gradle/
+build/
+**/build/
+local.properties
+node_modules/
+.next/
+*.tsbuildinfo
+.env
+.env.local
+coverage/
+dist/
+*.iml
+.idea/

@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+.tooling
+.gradle
+app
+node_modules
+**/node_modules
+**/.next
+**/build
+coverage
+dist
+*.apk
