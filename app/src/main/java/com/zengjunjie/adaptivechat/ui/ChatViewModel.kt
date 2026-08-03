@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.zengjunjie.adaptivechat.BuildConfig
 import com.zengjunjie.adaptivechat.data.AppPreferencesState
 import com.zengjunjie.adaptivechat.data.AppearancePreference
+import com.zengjunjie.adaptivechat.data.ChatAttachment
 import com.zengjunjie.adaptivechat.data.ChatMessage
 import com.zengjunjie.adaptivechat.data.ChatModel
 import com.zengjunjie.adaptivechat.data.ChatRepository
@@ -13,6 +14,7 @@ import com.zengjunjie.adaptivechat.data.ChatSession
 import com.zengjunjie.adaptivechat.data.LanguagePreference
 import com.zengjunjie.adaptivechat.data.ProviderMode
 import com.zengjunjie.adaptivechat.data.RemoteAppVersion
+import com.zengjunjie.adaptivechat.data.SpeechPlayer
 import com.zengjunjie.adaptivechat.data.UserPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -192,23 +194,66 @@ class ChatViewModel(
         }
     }
 
-    fun sendMessage(text: String) {
+    fun sendMessage(text: String, attachments: List<ChatAttachment> = emptyList()) {
         val session = uiState.value.selectedSession ?: return
         val accessToken = uiState.value.account.accessToken ?: return
-        if (isStreaming.value || text.isBlank()) return
+        if (isStreaming.value || (text.isBlank() && attachments.isEmpty())) return
 
         viewModelScope.launch(Dispatchers.IO) {
             isStreaming.value = true
             isWaitingForFirstToken.value = true
             errorMessage.value = null
             runCatching {
-                repository.sendMessage(session, text.trim(), accessToken) {
+                repository.sendMessage(
+                    session = session,
+                    text = text.trim(),
+                    accessToken = accessToken,
+                    attachments = attachments,
+                ) {
                     isWaitingForFirstToken.value = false
                 }
             }
                 .onFailure { errorMessage.value = it.message ?: "The streaming request failed." }
             isWaitingForFirstToken.value = false
             isStreaming.value = false
+        }
+    }
+
+    fun redoTerminalAssistant(messageId: String) {
+        val session = uiState.value.selectedSession ?: return
+        val accessToken = uiState.value.account.accessToken ?: return
+        if (isStreaming.value) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            isStreaming.value = true
+            isWaitingForFirstToken.value = true
+            errorMessage.value = null
+            runCatching {
+                repository.redoTerminalAssistant(session, messageId, accessToken) {
+                    isWaitingForFirstToken.value = false
+                }
+            }.onFailure { errorMessage.value = it.message ?: "The streaming request failed." }
+            isWaitingForFirstToken.value = false
+            isStreaming.value = false
+        }
+    }
+
+    fun branchConversation(messageId: String) {
+        val session = uiState.value.selectedSession ?: return
+        if (isStreaming.value) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repository.branchConversation(session, messageId) }
+                .onSuccess { branch -> selectedSessionId.value = branch.id }
+                .onFailure { errorMessage.value = it.message ?: "Unable to create a conversation branch." }
+        }
+    }
+
+    fun listenToMessage(markdown: String, speechPlayer: SpeechPlayer) {
+        val accessToken = uiState.value.account.accessToken ?: return
+        if (markdown.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            speechPlayer.speak(accessToken, markdown)
         }
     }
 

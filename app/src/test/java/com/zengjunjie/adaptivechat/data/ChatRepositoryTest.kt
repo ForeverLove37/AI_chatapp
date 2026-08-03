@@ -13,6 +13,7 @@ class ChatRepositoryTest {
                 sessionId = "session",
                 role = if (index % 2 == 0) "ASSISTANT" else "USER",
                 content = "message $index",
+                attachmentsJson = "[]",
                 reasoning = "",
                 createdAt = index.toLong(),
                 isStreaming = false,
@@ -41,11 +42,32 @@ class ChatRepositoryTest {
         assertTrue(window.single().content.length > 32_000)
     }
 
+    @Test
+    fun contextWindowRetainsPersistedImageAttachments() {
+        val message = ChatMessageEntity(
+            id = "image-message",
+            sessionId = "session",
+            role = "USER",
+            content = "Describe this image",
+            attachmentsJson = """[{"fileName":"sample.png","mimeType":"image/png","dataUrl":"data:image/png;base64,AA=="}]""",
+            reasoning = "",
+            createdAt = 0,
+            isStreaming = false,
+        )
+
+        val window = buildContextWindow("", listOf(message))
+
+        assertEquals(1, window.size)
+        assertEquals("sample.png", window.single().attachments.single().fileName)
+        assertEquals("data:image/png;base64,AA==", window.single().attachments.single().dataUrl)
+    }
+
     private fun testMessage(id: String, content: String) = ChatMessageEntity(
         id = id,
         sessionId = "session",
         role = "USER",
         content = content,
+        attachmentsJson = "[]",
         reasoning = "",
         createdAt = 0,
         isStreaming = false,

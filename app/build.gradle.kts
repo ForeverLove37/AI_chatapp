@@ -12,8 +12,8 @@ android {
         applicationId = "com.zengjunjie.adaptivechat"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.2.0"
 
         buildConfigField("String", "DEVELOPER_NAME", "\"zengjunjie\"")
 
@@ -69,6 +69,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")

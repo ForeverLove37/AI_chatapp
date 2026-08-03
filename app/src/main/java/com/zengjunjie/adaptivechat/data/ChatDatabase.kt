@@ -9,6 +9,9 @@ import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.Transaction
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "chat_sessions")
@@ -30,6 +33,7 @@ data class ChatMessageEntity(
     val sessionId: String,
     val role: String,
     val content: String,
+    val attachmentsJson: String,
     val reasoning: String,
     val createdAt: Long,
     val isStreaming: Boolean,
@@ -54,6 +58,9 @@ interface ChatDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMessage(message: ChatMessageEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertMessages(messages: List<ChatMessageEntity>)
 
     @Query("UPDATE chat_sessions SET provider = :provider, model = :model, updatedAt = :updatedAt WHERE id = :sessionId")
     suspend fun updateChannel(sessionId: String, provider: String, model: String, updatedAt: Long)
@@ -80,13 +87,35 @@ interface ChatDao {
 
     @Query("DELETE FROM chat_messages WHERE sessionId = :sessionId")
     suspend fun deleteMessagesForSession(sessionId: String)
+
+    @Transaction
+    suspend fun deleteSessionWithMessages(sessionId: String) {
+        deleteMessagesForSession(sessionId)
+        deleteSession(sessionId)
+    }
+
+    @Transaction
+    suspend fun createSessionWithMessages(session: ChatSessionEntity, messages: List<ChatMessageEntity>) {
+        upsertSession(session)
+        upsertMessages(messages)
+    }
 }
 
 @Database(
     entities = [ChatSessionEntity::class, ChatMessageEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
     abstract fun chatDao(): ChatDao
+
+    companion object {
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE chat_messages ADD COLUMN attachmentsJson TEXT NOT NULL DEFAULT '[]'",
+                )
+            }
+        }
+    }
 }

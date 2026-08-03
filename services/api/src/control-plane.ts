@@ -46,6 +46,10 @@ export type CreateUserInput = Omit<UserRecord, "id" | "monthlyTokens" | "created
   password: string;
 };
 
+export type UpdateUserInput = Partial<Pick<UserRecord, "status" | "role" | "rpmLimit" | "dailyLimit">> & {
+  password?: string;
+};
+
 export type AuthenticatedUser = Pick<UserRecord, "id" | "email" | "role" | "status">;
 
 export type RoutingScope = "channel" | "model";
@@ -174,7 +178,7 @@ export interface ControlPlane {
   getOverview(): Promise<Overview>;
   listUsers(): Promise<UserRecord[]>;
   createUser(input: CreateUserInput): Promise<UserRecord>;
-  updateUser(id: string, patch: Partial<Pick<UserRecord, "status" | "role" | "rpmLimit" | "dailyLimit">>): Promise<UserRecord | undefined>;
+  updateUser(id: string, patch: UpdateUserInput): Promise<UserRecord | undefined>;
   authenticateUser(email: string, password: string): Promise<AuthenticatedUser | undefined>;
   listClientKeys(): Promise<ClientKeyView[]>;
   createClientKey(input: { name: string; rpmLimit: number; dailyLimit: number; userId?: string | null }): Promise<{ data: ClientKeyView; secret: string }>;
@@ -522,10 +526,12 @@ export class MemoryControlPlane implements ControlPlane {
     return view;
   }
 
-  async updateUser(id: string, patch: Partial<Pick<UserRecord, "status" | "role" | "rpmLimit" | "dailyLimit">>) {
+  async updateUser(id: string, patch: UpdateUserInput) {
     const user = this.users.get(id);
     if (!user) return undefined;
-    Object.assign(user, patch);
+    if (patch.password !== undefined) user.passwordHash = await hashPassword(patch.password);
+    const { password: _password, ...recordPatch } = patch;
+    Object.assign(user, recordPatch);
     const { passwordHash: _passwordHash, ...view } = user;
     return view;
   }
@@ -1067,13 +1073,17 @@ export class PostgresControlPlane implements ControlPlane {
     return userFromRow(result.rows[0]);
   }
 
-  async updateUser(id: string, patch: Partial<Pick<UserRecord, "status" | "role" | "rpmLimit" | "dailyLimit">>) {
+  async updateUser(id: string, patch: UpdateUserInput) {
     const fields: string[] = [];
     const values: unknown[] = [];
     if (patch.status !== undefined) { values.push(patch.status); fields.push(`status = $${values.length}`); }
     if (patch.role !== undefined) { values.push(patch.role); fields.push(`role = $${values.length}`); }
     if (patch.rpmLimit !== undefined) { values.push(patch.rpmLimit); fields.push(`rpm_limit = $${values.length}`); }
     if (patch.dailyLimit !== undefined) { values.push(patch.dailyLimit); fields.push(`daily_limit = $${values.length}`); }
+    if (patch.password !== undefined) {
+      values.push(await hashPassword(patch.password));
+      fields.push(`password_hash = $${values.length}`);
+    }
     if (!fields.length) {
       const result = await this.pool.query<Record<string, unknown>>("SELECT * FROM users WHERE id = $1", [id]);
       return result.rows[0] ? userFromRow(result.rows[0]) : undefined;

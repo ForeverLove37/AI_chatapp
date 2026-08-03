@@ -1,55 +1,70 @@
-# Iteration 2 Conclusion
+# Iteration 3 Conclusion
 
 ## Outcome
 
-Iteration 2 is implemented and deployed. The platform now has persistent
-credential-backed routing, mandatory Android account authentication, app
-settings and OTA APIs, a localized Admin Console, and the redesigned adaptive
-mobile UI.
+Iteration 3 is implemented, verified, and deployed. The Android client now has
+the requested UX corrections, Markdown and multimodal input, persisted response
+branching, and network-to-device speech fallback. The Admin Console can edit
+existing users and reset passwords through the persistent PostgreSQL control
+plane.
 
 ## Delivered
 
-- Upstream credentials are stored only as encrypted PostgreSQL provider-key
-  records. The deployment `.env` has no generic provider URL or API-key values.
-- Channel default routing and model-specific ordered overrides are persisted in
-  PostgreSQL. The Admin Console supports explicit fallback chains and
-  round-robin or random balancing for equal-priority keys.
-- Administrator-created users require scrypt password hashes. `/v1/auth/login`
-  issues signed session tokens, and production chat requests require a valid
-  authenticated session or client key.
-- Feedback and OTA release records are persisted in PostgreSQL. The active
-  `1.1.0` release is available through the update-check endpoint.
-- Android has login, settings for language, appearance, font scale, updates,
-  feedback, Room history, context-window management, and persisted settings.
-- The chat header uses equal-width channel and model dropdowns. ChatGPT,
-  Gemini, and DeepSeek each adapt to light and dark mode; Gemini keeps its
-  animated gradient and DeepSeek retains a separate reasoning card.
-- Android and the Admin Console support persisted English and Simplified
-  Chinese UI selection. The model icon assets are included in the Android app.
-- Docker, PostgreSQL, Redis, Nginx, TLS routing, HTTP Basic Auth, and the APK
-  download route are configured for the public deployment.
+- Recalibrated channel/model selectors with bounded widths, explicit margins,
+  balanced spacing, and fixed 18-20 dp icon sizing based on the supplied visual
+  anomaly.
+- Settings now consumes system back navigation, conversation deletion requires
+  a blocking confirmation, and the chat composer plus newest message react to
+  IME insets without being obscured by the keyboard.
+- Assistant messages render basic Markdown (bold, italic, inline/fenced code,
+  and lists) and expose Copy, Branch, Listen, and terminal-only Redo actions.
+- Room schema version 3 persists image attachments. Branching clones history
+  through the selected message in one transaction into an independent session;
+  Redo overwrites only the terminal assistant response and restores it if the
+  network retry fails.
+- Native Android speech recognition populates the composer. JPEG, PNG, WEBP,
+  and GIF attachments use OpenAI Chat Completions content arrays with data URL
+  `image_url` parts and remain available to the sliding context window.
+- Authenticated `/v1/audio/speech` uses Edge TTS with a 12-second server/client
+  deadline. Android falls back to the device `TextToSpeech` engine for network
+  errors, timeouts, rate limits, empty audio, or playback failures.
+- The Admin Console edits role, status, quotas, and optional replacement
+  passwords. Protected `PATCH`/`PUT /v1/users/{id}` endpoints hash replacement
+  passwords before PostgreSQL persistence and never return password material.
+- The npm production tree pins patched PostCSS and sharp releases. The final
+  production audit reports no known vulnerabilities.
 
 ## Verification
 
-- API test suite: 7 passing tests, including routing overrides, password login,
-  authenticated chat, feedback, and OTA metadata.
-- Admin TypeScript check and production Next.js build passed.
-- Android debug build passed for `com.zengjunjie.adaptivechat`, version code 3,
-  version name `1.1.0`, with cleartext traffic disabled.
-- Public HTTPS checks passed for the API health endpoint, Admin Console Basic
-  Auth challenge, and APK download route.
-- An isolated temporary account completed login, feedback submission, and a
-  real authenticated upstream completion. Its feedback was resolved and the
-  account was suspended after verification.
-- The running API reports relay mode with PostgreSQL and Redis and has no
-  generic upstream `KEY` or `URL` environment variables.
+- Android: 5 unit tests passed; `testDebugUnitTest` and `assembleDebug` completed
+  successfully. The APK is `com.zengjunjie.adaptivechat`, version code 4,
+  version name `1.2.0`, target SDK 36, and includes the microphone permission
+  plus adaptive launcher icons.
+- APK SHA-256:
+  `0d18184a51df53b25c6c1f295a3db4140fde47544df9a422244fd8167ba73558`.
+  The local and publicly downloaded files match exactly.
+- Gateway: TypeScript build passed and all 9 API tests passed, including the
+  protected password-update and TTS contracts.
+- Admin: Next.js production build and TypeScript validation passed with the
+  patched dependency tree. `npm audit --omit=dev` reports 0 vulnerabilities.
+- Production: PostgreSQL and Redis remained healthy; the recreated API reports
+  relay mode with OpenAI, Gemini, and DeepSeek providers configured. The Admin
+  Console returns an immediate Basic Auth challenge and HTTP 200 after valid
+  authentication.
+- A controlled production account test rejected the old password immediately
+  after reset, accepted the replacement password, completed a real OpenAI-format
+  image request with HTTP 200, and received 16,992 bytes of `audio/mpeg` from
+  Edge TTS. The verification account was suspended afterward.
+- The active release record is version `1.2.0`: version code 3 receives an
+  update, while version code 4 is reported current.
 
 ## Access
 
 - Admin Console: `https://console.zengjunjie.com`
 - API Gateway: `https://chatapi.zengjunjie.com`
-- APK download: `https://chatapi.zengjunjie.com/downloads/adaptive-chat-1.1.0.apk`
+- APK download:
+  `https://chatapi.zengjunjie.com/downloads/adaptive-chat-1.2.0.apk`
 - Local APK: `app/build/outputs/apk/debug/app-debug.apk`
 
-The console is protected by HTTP Basic Auth. Android visual validation remains
-with the Product Owner; no emulator or headless display environment was used.
+Android visual validation remains with the Product Owner. No emulator, Xvfb,
+noVNC, Lavapipe, or other headless UI environment was used.

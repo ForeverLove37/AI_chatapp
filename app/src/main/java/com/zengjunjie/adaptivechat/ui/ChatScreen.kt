@@ -1,5 +1,16 @@
 package com.zengjunjie.adaptivechat.ui
 
+import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.speech.RecognizerIntent
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.LinearEasing
@@ -20,11 +31,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -37,15 +52,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -68,6 +90,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.DrawerValue
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -83,18 +106,34 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.zengjunjie.adaptivechat.R
+import com.zengjunjie.adaptivechat.BuildConfig
+import com.zengjunjie.adaptivechat.data.ChatAttachment
 import com.zengjunjie.adaptivechat.data.ChatMessage
 import com.zengjunjie.adaptivechat.data.ChatModel
 import com.zengjunjie.adaptivechat.data.ChatSession
 import com.zengjunjie.adaptivechat.data.MessageRole
 import com.zengjunjie.adaptivechat.data.ProviderMode
+import com.zengjunjie.adaptivechat.data.SpeechPlayer
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -106,7 +145,67 @@ fun ChatScreen(
     val copy = LocalAppCopy.current
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val speechPlayer = remember(context.applicationContext) {
+        SpeechPlayer(context.applicationContext, BuildConfig.API_BASE_URL)
+    }
     var draft by rememberSaveable { mutableStateOf("") }
+    var attachments by remember { mutableStateOf<List<ChatAttachment>>(emptyList()) }
+    var sessionPendingDeletion by remember { mutableStateOf<ChatSession?>(null) }
+    var attachmentError by remember { mutableStateOf<String?>(null) }
+
+    DisposableEffect(speechPlayer) {
+        onDispose { speechPlayer.release() }
+    }
+
+    val speechResult = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val transcript = if (result.resultCode == Activity.RESULT_OK) {
+            result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+                ?.trim()
+        } else {
+            null
+        }
+        if (!transcript.isNullOrBlank()) {
+            draft = listOf(draft.trim(), transcript).filter(String::isNotBlank).joinToString(" ")
+        }
+    }
+    val startSpeechRecognition = {
+        runCatching {
+            speechResult.launch(
+                Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                    .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    .putExtra(RecognizerIntent.EXTRA_PROMPT, copy.voiceInput)
+                    .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1),
+            )
+        }.onFailure { attachmentError = copy.speechInputUnavailable }
+    }
+    val recordAudioPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) startSpeechRecognition() else attachmentError = copy.speechInputUnavailable
+    }
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { readImageAttachment(context, uri) }
+            }.onSuccess { attachment ->
+                if (attachments.size >= MAX_IMAGE_ATTACHMENTS) {
+                    attachmentError = "You can attach up to $MAX_IMAGE_ATTACHMENTS images at once."
+                } else {
+                    attachments = attachments + attachment
+                }
+            }.onFailure { error ->
+                attachmentError = error.message ?: copy.attachmentError
+            }
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -120,7 +219,7 @@ fun ChatScreen(
                         viewModel.selectSession(sessionId)
                         scope.launch { drawerState.close() }
                     },
-                    onDelete = viewModel::deleteSession,
+                    onDelete = { session -> sessionPendingDeletion = session },
                     onOpenSettings = onOpenSettings,
                 )
             }
@@ -154,11 +253,67 @@ fun ChatScreen(
                     draft = draft,
                     onDraftChange = { draft = it },
                     onSend = {
-                        viewModel.sendMessage(draft)
+                        viewModel.sendMessage(draft, attachments)
                         draft = ""
+                        attachments = emptyList()
+                    },
+                    onRedo = viewModel::redoTerminalAssistant,
+                    onBranch = viewModel::branchConversation,
+                    onListen = { markdown -> viewModel.listenToMessage(markdown, speechPlayer) },
+                    attachments = attachments,
+                    onRemoveAttachment = { attachment -> attachments = attachments - attachment },
+                    onAttachFile = { imagePicker.launch(arrayOf("image/*")) },
+                    onVoiceInput = {
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            startSpeechRecognition()
+                        } else {
+                            recordAudioPermission.launch(Manifest.permission.RECORD_AUDIO)
+                        }
                     },
                     onDismissError = viewModel::dismissError,
                     modifier = Modifier.padding(contentPadding),
+                )
+            }
+
+            sessionPendingDeletion?.let { session ->
+                AlertDialog(
+                    onDismissRequest = { sessionPendingDeletion = null },
+                    title = { Text(copy.deleteConversation) },
+                    text = {
+                        Text(
+                            copy.deleteConversationPrompt(
+                                if (session.title == "New conversation") copy.newConversation else session.title,
+                            ),
+                        )
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { sessionPendingDeletion = null }) {
+                            Text(copy.cancel)
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                viewModel.deleteSession(session.id)
+                                sessionPendingDeletion = null
+                            },
+                        ) {
+                            Text(copy.delete)
+                        }
+                    },
+                )
+            }
+
+            attachmentError?.let { message ->
+                AlertDialog(
+                    onDismissRequest = { attachmentError = null },
+                    title = { Text(copy.attachmentError) },
+                    text = { Text(copy.localizedError(message)) },
+                    confirmButton = {
+                        TextButton(onClick = { attachmentError = null }) {
+                            Text(copy.close)
+                        }
+                    },
                 )
             }
         }
@@ -226,7 +381,7 @@ private fun SessionDrawer(
     selectedSessionId: String?,
     onNewSession: () -> Unit,
     onSelect: (String) -> Unit,
-    onDelete: (String) -> Unit,
+    onDelete: (ChatSession) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val copy = LocalAppCopy.current
@@ -274,7 +429,7 @@ private fun SessionDrawer(
                         Text(if (session.title == "New conversation") copy.newConversation else session.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                         Text(copy.modelName(session.model), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                     }
-                    IconButton(onClick = { onDelete(session.id) }, modifier = Modifier.size(36.dp)) {
+                    IconButton(onClick = { onDelete(session) }, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.Outlined.DeleteOutline, contentDescription = copy.delete, modifier = Modifier.size(18.dp))
                     }
                 }
@@ -291,8 +446,10 @@ private fun HeaderSelectors(
     onModelSelected: (ChatModel) -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         ChannelSelector(
             selected = provider,
@@ -314,12 +471,26 @@ private fun ChatContent(
     draft: String,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
+    onRedo: (String) -> Unit,
+    onBranch: (String) -> Unit,
+    onListen: (String) -> Unit,
+    attachments: List<ChatAttachment>,
+    onRemoveAttachment: (ChatAttachment) -> Unit,
+    onAttachFile: () -> Unit,
+    onVoiceInput: () -> Unit,
     onDismissError: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val copy = LocalAppCopy.current
     val listState = rememberLazyListState()
-    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.content?.length, state.messages.lastOrNull()?.reasoning?.length) {
+    val density = LocalDensity.current
+    val imeBottom = WindowInsets.ime.getBottom(density)
+    LaunchedEffect(
+        state.messages.size,
+        state.messages.lastOrNull()?.content?.length,
+        state.messages.lastOrNull()?.reasoning?.length,
+        imeBottom,
+    ) {
         if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.lastIndex)
     }
 
@@ -354,6 +525,10 @@ private fun ChatContent(
                         message = message,
                         provider = state.provider,
                         isWaitingForFirstToken = state.isWaitingForFirstToken && message.isStreaming,
+                        isTerminalAssistant = message.role == MessageRole.ASSISTANT && message.id == state.messages.lastOrNull()?.id,
+                        onRedo = onRedo,
+                        onBranch = onBranch,
+                        onListen = onListen,
                     )
                 }
             }
@@ -365,6 +540,11 @@ private fun ChatContent(
             isStreaming = state.isStreaming,
             onDraftChange = onDraftChange,
             onSend = onSend,
+            attachments = attachments,
+            onRemoveAttachment = onRemoveAttachment,
+            onAttachFile = onAttachFile,
+            onVoiceInput = onVoiceInput,
+            modifier = Modifier.imePadding(),
         )
     }
 }
@@ -382,7 +562,9 @@ private fun ChannelSelector(
             shape = selectorShape(selected),
             color = MaterialTheme.colorScheme.surface.copy(alpha = if (selected == ProviderMode.GEMINI) 0.86f else 0.96f),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.56f)),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 44.dp),
         ) {
             TextButton(
                 onClick = { expanded = true },
@@ -395,11 +577,29 @@ private fun ChannelSelector(
                 Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = copy.selectChannel, modifier = Modifier.size(17.dp))
             }
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.widthIn(min = 184.dp, max = 264.dp),
+        ) {
             ProviderMode.entries.forEach { provider ->
                 DropdownMenuItem(
-                    text = { Text(copy.providerName(provider)) },
-                    leadingIcon = { Icon(painterResource(providerImage(provider)), contentDescription = null, tint = Color.Unspecified) },
+                    text = {
+                        Text(
+                            copy.providerName(provider),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            painterResource(providerImage(provider)),
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = Color.Unspecified,
+                        )
+                    },
+                    contentPadding = PaddingValues(horizontal = 14.dp),
                     onClick = {
                         onSelected(provider)
                         expanded = false
@@ -424,7 +624,9 @@ private fun ModelSelector(
             shape = selectorShape(provider),
             color = MaterialTheme.colorScheme.surface.copy(alpha = if (provider == ProviderMode.GEMINI) 0.86f else 0.96f),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.56f)),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 44.dp),
         ) {
             TextButton(
                 onClick = { expanded = true },
@@ -437,11 +639,29 @@ private fun ModelSelector(
                 Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = copy.selectModel, modifier = Modifier.size(17.dp))
             }
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.widthIn(min = 184.dp, max = 264.dp),
+        ) {
             provider.models.forEach { model ->
                 DropdownMenuItem(
-                    text = { Text(copy.modelName(model)) },
-                    leadingIcon = { Icon(painterResource(providerImage(provider)), contentDescription = null, tint = Color.Unspecified) },
+                    text = {
+                        Text(
+                            copy.modelName(model),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            painterResource(providerImage(provider)),
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = Color.Unspecified,
+                        )
+                    },
+                    contentPadding = PaddingValues(horizontal = 14.dp),
                     onClick = {
                         onSelected(model)
                         expanded = false
@@ -494,8 +714,13 @@ private fun MessageItem(
     message: ChatMessage,
     provider: ProviderMode,
     isWaitingForFirstToken: Boolean,
+    isTerminalAssistant: Boolean,
+    onRedo: (String) -> Unit,
+    onBranch: (String) -> Unit,
+    onListen: (String) -> Unit,
 ) {
     val fromUser = message.role == MessageRole.USER
+    val clipboard = LocalClipboardManager.current
     Column(modifier = Modifier.fillMaxWidth().animateContentSize()) {
         if (!fromUser && message.reasoning.isNotBlank()) {
             ReasoningBlock(
@@ -527,10 +752,23 @@ private fun MessageItem(
                 modifier = Modifier.fillMaxWidth(if (fromUser) 0.84f else 0.94f).widthIn(max = 760.dp),
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
+                    if (message.attachments.isNotEmpty()) {
+                        AttachmentSummary(message.attachments)
+                        if (message.content.isNotBlank()) Spacer(Modifier.height(8.dp))
+                    }
                     if (isWaitingForFirstToken && message.content.isBlank() && message.reasoning.isBlank()) {
                         WaitingForResponse()
                     } else {
                         StreamingMarkdown(text = message.content, provider = provider)
+                    }
+                    if (!fromUser && !message.isStreaming && message.content.isNotBlank()) {
+                        AssistantActionBar(
+                            isTerminalAssistant = isTerminalAssistant,
+                            onRedo = { onRedo(message.id) },
+                            onCopy = { clipboard.setText(AnnotatedString(message.content)) },
+                            onBranch = { onBranch(message.id) },
+                            onListen = { onListen(message.content) },
+                        )
                     }
                 }
             }
@@ -628,25 +866,207 @@ private fun ReasoningBlock(
 
 @Composable
 private fun StreamingMarkdown(text: String, provider: ProviderMode) {
-    var inCodeBlock = false
     val dark = LocalAdaptiveDark.current
     Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        text.split('\n').forEach { line ->
-            if (line.trimStart().startsWith("```")) {
-                inCodeBlock = !inCodeBlock
-            } else if (inCodeBlock) {
-                Text(
-                    text = line,
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(if (provider == ProviderMode.DEEPSEEK && dark) Color(0xFF071018) else MaterialTheme.colorScheme.surfaceVariant)
-                        .padding(9.dp),
+        markdownBlocks(text).forEach { block ->
+            when (block) {
+                is MarkdownBlock.Code -> Surface(
+                    color = if (provider == ProviderMode.DEEPSEEK && dark) Color(0xFF071018) else MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = block.text,
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(10.dp),
+                    )
+                }
+                is MarkdownBlock.ListItem -> Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Text(
+                        text = block.marker,
+                        modifier = Modifier.width(24.dp),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        text = markdownAnnotatedString(block.text),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                }
+                is MarkdownBlock.Paragraph -> Text(
+                    text = markdownAnnotatedString(block.text),
+                    style = MaterialTheme.typography.bodyLarge,
                 )
-            } else if (line.isNotBlank()) {
-                Text(text = line, style = MaterialTheme.typography.bodyLarge)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AssistantActionBar(
+    isTerminalAssistant: Boolean,
+    onRedo: () -> Unit,
+    onCopy: () -> Unit,
+    onBranch: () -> Unit,
+    onListen: () -> Unit,
+) {
+    val copy = LocalAppCopy.current
+    Row(
+        modifier = Modifier.padding(top = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (isTerminalAssistant) {
+            IconButton(onClick = onRedo, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.Refresh, contentDescription = copy.redo, modifier = Modifier.size(18.dp))
+            }
+        }
+        IconButton(onClick = onCopy, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Outlined.ContentCopy, contentDescription = copy.copyMessage, modifier = Modifier.size(18.dp))
+        }
+        IconButton(onClick = onBranch, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Outlined.AccountTree, contentDescription = copy.branch, modifier = Modifier.size(18.dp))
+        }
+        IconButton(onClick = onListen, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Outlined.VolumeUp, contentDescription = copy.listen, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
+private sealed interface MarkdownBlock {
+    data class Paragraph(val text: String) : MarkdownBlock
+    data class Code(val text: String) : MarkdownBlock
+    data class ListItem(val marker: String, val text: String) : MarkdownBlock
+}
+
+private val bulletPattern = Regex("^\\s*[-*+]\\s+(.+)$")
+private val numberedPattern = Regex("^\\s*(\\d+)[.)]\\s+(.+)$")
+
+private fun markdownBlocks(markdown: String): List<MarkdownBlock> {
+    val blocks = mutableListOf<MarkdownBlock>()
+    val paragraph = StringBuilder()
+    val code = StringBuilder()
+    var inCodeBlock = false
+
+    fun flushParagraph() {
+        if (paragraph.isNotBlank()) {
+            blocks += MarkdownBlock.Paragraph(paragraph.toString().trimEnd())
+            paragraph.clear()
+        }
+    }
+
+    fun flushCode() {
+        if (code.isNotEmpty()) {
+            blocks += MarkdownBlock.Code(code.toString().trimEnd())
+            code.clear()
+        }
+    }
+
+    markdown.lines().forEach { line ->
+        if (line.trimStart().startsWith("```")) {
+            if (inCodeBlock) flushCode() else flushParagraph()
+            inCodeBlock = !inCodeBlock
+        } else if (inCodeBlock) {
+            if (code.isNotEmpty()) code.append('\n')
+            code.append(line)
+        } else {
+            val bullet = bulletPattern.matchEntire(line)
+            val numbered = numberedPattern.matchEntire(line)
+            when {
+                bullet != null -> {
+                    flushParagraph()
+                    blocks += MarkdownBlock.ListItem("•", bullet.groupValues[1])
+                }
+                numbered != null -> {
+                    flushParagraph()
+                    blocks += MarkdownBlock.ListItem("${numbered.groupValues[1]}.", numbered.groupValues[2])
+                }
+                line.isBlank() -> flushParagraph()
+                else -> {
+                    if (paragraph.isNotEmpty()) paragraph.append('\n')
+                    paragraph.append(line.removePrefix("# "))
+                }
+            }
+        }
+    }
+    if (inCodeBlock) flushCode() else flushParagraph()
+    return blocks
+}
+
+private fun markdownAnnotatedString(value: String): AnnotatedString = buildAnnotatedString {
+    var index = 0
+    while (index < value.length) {
+        when {
+            value.startsWith("**", index) || value.startsWith("__", index) -> {
+                val token = value.substring(index, index + 2)
+                val end = value.indexOf(token, index + token.length)
+                if (end > index + token.length) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                        append(value.substring(index + token.length, end))
+                    }
+                    index = end + token.length
+                } else {
+                    append(token)
+                    index += token.length
+                }
+            }
+            value[index] == '`' -> {
+                val end = value.indexOf('`', index + 1)
+                if (end > index + 1) {
+                    withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) {
+                        append(value.substring(index + 1, end))
+                    }
+                    index = end + 1
+                } else {
+                    append(value[index])
+                    index += 1
+                }
+            }
+            value[index] == '*' || value[index] == '_' -> {
+                val token = value[index]
+                val end = value.indexOf(token, index + 1)
+                if (end > index + 1) {
+                    withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                        append(value.substring(index + 1, end))
+                    }
+                    index = end + 1
+                } else {
+                    append(value[index])
+                    index += 1
+                }
+            }
+            else -> {
+                append(value[index])
+                index += 1
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentSummary(attachments: List<ChatAttachment>) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        attachments.forEach { attachment ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.68f))
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.AttachFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    attachment.fileName,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelMedium,
+                )
             }
         }
     }
@@ -659,6 +1079,11 @@ private fun Composer(
     isStreaming: Boolean,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
+    attachments: List<ChatAttachment>,
+    onRemoveAttachment: (ChatAttachment) -> Unit,
+    onAttachFile: () -> Unit,
+    onVoiceInput: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val copy = LocalAppCopy.current
     val shape = when (provider) {
@@ -671,40 +1096,117 @@ private fun Composer(
         shape = shape,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
         tonalElevation = if (provider == ProviderMode.GEMINI) 4.dp else 1.dp,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (provider == ProviderMode.GEMINI) {
-                Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.padding(start = 8.dp).size(20.dp), tint = MaterialTheme.colorScheme.primary)
+        Column(modifier = Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, top = 4.dp, bottom = 2.dp)) {
+            if (attachments.isNotEmpty()) {
+                Column(
+                    modifier = Modifier.padding(start = 8.dp, end = 4.dp, top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    attachments.forEach { attachment ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Outlined.AttachFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                attachment.fileName,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                            IconButton(
+                                onClick = { onRemoveAttachment(attachment) },
+                                enabled = !isStreaming,
+                                modifier = Modifier.size(32.dp),
+                            ) {
+                                Icon(Icons.Outlined.Close, contentDescription = copy.removeAttachment, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
             }
-            TextField(
-                value = draft,
-                onValueChange = onDraftChange,
-                modifier = Modifier.weight(1f),
-                enabled = !isStreaming,
-                placeholder = { Text(copy.messagePlaceholder(copy.providerName(provider))) },
-                maxLines = 5,
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    disabledContainerColor = Color.Transparent,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    disabledIndicatorColor = Color.Transparent,
-                ),
-            )
-            IconButton(
-                onClick = onSend,
-                enabled = draft.isNotBlank() && !isStreaming,
-                modifier = Modifier.size(48.dp),
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = copy.sendFeedback)
+                if (provider == ProviderMode.GEMINI) {
+                    Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.padding(start = 8.dp).size(20.dp), tint = MaterialTheme.colorScheme.primary)
+                }
+                IconButton(onClick = onAttachFile, enabled = !isStreaming, modifier = Modifier.size(42.dp)) {
+                    Icon(Icons.Outlined.AttachFile, contentDescription = copy.attachFile, modifier = Modifier.size(20.dp))
+                }
+                IconButton(onClick = onVoiceInput, enabled = !isStreaming, modifier = Modifier.size(42.dp)) {
+                    Icon(Icons.Outlined.Mic, contentDescription = copy.voiceInput, modifier = Modifier.size(20.dp))
+                }
+                TextField(
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    modifier = Modifier.weight(1f),
+                    enabled = !isStreaming,
+                    placeholder = { Text(copy.messagePlaceholder(copy.providerName(provider))) },
+                    maxLines = 5,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        disabledContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    ),
+                )
+                IconButton(
+                    onClick = onSend,
+                    enabled = (draft.isNotBlank() || attachments.isNotEmpty()) && !isStreaming,
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = copy.sendFeedback)
+                }
             }
         }
     }
+}
+
+private const val MAX_IMAGE_ATTACHMENTS = 3
+private const val MAX_IMAGE_ATTACHMENT_BYTES = 4 * 1024 * 1024
+private val supportedImageMimeTypes = setOf("image/jpeg", "image/png", "image/webp", "image/gif")
+
+private fun readImageAttachment(context: Context, uri: Uri): ChatAttachment {
+    val mimeType = context.contentResolver.getType(uri)?.lowercase()
+        ?: throw IllegalArgumentException("The selected file has no supported image type.")
+    require(mimeType in supportedImageMimeTypes) {
+        "Choose a JPEG, PNG, WEBP, or GIF image."
+    }
+    val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            output.write(buffer, 0, count)
+            require(output.size() <= MAX_IMAGE_ATTACHMENT_BYTES) {
+                "Images must be 4 MB or smaller."
+            }
+        }
+        output.toByteArray()
+    } ?: throw IllegalArgumentException("The selected image could not be read.")
+    val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+        ?.use { cursor ->
+            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else null
+        }
+        ?.takeIf(String::isNotBlank)
+        ?: "attachment.${mimeType.substringAfter('/') }"
+    return ChatAttachment(
+        fileName = name,
+        mimeType = mimeType,
+        dataUrl = "data:$mimeType;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}",
+    )
 }
 
 private fun providerIcon(provider: ProviderMode): ImageVector = when (provider) {

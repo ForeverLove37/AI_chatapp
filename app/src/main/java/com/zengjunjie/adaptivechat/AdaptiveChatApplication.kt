@@ -10,7 +10,7 @@ import com.zengjunjie.adaptivechat.data.UserPreferences
 class AdaptiveChatApplication : Application() {
     private val database by lazy {
         Room.databaseBuilder(this, ChatDatabase::class.java, "adaptive-chat.db")
-            .fallbackToDestructiveMigration(dropAllTables = true)
+            .addMigrations(ChatDatabase.MIGRATION_2_3)
             .build()
     }
 

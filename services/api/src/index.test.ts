@@ -155,6 +155,75 @@ describe("Adaptive Chat API", () => {
     expect(chat.status).toBe(200);
   });
 
+  it("updates a user password through the protected v1 user endpoint", async () => {
+    const app = createApp();
+    const adminHeaders = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    const created = await app.request("/admin/users", {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({
+        email: "reset@example.test",
+        password: "old-password-value",
+        role: "standard",
+        rpmLimit: 60,
+        dailyLimit: 1000,
+      }),
+    });
+    const userId = (await created.json()).data.id as string;
+
+    const update = await app.request(`/v1/users/${userId}`, {
+      method: "PATCH",
+      headers: adminHeaders,
+      body: JSON.stringify({ password: "new-password-value" }),
+    });
+    expect(update.status).toBe(200);
+    expect(await update.text()).not.toContain("new-password-value");
+
+    const oldLogin = await app.request("/v1/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "reset@example.test", password: "old-password-value" }),
+    });
+    expect(oldLogin.status).toBe(401);
+
+    const newLogin = await app.request("/v1/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "reset@example.test", password: "new-password-value" }),
+    });
+    expect(newLogin.status).toBe(200);
+  });
+
+  it("serves an authenticated Edge TTS response without invoking a real network synthesizer", async () => {
+    const app = createApp({ synthesizeSpeech: async () => new Uint8Array([1, 2, 3, 4]) });
+    const adminHeaders = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    await app.request("/admin/users", {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({
+        email: "speech@example.test",
+        password: "speech-password",
+        role: "standard",
+        rpmLimit: 60,
+        dailyLimit: 1000,
+      }),
+    });
+    const login = await app.request("/v1/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "speech@example.test", password: "speech-password" }),
+    });
+    const token = (await login.json()).token as string;
+    const speech = await app.request("/v1/audio/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ input: "Read this response." }),
+    });
+    expect(speech.status).toBe(200);
+    expect(speech.headers.get("content-type")).toBe("audio/mpeg");
+    expect([...new Uint8Array(await speech.arrayBuffer())]).toEqual([1, 2, 3, 4]);
+  });
+
   it("persists authenticated feedback and serves active app update metadata", async () => {
     const app = createApp();
     const adminHeaders = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };

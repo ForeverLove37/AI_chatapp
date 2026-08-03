@@ -17,6 +17,7 @@ import {
   Link2,
   LoaderCircle,
   MessageSquare,
+  Pencil,
   Plus,
   RefreshCw,
   Rocket,
@@ -55,6 +56,14 @@ type UserRecord = {
   rpmLimit: number;
   dailyLimit: number;
   createdAt: string;
+};
+
+type UserEditForm = {
+  password: string;
+  role: UserRecord["role"];
+  status: UserRecord["status"];
+  rpmLimit: string;
+  dailyLimit: string;
 };
 
 type Model = {
@@ -152,7 +161,7 @@ const englishCopy: AdminCopy = {
   navOverview: "Overview", navUsers: "Users", navClientKeys: "Client keys", navProviderKeys: "Provider keys", navRouting: "Routing", navFeedback: "Feedback", navReleases: "App releases", navConnections: "Connections",
   requests: "Requests", persistentRequestLog: "Persistent request log", successRate: "Success rate", completed: "completed", tokenVolume: "Token volume", promptAndCompletion: "Prompt and completion", activeStreams: "Active streams", uptime: "Uptime",
   modelTraffic: "Model traffic", requestVolume: "Request volume by internal model name", routingState: "Routing state", upstreamAvailability: "Configured upstream availability", ready: "Ready", unconfigured: "Unconfigured", serviceState: "Service state", lastSampled: "Last sampled", providerKeys: "Provider keys", clientKeys: "Client keys", activeUsers: "Active users", failures: "Failures",
-  createUser: "Create user", accountsAdminOnly: "Accounts are created only by an administrator", email: "Email", password: "Password", role: "Role", standard: "Standard", admin: "Admin", rpm: "RPM", dailyQuota: "Daily quota", userAccess: "User access", statusRoleQuota: "Status, role, and quotas", identity: "Identity", limits: "Limits", monthlyTokens: "Monthly tokens", status: "Status", suspend: "Suspend", restore: "Restore",
+  createUser: "Create user", accountsAdminOnly: "Accounts are created only by an administrator", email: "Email", password: "Password", role: "Role", standard: "Standard", admin: "Admin", rpm: "RPM", dailyQuota: "Daily quota", userAccess: "User access", statusRoleQuota: "Status, role, and quotas", identity: "Identity", limits: "Limits", monthlyTokens: "Monthly tokens", status: "Status", suspend: "Suspend", restore: "Restore", edit: "Edit", editUser: "Edit user", resetPassword: "Reset password", leavePasswordBlank: "Leave blank to keep the current password", saveChanges: "Save changes", cancel: "Cancel",
   issueClientKey: "Issue client key", secretHashed: "A secret is shown once and stored as a hash", name: "Name", user: "User", unassigned: "Unassigned", issueKey: "Issue key", newClientKey: "New client key", dismiss: "Dismiss", keyPoolClient: "Rate and daily quota usage are sourced from Redis", prefix: "Prefix", usage: "Usage", revoke: "Revoke",
   addProviderKey: "Add provider key", encryptedPostgres: "Secrets are encrypted before PostgreSQL storage", provider: "Provider", openAiCompatible: "OpenAI-compatible", label: "Label", endpoint: "Endpoint", secret: "Secret", priority: "Priority", addProvider: "Add provider key", keyPool: "Key pool", priorityDetail: "Lowest numeric priority is selected first; tied tiers use the routing strategy", lastUsed: "Last used", never: "Never", disable: "Disable", enable: "Enable",
   channelDefaults: "Channel defaults", channelDefaultsDetail: "Each ordered list is an explicit fallback chain. The first available key is used first.", modelOverrides: "Model overrides", modelOverridesDetail: "A model override takes precedence over its channel chain. Clear it to inherit the channel default.", customChain: "Custom chain", inheritsChannel: "Inherits channel", usesPriority: "Uses provider priority", noExplicitOrder: "No explicit key order.", addProviderKeyOption: "Add provider key", add: "Add", saveOrder: "Save order", clear: "Clear", priorityBalancing: "Priority-tier balancing", priorityBalancingDetail: "Used only when no explicit channel or model chain is configured.", roundRobin: "Round robin", randomized: "Randomized", current: "Current", modelMappings: "Model mappings", mappingDetail: "Internal names sent by clients are translated before upstream dispatch", upstreamModel: "Upstream model", addMapping: "Add mapping", addMappingDetail: "Expose a new internal model name without changing the mobile client", internalName: "Internal name", description: "Description", aliases: "Aliases",
@@ -167,7 +176,7 @@ const chineseCopy: AdminCopy = {
   navOverview: "概览", navUsers: "用户", navClientKeys: "客户端密钥", navProviderKeys: "上游密钥", navRouting: "路由", navFeedback: "反馈", navReleases: "应用发布", navConnections: "连接",
   requests: "请求数", persistentRequestLog: "持久化请求日志", successRate: "成功率", completed: "已完成", tokenVolume: "令牌总量", promptAndCompletion: "提示词和补全", activeStreams: "活跃流", uptime: "运行时间",
   modelTraffic: "模型流量", requestVolume: "按内部模型名称统计的请求量", routingState: "路由状态", upstreamAvailability: "已配置上游可用性", ready: "就绪", unconfigured: "未配置", serviceState: "服务状态", lastSampled: "最近采样", providerKeys: "上游密钥", clientKeys: "客户端密钥", activeUsers: "活跃用户", failures: "失败数",
-  createUser: "创建用户", accountsAdminOnly: "账户只能由管理员创建", email: "邮箱", password: "密码", role: "角色", standard: "普通用户", admin: "管理员", rpm: "每分钟请求", dailyQuota: "每日配额", userAccess: "用户权限", statusRoleQuota: "状态、角色与配额", identity: "身份", limits: "限制", monthlyTokens: "月度令牌", status: "状态", suspend: "停用", restore: "恢复",
+  createUser: "创建用户", accountsAdminOnly: "账户只能由管理员创建", email: "邮箱", password: "密码", role: "角色", standard: "普通用户", admin: "管理员", rpm: "每分钟请求", dailyQuota: "每日配额", userAccess: "用户权限", statusRoleQuota: "状态、角色与配额", identity: "身份", limits: "限制", monthlyTokens: "月度令牌", status: "状态", suspend: "停用", restore: "恢复", edit: "编辑", editUser: "编辑用户", resetPassword: "重置密码", leavePasswordBlank: "留空则保留当前密码", saveChanges: "保存更改", cancel: "取消",
   issueClientKey: "签发客户端密钥", secretHashed: "密钥只显示一次，数据库仅保存哈希", name: "名称", user: "用户", unassigned: "未分配", issueKey: "签发密钥", newClientKey: "新的客户端密钥", dismiss: "关闭", keyPoolClient: "每分钟和每日用量由 Redis 提供", prefix: "前缀", usage: "用量", revoke: "撤销",
   addProviderKey: "添加上游密钥", encryptedPostgres: "密钥在写入 PostgreSQL 前会加密", provider: "提供商", openAiCompatible: "OpenAI 兼容", label: "标签", endpoint: "端点", secret: "密钥", priority: "优先级", addProvider: "添加上游密钥", keyPool: "密钥池", priorityDetail: "数值更小的优先级先使用；相同优先级由路由策略决定", lastUsed: "最近使用", never: "从未", disable: "禁用", enable: "启用",
   channelDefaults: "频道默认路由", channelDefaultsDetail: "每个有序列表都是明确的回退链，会先使用第一个可用密钥。", modelOverrides: "模型覆盖", modelOverridesDetail: "模型覆盖优先于频道链，清除后继承频道默认值。", customChain: "自定义链", inheritsChannel: "继承频道", usesPriority: "使用提供商优先级", noExplicitOrder: "没有明确的密钥顺序。", addProviderKeyOption: "添加上游密钥", add: "添加", saveOrder: "保存顺序", clear: "清除", priorityBalancing: "优先级分层均衡", priorityBalancingDetail: "仅在未配置明确频道或模型链时使用。", roundRobin: "轮询", randomized: "随机", current: "当前", modelMappings: "模型映射", mappingDetail: "客户端发送的内部名称会在上游转发前进行转换", upstreamModel: "上游模型", addMapping: "添加映射", addMappingDetail: "无需变更移动端即可暴露新的内部模型名称", internalName: "内部名称", description: "描述", aliases: "别名",
@@ -251,6 +260,8 @@ export default function AdminPage() {
   const [feedbacks, setFeedbacks] = useState<Feedback[]>([]);
   const [appVersions, setAppVersions] = useState<AppVersion[]>([]);
   const [userForm, setUserForm] = useState({ email: "", password: "", role: "standard", rpmLimit: "60", dailyLimit: "100000" });
+  const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
+  const [userEditForm, setUserEditForm] = useState<UserEditForm>({ password: "", role: "standard", status: "active", rpmLimit: "60", dailyLimit: "100000" });
   const [clientKeyForm, setClientKeyForm] = useState({ name: "", userId: "", rpmLimit: "60", dailyLimit: "100000" });
   const [providerForm, setProviderForm] = useState({ provider: "openai" as Provider, label: "", endpoint: "", secret: "", priority: "100" });
   const [mappingForm, setMappingForm] = useState({ id: "", provider: "openai" as Provider, upstreamModel: "", label: "", description: "", uiMode: "chatgpt", aliases: "" });
@@ -353,6 +364,39 @@ export default function AdminPage() {
       });
       setUserForm({ email: "", password: "", role: "standard", rpmLimit: "60", dailyLimit: "100000" });
     });
+  }
+
+  function openUserEditor(user: UserRecord) {
+    setEditingUser(user);
+    setUserEditForm({
+      password: "",
+      role: user.role,
+      status: user.status,
+      rpmLimit: String(user.rpmLimit),
+      dailyLimit: String(user.dailyLimit),
+    });
+  }
+
+  async function submitUserEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingUser) return;
+    setSubmitting(true);
+    try {
+      const patch: Record<string, string | number> = {
+        role: userEditForm.role,
+        status: userEditForm.status,
+        rpmLimit: Number(userEditForm.rpmLimit),
+        dailyLimit: Number(userEditForm.dailyLimit),
+      };
+      if (userEditForm.password.trim()) patch.password = userEditForm.password;
+      await request(`users/${editingUser.id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      setEditingUser(null);
+      await loadOverview(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The operation failed.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function submitClientKey(event: FormEvent<HTMLFormElement>) {
@@ -459,7 +503,7 @@ export default function AdminPage() {
           {error && <div className="alert" role="alert"><CircleAlert size={18} /><span>{localizedConsoleError(error, copy)}</span><button onClick={() => void loadOverview()} type="button">{copy.retry}</button></div>}
           {loading && !overview ? <div className="loading"><LoaderCircle className="spin" size={22} /> {copy.loading}</div> : null}
           {overview && section === "Overview" && <OverviewPanel overview={overview} modelTraffic={modelTraffic} />}
-          {overview && section === "Users" && <UsersPanel form={userForm} onChange={setUserForm} onSubmit={submitUser} onToggle={(user) => void mutate(() => request(`users/${user.id}`, { method: "PATCH", body: JSON.stringify({ status: user.status === "active" ? "suspended" : "active" }) }))} submitting={submitting} users={overview.users} />}
+          {overview && section === "Users" && <><UsersPanel form={userForm} onChange={setUserForm} onSubmit={submitUser} onToggle={(user) => void mutate(() => request(`users/${user.id}`, { method: "PATCH", body: JSON.stringify({ status: user.status === "active" ? "suspended" : "active" }) }))} onEdit={openUserEditor} submitting={submitting} users={overview.users} />{editingUser && <UserEditDialog form={userEditForm} onChange={setUserEditForm} onClose={() => setEditingUser(null)} onSubmit={submitUserEdit} submitting={submitting} user={editingUser} />}</>}
           {overview && section === "Client keys" && <ClientKeysPanel createdSecret={createdSecret} form={clientKeyForm} onChange={setClientKeyForm} onDismissSecret={() => setCreatedSecret(null)} onRevoke={(id) => void mutate(() => request(`api-keys/${id}`, { method: "DELETE" }))} onSubmit={submitClientKey} submitting={submitting} keys={overview.keys} users={overview.users} />}
           {overview && section === "Provider keys" && <ProviderKeysPanel form={providerForm} keys={overview.providerKeys} onChange={setProviderForm} onSubmit={submitProviderKey} onToggle={(key) => void mutate(() => request(`provider-keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ status: key.status === "active" ? "disabled" : "active" }) }))} submitting={submitting} />}
           {overview && section === "Routing" && <RoutingPanel
@@ -504,12 +548,17 @@ function OverviewPanel({ overview, modelTraffic }: { overview: Overview; modelTr
   </>;
 }
 
-function UsersPanel({ form, onChange, onSubmit, onToggle, submitting, users }: { form: { email: string; password: string; role: string; rpmLimit: string; dailyLimit: string }; onChange: (value: { email: string; password: string; role: string; rpmLimit: string; dailyLimit: string }) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onToggle: (user: UserRecord) => void; submitting: boolean; users: UserRecord[] }) {
+function UsersPanel({ form, onChange, onSubmit, onToggle, onEdit, submitting, users }: { form: { email: string; password: string; role: string; rpmLimit: string; dailyLimit: string }; onChange: (value: { email: string; password: string; role: string; rpmLimit: string; dailyLimit: string }) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onToggle: (user: UserRecord) => void; onEdit: (user: UserRecord) => void; submitting: boolean; users: UserRecord[] }) {
   const copy = useCopy();
   return <>
     <section className="data-section"><SectionHeading title={copy.createUser} detail={copy.accountsAdminOnly} /><form className="form-grid user-form" onSubmit={onSubmit}><label>{copy.email}<input type="email" required value={form.email} onChange={(event) => onChange({ ...form, email: event.target.value })} /></label><label>{copy.password}<input type="password" autoComplete="new-password" minLength={8} required value={form.password} onChange={(event) => onChange({ ...form, password: event.target.value })} /></label><label>{copy.role}<select value={form.role} onChange={(event) => onChange({ ...form, role: event.target.value })}><option value="standard">{copy.standard}</option><option value="admin">{copy.admin}</option></select></label><label>{copy.rpm}<input min="1" type="number" value={form.rpmLimit} onChange={(event) => onChange({ ...form, rpmLimit: event.target.value })} /></label><label>{copy.dailyQuota}<input min="1" type="number" value={form.dailyLimit} onChange={(event) => onChange({ ...form, dailyLimit: event.target.value })} /></label><button className="primary-button form-action" disabled={submitting} type="submit"><UserPlus size={16} />{copy.createUser}</button></form></section>
-    <section className="data-section"><SectionHeading title={copy.userAccess} detail={copy.statusRoleQuota} /><div className="table-wrap"><table><thead><tr><th>{copy.identity}</th><th>{copy.role}</th><th>{copy.limits}</th><th>{copy.monthlyTokens}</th><th>{copy.status}</th><th /></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><strong>{user.email}</strong><span>{user.id}</span></td><td><span className="role-label">{user.role === "admin" ? copy.admin : copy.standard}</span></td><td>{user.rpmLimit} {copy.rpm}<span>{formatNumber(user.dailyLimit, copy)} {copy.dailyQuota}</span></td><td>{formatNumber(user.monthlyTokens, copy)}</td><td><span className={statusClass(user.status)}>{user.status === "active" ? <CircleCheck size={14} /> : <CirclePause size={14} />}{user.status === "active" ? copy.active : copy.suspend}</span></td><td><button className="small-button" onClick={() => onToggle(user)} type="button">{user.status === "active" ? copy.suspend : copy.restore}</button></td></tr>)}</tbody></table></div></section>
+    <section className="data-section"><SectionHeading title={copy.userAccess} detail={copy.statusRoleQuota} /><div className="table-wrap"><table><thead><tr><th>{copy.identity}</th><th>{copy.role}</th><th>{copy.limits}</th><th>{copy.monthlyTokens}</th><th>{copy.status}</th><th /></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><strong>{user.email}</strong><span>{user.id}</span></td><td><span className="role-label">{user.role === "admin" ? copy.admin : copy.standard}</span></td><td>{user.rpmLimit} {copy.rpm}<span>{formatNumber(user.dailyLimit, copy)} {copy.dailyQuota}</span></td><td>{formatNumber(user.monthlyTokens, copy)}</td><td><span className={statusClass(user.status)}>{user.status === "active" ? <CircleCheck size={14} /> : <CirclePause size={14} />}{user.status === "active" ? copy.active : copy.suspend}</span></td><td><div className="table-actions"><button className="small-button" onClick={() => onEdit(user)} type="button"><Pencil size={14} />{copy.edit}</button><button className="small-button" onClick={() => onToggle(user)} type="button">{user.status === "active" ? copy.suspend : copy.restore}</button></div></td></tr>)}</tbody></table></div></section>
   </>;
+}
+
+function UserEditDialog({ form, onChange, onClose, onSubmit, submitting, user }: { form: UserEditForm; onChange: (value: UserEditForm) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; submitting: boolean; user: UserRecord }) {
+  const copy = useCopy();
+  return <div aria-modal="true" className="dialog-backdrop" role="dialog"><form className="dialog-card" onSubmit={onSubmit}><div className="dialog-heading"><div><h2>{copy.editUser}</h2><p>{user.email}</p></div><button aria-label={copy.cancel} className="icon-button" onClick={onClose} type="button"><CircleX size={18} /></button></div><div className="form-grid user-form"><label>{copy.resetPassword}<input autoComplete="new-password" minLength={8} placeholder={copy.leavePasswordBlank} type="password" value={form.password} onChange={(event) => onChange({ ...form, password: event.target.value })} /></label><label>{copy.role}<select value={form.role} onChange={(event) => onChange({ ...form, role: event.target.value as UserRecord["role"] })}><option value="standard">{copy.standard}</option><option value="admin">{copy.admin}</option></select></label><label>{copy.status}<select value={form.status} onChange={(event) => onChange({ ...form, status: event.target.value as UserRecord["status"] })}><option value="active">{copy.active}</option><option value="suspended">{copy.suspend}</option></select></label><label>{copy.rpm}<input min="1" required type="number" value={form.rpmLimit} onChange={(event) => onChange({ ...form, rpmLimit: event.target.value })} /></label><label>{copy.dailyQuota}<input min="1" required type="number" value={form.dailyLimit} onChange={(event) => onChange({ ...form, dailyLimit: event.target.value })} /></label></div><div className="dialog-actions"><button className="small-button" onClick={onClose} type="button">{copy.cancel}</button><button className="primary-button" disabled={submitting} type="submit"><Pencil size={16} />{copy.saveChanges}</button></div></form></div>;
 }
 
 function ClientKeysPanel({ createdSecret, form, keys, onChange, onDismissSecret, onRevoke, onSubmit, submitting, users }: { createdSecret: string | null; form: { name: string; userId: string; rpmLimit: string; dailyLimit: string }; keys: ApiKey[]; onChange: (value: { name: string; userId: string; rpmLimit: string; dailyLimit: string }) => void; onDismissSecret: () => void; onRevoke: (id: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; submitting: boolean; users: UserRecord[] }) {

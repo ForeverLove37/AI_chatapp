@@ -111,6 +111,13 @@ td a { color: var(--teal); font-weight: 700; }
 .small-button:hover { background: #f2f5f2; }
 .primary-button { background: var(--teal); border: 1px solid var(--teal); color: white; }
 .primary-button:hover { background: #066655; }
+.table-actions { display: flex; gap: 7px; }
+.dialog-backdrop { align-items: center; background: rgba(13, 28, 24, 0.42); display: flex; inset: 0; justify-content: center; padding: 20px; position: fixed; z-index: 20; }
+.dialog-card { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; box-shadow: 0 18px 48px rgba(18, 36, 30, 0.22); max-width: 760px; padding: 20px; width: min(100%, 760px); }
+.dialog-heading { align-items: flex-start; display: flex; justify-content: space-between; margin-bottom: 20px; }
+.dialog-heading h2 { margin-bottom: 3px; }
+.dialog-heading p { color: var(--muted); font-size: 13px; margin-bottom: 0; }
+.dialog-actions { display: flex; gap: 9px; justify-content: flex-end; margin-top: 20px; }
 .key-create { display: flex; gap: 20px; justify-content: space-between; }
 .key-create .section-heading { margin-bottom: 0; }
 .inline-form { align-items: center; display: flex; gap: 8px; min-width: min(100%, 360px); }

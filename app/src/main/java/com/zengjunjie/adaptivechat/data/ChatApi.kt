@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit
 data class RemoteMessage(
     val role: String,
     val content: String,
+    val attachments: List<ChatAttachment> = emptyList(),
 )
 
 data class StreamChunk(
@@ -65,7 +66,11 @@ class ChatApi(baseUrl: String) {
                 "messages",
                 JSONArray().apply {
                     messages.forEach { message ->
-                        put(JSONObject().put("role", message.role).put("content", message.content))
+                        put(
+                            JSONObject()
+                                .put("role", message.role)
+                                .put("content", message.toOpenAiContent()),
+                        )
                     }
                 },
             )
@@ -163,6 +168,37 @@ class ChatApi(baseUrl: String) {
         ) { Unit }
     }
 
+    suspend fun synthesizeSpeech(accessToken: String, input: String, voice: String): ByteArray = withContext(Dispatchers.IO) {
+        val payload = JSONObject()
+            .put("input", input)
+            .put("voice", voice)
+        val request = Request.Builder()
+            .url("$baseEndpoint/v1/audio/speech")
+            .header("Accept", "audio/mpeg")
+            .header("Authorization", "Bearer $accessToken")
+            .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+        client.newBuilder()
+            .callTimeout(12, TimeUnit.SECONDS)
+            .build()
+            .newCall(request)
+            .execute()
+            .use { response ->
+                if (!response.isSuccessful) {
+                    val body = response.body?.string().orEmpty()
+                    val message = runCatching { JSONObject(body) }.getOrNull()
+                        ?.optJSONObject("error")
+                        ?.optString("message")
+                        ?.takeIf(String::isNotBlank)
+                        ?: "Speech request failed with HTTP ${response.code}."
+                    throw IOException(message)
+                }
+                val audio = response.body?.bytes() ?: ByteArray(0)
+                if (audio.isEmpty()) throw IOException("The speech service returned no audio.")
+                audio
+            }
+    }
+
     private suspend fun <T> postJson(
         path: String,
         payload: JSONObject,
@@ -185,6 +221,28 @@ class ChatApi(baseUrl: String) {
                 throw IOException(message)
             }
             transform(parsed ?: throw IOException("The server returned an invalid response."))
+        }
+    }
+}
+
+private fun RemoteMessage.toOpenAiContent(): Any {
+    if (attachments.isEmpty()) return content
+
+    return JSONArray().apply {
+        if (content.isNotBlank()) {
+            put(JSONObject().put("type", "text").put("text", content))
+        }
+        attachments.forEach { attachment ->
+            put(
+                JSONObject()
+                    .put("type", "image_url")
+                    .put(
+                        "image_url",
+                        JSONObject()
+                            .put("url", attachment.dataUrl)
+                            .put("detail", "auto"),
+                    ),
+            )
         }
     }
 }

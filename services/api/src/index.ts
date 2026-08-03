@@ -4,6 +4,7 @@ import { serve } from "@hono/node-server";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
+import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
 import { z } from "zod";
 import {
   createPostgresControlPlane,
@@ -52,6 +53,7 @@ const userCreateSchema = z.object({
 });
 
 const userPatchSchema = z.object({
+  password: z.string().min(8).max(200).optional(),
   status: z.enum(["active", "suspended"]).optional(),
   role: z.enum(["admin", "standard"]).optional(),
   rpmLimit: z.number().int().min(1).max(10_000).optional(),
@@ -107,6 +109,10 @@ const feedbackSchema = z.object({
   appVersion: z.string().trim().max(80).default(""),
   locale: z.string().trim().min(2).max(40).default("system"),
 });
+const speechSchema = z.object({
+  input: z.string().trim().min(1).max(4_000),
+  voice: z.string().trim().regex(/^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z]+Neural$/).max(96).optional(),
+});
 const feedbackPatchSchema = z.object({ status: z.enum(["new", "reviewed", "resolved"]) });
 const appVersionCreateSchema = z.object({
   versionCode: z.number().int().min(1).max(10_000_000),
@@ -123,6 +129,7 @@ export type CreateAppOptions = {
   controlPlane?: ControlPlane;
   demoMode?: boolean;
   requireClientAuth?: boolean;
+  synthesizeSpeech?: (input: string, voice: string) => Promise<Uint8Array>;
 };
 
 const flag = (value: string | undefined, fallback: boolean) =>
@@ -162,6 +169,60 @@ function chunks(value: string, size = 18): string[] {
 }
 
 const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+const EDGE_TTS_TIMEOUT_MS = 12_000;
+const MAX_TTS_BYTES = 8 * 1024 * 1024;
+const defaultEdgeVoice = "en-US-AriaNeural";
+
+function escapeSsml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+async function synthesizeEdgeSpeech(input: string, voice: string): Promise<Uint8Array> {
+  const edge = new MsEdgeTTS();
+  let timedOut = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      edge.close();
+      reject(new Error("Edge TTS timed out."));
+    }, EDGE_TTS_TIMEOUT_MS);
+  });
+
+  try {
+    const audio = await Promise.race([
+      (async () => {
+        await edge.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+        const { audioStream } = edge.toStream(escapeSsml(input));
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of audioStream) {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          size += buffer.length;
+          if (size > MAX_TTS_BYTES) throw new Error("Edge TTS response exceeded the maximum size.");
+          chunks.push(buffer);
+        }
+        const result = Buffer.concat(chunks);
+        if (!result.length) throw new Error("Edge TTS returned no audio.");
+        return result;
+      })(),
+      timeout,
+    ]);
+    return audio;
+  } catch (error) {
+    if (timedOut) throw new Error("Edge TTS timed out.");
+    throw error;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    edge.close();
+  }
+}
 
 function demoAnswer(request: ChatRequest, route: ModelRoute): { reasoning?: string; content: string } {
   const message = [...request.messages].reverse().find((candidate) => candidate.role === "user");
@@ -272,6 +333,16 @@ export function createApp(options: CreateAppOptions = {}) {
     return { userId: authorization.userId };
   }
 
+  const updateUser = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = userPatchSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid user update.", details: parsed.error.issues } }, 400);
+    const userId = context.req.param("id");
+    if (!userId) return context.json({ error: { message: "A user id is required." } }, 400);
+    const user = await controlPlane.updateUser(userId, parsed.data);
+    return user ? context.json({ data: user }) : context.json({ error: { message: "User was not found." } }, 404);
+  };
+
   app.get("/health", async (context) => {
     const models = await controlPlane.getModels();
     const configured = await Promise.all(models.map(async (model) => (await canUseRoute(model) ? model.provider : undefined)));
@@ -330,6 +401,31 @@ export function createApp(options: CreateAppOptions = {}) {
       return context.json({ data: await controlPlane.createFeedback(session.userId, parsed.data) }, 201);
     } catch (error) {
       return context.json({ error: { message: error instanceof Error ? error.message : "Unable to save feedback." } }, 400);
+    }
+  });
+
+  app.post("/v1/audio/speech", async (context) => {
+    const session = await requireSessionUser(context);
+    if ("response" in session) return session.response;
+    const parsed = speechSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid speech request." } }, 400);
+
+    try {
+      const audio = await (options.synthesizeSpeech ?? synthesizeEdgeSpeech)(
+        parsed.data.input,
+        parsed.data.voice ?? defaultEdgeVoice,
+      );
+      return new Response(Buffer.from(audio), {
+        headers: {
+          "Content-Type": "audio/mpeg",
+          "Content-Length": String(audio.byteLength),
+          "Cache-Control": "no-store",
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Edge TTS synthesis failed.";
+      const status = /(?:429|rate[ -]?limit)/i.test(message) ? 429 : 503;
+      return context.json({ error: { message } }, status);
     }
   });
 
@@ -508,13 +604,9 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.patch("/admin/users/:id", async (context) => {
-    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
-    const parsed = userPatchSchema.safeParse(await context.req.json().catch(() => undefined));
-    if (!parsed.success) return context.json({ error: { message: "Invalid user update.", details: parsed.error.issues } }, 400);
-    const user = await controlPlane.updateUser(context.req.param("id"), parsed.data);
-    return user ? context.json({ data: user }) : context.json({ error: { message: "User was not found." } }, 404);
-  });
+  app.patch("/admin/users/:id", updateUser);
+  app.patch("/v1/users/:id", updateUser);
+  app.put("/v1/users/:id", updateUser);
 
   app.get("/admin/feedbacks", async (context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);

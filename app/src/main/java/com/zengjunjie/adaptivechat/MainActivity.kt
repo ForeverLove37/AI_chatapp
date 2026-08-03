@@ -1,6 +1,7 @@
 package com.zengjunjie.adaptivechat
 
 import android.os.Bundle
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
@@ -34,6 +35,11 @@ class MainActivity : ComponentActivity() {
                 fontScale = state.account.fontScale,
             ) {
                 AppCopyProvider(language = state.account.language) {
+                    BackHandler(
+                        enabled = state.account.isAuthenticated && state.destination == AppDestination.SETTINGS,
+                    ) {
+                        viewModel.closeSettings()
+                    }
                     AnimatedContent(
                     targetState = when {
                         !state.account.isAuthenticated -> "login"

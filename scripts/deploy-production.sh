@@ -37,7 +37,7 @@ docker compose up -d --build
 run_root install -d -m 0755 /var/www/certbot
 run_root install -d -m 0755 /var/www/adaptive-chat-downloads
 if [[ -f app/build/outputs/apk/debug/app-debug.apk ]]; then
-  run_root install -m 0644 app/build/outputs/apk/debug/app-debug.apk /var/www/adaptive-chat-downloads/adaptive-chat-1.1.0.apk
+  run_root install -m 0644 app/build/outputs/apk/debug/app-debug.apk /var/www/adaptive-chat-downloads/adaptive-chat-1.2.0.apk
 fi
 run_root install -m 0644 deploy/nginx/adaptive-chat.http.conf /etc/nginx/conf.d/adaptive-chat.conf
 run_root htpasswd -Bbc /etc/nginx/.adaptive-chat-admin.htpasswd admin "$ADMIN_API_KEY"

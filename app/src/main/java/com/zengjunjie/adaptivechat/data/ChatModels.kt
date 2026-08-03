@@ -61,9 +61,20 @@ data class ChatMessage(
     val sessionId: String,
     val role: MessageRole,
     val content: String,
+    val attachments: List<ChatAttachment>,
     val reasoning: String,
     val createdAt: Long,
     val isStreaming: Boolean,
+)
+
+/**
+ * A vision attachment persisted with its user message. [dataUrl] is passed through to
+ * OpenAI-compatible upstreams as an image_url content part.
+ */
+data class ChatAttachment(
+    val fileName: String,
+    val mimeType: String,
+    val dataUrl: String,
 )
 
 fun newId(): String = UUID.randomUUID().toString()

@@ -42,6 +42,18 @@ data class AppCopy(
     val dark: String,
     val close: String,
     val delete: String,
+    val cancel: String,
+    val deleteConversation: String,
+    val deleteConversationPrompt: (String) -> String,
+    val redo: String,
+    val copyMessage: String,
+    val branch: String,
+    val listen: String,
+    val attachFile: String,
+    val voiceInput: String,
+    val removeAttachment: String,
+    val attachmentError: String,
+    val speechInputUnavailable: String,
     val selectChannel: String,
     val selectModel: String,
     val streamingError: String,
@@ -83,6 +95,11 @@ data class AppCopy(
             message == "Invalid email or password." -> "邮箱或密码无效。"
             message == "Sign in is required to use chat." -> "需要登录后才能使用聊天。"
             message == "Sign in is required for this action." -> "需要登录后才能执行此操作。"
+            message == "You can attach up to 3 images at once." -> "一次最多可添加 3 张图片。"
+            message == "The selected file has no supported image type." -> "所选文件没有受支持的图片类型。"
+            message == "Choose a JPEG, PNG, WEBP, or GIF image." -> "请选择 JPEG、PNG、WEBP 或 GIF 图片。"
+            message == "Images must be 4 MB or smaller." -> "图片大小不能超过 4 MB。"
+            message == "The selected image could not be read." -> "无法读取所选图片。"
             message.startsWith("Request failed with HTTP") -> "请求失败：${message.removePrefix("Request failed with HTTP ")}"
             message.startsWith("Streaming request failed with HTTP") -> "流式请求失败：${message.removePrefix("Streaming request failed with HTTP ")}"
             else -> message
@@ -126,6 +143,18 @@ private val EnglishCopy = AppCopy(
     dark = "Dark",
     close = "Close",
     delete = "Delete",
+    cancel = "Cancel",
+    deleteConversation = "Delete conversation?",
+    deleteConversationPrompt = { title -> "\"$title\" and its messages will be permanently removed." },
+    redo = "Redo response",
+    copyMessage = "Copy raw Markdown",
+    branch = "Branch conversation",
+    listen = "Listen",
+    attachFile = "Attach image",
+    voiceInput = "Voice input",
+    removeAttachment = "Remove attachment",
+    attachmentError = "Attachment unavailable",
+    speechInputUnavailable = "Speech recognition is unavailable on this device.",
     selectChannel = "Select channel",
     selectModel = "Select model",
     streamingError = "Streaming error",
@@ -177,6 +206,18 @@ private val ChineseCopy = AppCopy(
     dark = "深色",
     close = "关闭",
     delete = "删除",
+    cancel = "取消",
+    deleteConversation = "删除会话？",
+    deleteConversationPrompt = { title -> "\"$title\" 及其所有消息将被永久删除。" },
+    redo = "重新生成",
+    copyMessage = "复制 Markdown 原文",
+    branch = "创建分支会话",
+    listen = "朗读",
+    attachFile = "添加图片",
+    voiceInput = "语音输入",
+    removeAttachment = "移除附件",
+    attachmentError = "附件不可用",
+    speechInputUnavailable = "此设备无法使用语音识别。",
     selectChannel = "选择频道",
     selectModel = "选择模型",
     streamingError = "流式响应错误",
