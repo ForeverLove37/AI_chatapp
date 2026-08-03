@@ -1,4 +1,4 @@
-export type Provider = "openai" | "gemini" | "deepseek";
+export type Provider = string;
 
 export type LoadBalanceStrategy = "round_robin" | "random";
 
@@ -8,7 +8,7 @@ export type ModelRoute = {
   upstreamModel: string;
   label: string;
   description: string;
-  uiMode: "chatgpt" | "gemini" | "deepseek";
+  uiMode: string;
   aliases: string[];
   enabled?: boolean;
 };
@@ -100,17 +100,62 @@ export function findModelRoute(model: string, routes: ModelRoute[] = modelCatalo
   );
 }
 
-export function publicRemoteConfig(routes: ModelRoute[] = modelCatalog) {
+export type RemoteChannel = {
+  id: string;
+  displayName: string;
+  description: string;
+  icon: { type: "builtin" | "data_url"; value: string };
+  style: {
+    backgroundStart: string;
+    backgroundEnd: string;
+    accentColor: string;
+    textColor: string;
+    surfaceColor: string;
+    typography: "sans" | "serif" | "mono";
+    animatedGradient: boolean;
+  };
+  models: Array<{ id: string; label: string; description: string }>;
+};
+
+const builtInChannels: Array<Omit<RemoteChannel, "models">> = [
+  {
+    id: "chatgpt", displayName: "ChatGPT", description: "Minimal and focused",
+    icon: { type: "builtin", value: "chatgpt" },
+    style: { backgroundStart: "#FFFFFF", backgroundEnd: "#F7F7F8", accentColor: "#0D7C66", textColor: "#202123", surfaceColor: "#FFFFFF", typography: "sans", animatedGradient: false },
+  },
+  {
+    id: "gemini", displayName: "Gemini", description: "Colorful Material intelligence",
+    icon: { type: "builtin", value: "gemini" },
+    style: { backgroundStart: "#E8F0FE", backgroundEnd: "#FCE8F3", accentColor: "#1A73E8", textColor: "#202124", surfaceColor: "#FFFFFF", typography: "sans", animatedGradient: true },
+  },
+  {
+    id: "deepseek", displayName: "DeepSeek", description: "Technical reasoning workspace",
+    icon: { type: "builtin", value: "deepseek" },
+    style: { backgroundStart: "#F2F7FF", backgroundEnd: "#E8F0FF", accentColor: "#3B6EF5", textColor: "#17213A", surfaceColor: "#FFFFFF", typography: "mono", animatedGradient: false },
+  },
+];
+
+export function publicRemoteConfig(routes: ModelRoute[] = modelCatalog, dynamicChannels: RemoteChannel[] = []) {
+  const enabledRoutes = routes.filter((model) => model.enabled !== false);
+  const channels = [
+    ...builtInChannels.map((channel) => ({
+      ...channel,
+      models: enabledRoutes
+        .filter((model) => model.uiMode === channel.id)
+        .map(({ id, label, description }) => ({ id, label, description })),
+    })),
+    ...dynamicChannels,
+  ].filter((channel) => channel.models.length > 0);
   return {
-    version: 2,
+    version: 4,
     defaultSystemPrompt: "You are a helpful AI assistant.",
     featureFlags: {
       attachments: false,
       reasoningBlocks: true,
       remoteModelConfig: true,
     },
-    models: routes
-      .filter((model) => model.enabled !== false)
+    channels,
+    models: enabledRoutes
       .map(({ aliases: _aliases, upstreamModel: _upstreamModel, enabled: _enabled, ...model }) => model),
   };
 }

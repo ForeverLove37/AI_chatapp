@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.speech.RecognizerIntent
@@ -24,6 +25,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -105,6 +107,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -241,6 +244,7 @@ fun ChatScreen(
                             HeaderSelectors(
                                 provider = state.provider,
                                 model = state.model,
+                                channels = state.channels,
                                 onModelSelected = viewModel::selectModel,
                                 onProviderSelected = viewModel::selectChannel,
                             )
@@ -322,19 +326,35 @@ fun ChatScreen(
 
 @Composable
 private fun ChannelBackdrop(provider: ProviderMode) {
-    when (provider) {
-        ProviderMode.GEMINI -> GeminiGradientBackdrop()
-        ProviderMode.DEEPSEEK -> Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background),
-        )
-        ProviderMode.CHATGPT -> Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background),
+    when {
+        provider.isGemini -> GeminiGradientBackdrop()
+        provider.style.animatedGradient -> DynamicGradientBackdrop(provider)
+        else -> Box(
+            modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
         )
     }
+}
+
+@Composable
+private fun DynamicGradientBackdrop(provider: ProviderMode) {
+    val transition = rememberInfiniteTransition(label = "${provider.wireName}-background")
+    val shift by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(8_000, easing = LinearEasing), RepeatMode.Reverse),
+        label = "${provider.wireName}-gradient-shift",
+    )
+    val start = channelColor(provider.style.backgroundStart, MaterialTheme.colorScheme.background)
+    val end = channelColor(provider.style.backgroundEnd, MaterialTheme.colorScheme.surfaceVariant)
+    Box(
+        modifier = Modifier.fillMaxSize().background(
+            Brush.linearGradient(
+                colors = listOf(start, end, start),
+                start = Offset(-300f + shift * 800f, 0f),
+                end = Offset(1_200f + shift * 800f, 2_200f),
+            ),
+        ),
+    )
 }
 
 @Composable
@@ -442,6 +462,7 @@ private fun SessionDrawer(
 private fun HeaderSelectors(
     provider: ProviderMode,
     model: ChatModel,
+    channels: List<ProviderMode>,
     onProviderSelected: (ProviderMode) -> Unit,
     onModelSelected: (ChatModel) -> Unit,
 ) {
@@ -453,6 +474,7 @@ private fun HeaderSelectors(
     ) {
         ChannelSelector(
             selected = provider,
+            channels = channels,
             onSelected = onProviderSelected,
             modifier = Modifier.weight(1f),
         )
@@ -552,6 +574,7 @@ private fun ChatContent(
 @Composable
 private fun ChannelSelector(
     selected: ProviderMode,
+    channels: List<ProviderMode>,
     onSelected: (ProviderMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -560,7 +583,7 @@ private fun ChannelSelector(
     Box(modifier = modifier) {
         Surface(
             shape = selectorShape(selected),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = if (selected == ProviderMode.GEMINI) 0.86f else 0.96f),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = if (selected.isGemini) 0.86f else 0.96f),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.56f)),
             modifier = Modifier
                 .fillMaxWidth()
@@ -571,7 +594,7 @@ private fun ChannelSelector(
                 modifier = Modifier.fillMaxWidth(),
                 contentPadding = PaddingValues(horizontal = 8.dp),
             ) {
-                Icon(painterResource(providerImage(selected)), contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.Unspecified)
+                ChannelIcon(selected, Modifier.size(18.dp))
                 Spacer(Modifier.width(5.dp))
                 Text(copy.providerName(selected), modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = copy.selectChannel, modifier = Modifier.size(17.dp))
@@ -582,7 +605,7 @@ private fun ChannelSelector(
             onDismissRequest = { expanded = false },
             modifier = Modifier.widthIn(min = 184.dp, max = 264.dp),
         ) {
-            ProviderMode.entries.forEach { provider ->
+            channels.forEach { provider ->
                 DropdownMenuItem(
                     text = {
                         Text(
@@ -592,12 +615,7 @@ private fun ChannelSelector(
                         )
                     },
                     leadingIcon = {
-                        Icon(
-                            painterResource(providerImage(provider)),
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                            tint = Color.Unspecified,
-                        )
+                        ChannelIcon(provider, Modifier.size(20.dp))
                     },
                     contentPadding = PaddingValues(horizontal = 14.dp),
                     onClick = {
@@ -622,7 +640,7 @@ private fun ModelSelector(
     Box(modifier = modifier) {
         Surface(
             shape = selectorShape(provider),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = if (provider == ProviderMode.GEMINI) 0.86f else 0.96f),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = if (provider.isGemini) 0.86f else 0.96f),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.56f)),
             modifier = Modifier
                 .fillMaxWidth()
@@ -633,7 +651,7 @@ private fun ModelSelector(
                 modifier = Modifier.fillMaxWidth(),
                 contentPadding = PaddingValues(horizontal = 8.dp),
             ) {
-                Icon(painterResource(providerImage(provider)), contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.Unspecified)
+                ChannelIcon(provider, Modifier.size(18.dp))
                 Spacer(Modifier.width(5.dp))
                 Text(copy.modelName(selected), modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = copy.selectModel, modifier = Modifier.size(17.dp))
@@ -654,12 +672,7 @@ private fun ModelSelector(
                         )
                     },
                     leadingIcon = {
-                        Icon(
-                            painterResource(providerImage(provider)),
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                            tint = Color.Unspecified,
-                        )
+                        ChannelIcon(provider, Modifier.size(20.dp))
                     },
                     contentPadding = PaddingValues(horizontal = 14.dp),
                     onClick = {
@@ -672,10 +685,10 @@ private fun ModelSelector(
     }
 }
 
-private fun selectorShape(provider: ProviderMode) = when (provider) {
-    ProviderMode.GEMINI -> RoundedCornerShape(24.dp)
-    ProviderMode.DEEPSEEK -> RoundedCornerShape(6.dp)
-    ProviderMode.CHATGPT -> RoundedCornerShape(10.dp)
+private fun selectorShape(provider: ProviderMode) = when {
+    provider.isGemini -> RoundedCornerShape(24.dp)
+    provider.isDeepSeek -> RoundedCornerShape(6.dp)
+    else -> RoundedCornerShape(10.dp)
 }
 
 @Composable
@@ -688,11 +701,11 @@ private fun WelcomePanel(provider: ProviderMode, model: ChatModel, modifier: Mod
     ) {
         Surface(
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = if (provider == ProviderMode.GEMINI) 0.74f else 1f),
+            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = if (provider.isGemini) 0.74f else 1f),
             modifier = Modifier.size(58.dp),
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(painterResource(providerImage(provider)), contentDescription = null, modifier = Modifier.size(30.dp), tint = Color.Unspecified)
+                ChannelIcon(provider, Modifier.size(30.dp))
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -735,12 +748,12 @@ private fun MessageItem(
             horizontalArrangement = if (fromUser) Arrangement.End else Arrangement.Start,
         ) {
             val bubbleColor = when {
-                fromUser && provider == ProviderMode.CHATGPT -> MaterialTheme.colorScheme.primary
+                fromUser && provider.isChatGpt -> MaterialTheme.colorScheme.primary
                 fromUser -> MaterialTheme.colorScheme.primaryContainer
-                else -> MaterialTheme.colorScheme.surface.copy(alpha = if (provider == ProviderMode.GEMINI) 0.88f else 1f)
+                else -> MaterialTheme.colorScheme.surface.copy(alpha = if (provider.isGemini) 0.88f else 1f)
             }
             val bubbleContent = when {
-                fromUser && provider == ProviderMode.CHATGPT -> MaterialTheme.colorScheme.onPrimary
+                fromUser && provider.isChatGpt -> MaterialTheme.colorScheme.onPrimary
                 fromUser -> MaterialTheme.colorScheme.onPrimaryContainer
                 else -> MaterialTheme.colorScheme.onSurface
             }
@@ -748,7 +761,7 @@ private fun MessageItem(
                 color = bubbleColor,
                 contentColor = bubbleContent,
                 shape = bubbleShape(fromUser, provider),
-                border = if (!fromUser && provider == ProviderMode.DEEPSEEK) BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)) else null,
+                border = if (!fromUser && provider.isDeepSeek) BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)) else null,
                 modifier = Modifier.fillMaxWidth(if (fromUser) 0.84f else 0.94f).widthIn(max = 760.dp),
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
@@ -776,15 +789,15 @@ private fun MessageItem(
     }
 }
 
-private fun bubbleShape(fromUser: Boolean, provider: ProviderMode) = when (provider) {
-    ProviderMode.GEMINI -> RoundedCornerShape(24.dp)
-    ProviderMode.DEEPSEEK -> RoundedCornerShape(
+private fun bubbleShape(fromUser: Boolean, provider: ProviderMode) = when {
+    provider.isGemini -> RoundedCornerShape(24.dp)
+    provider.isDeepSeek -> RoundedCornerShape(
         topStart = 6.dp,
         topEnd = 16.dp,
         bottomStart = if (fromUser) 16.dp else 6.dp,
         bottomEnd = if (fromUser) 6.dp else 16.dp,
     )
-    ProviderMode.CHATGPT -> RoundedCornerShape(
+    else -> RoundedCornerShape(
         topStart = 20.dp,
         topEnd = 20.dp,
         bottomStart = if (fromUser) 20.dp else 6.dp,
@@ -871,7 +884,7 @@ private fun StreamingMarkdown(text: String, provider: ProviderMode) {
         markdownBlocks(text).forEach { block ->
             when (block) {
                 is MarkdownBlock.Code -> Surface(
-                    color = if (provider == ProviderMode.DEEPSEEK && dark) Color(0xFF071018) else MaterialTheme.colorScheme.surfaceVariant,
+                    color = if (provider.isDeepSeek && dark) Color(0xFF071018) else MaterialTheme.colorScheme.surfaceVariant,
                     shape = RoundedCornerShape(6.dp),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
@@ -1086,16 +1099,16 @@ private fun Composer(
     modifier: Modifier = Modifier,
 ) {
     val copy = LocalAppCopy.current
-    val shape = when (provider) {
-        ProviderMode.GEMINI -> RoundedCornerShape(32.dp)
-        ProviderMode.DEEPSEEK -> RoundedCornerShape(8.dp)
-        ProviderMode.CHATGPT -> RoundedCornerShape(26.dp)
+    val shape = when {
+        provider.isGemini -> RoundedCornerShape(32.dp)
+        provider.isDeepSeek -> RoundedCornerShape(8.dp)
+        else -> RoundedCornerShape(26.dp)
     }
     Surface(
-        color = MaterialTheme.colorScheme.surface.copy(alpha = if (provider == ProviderMode.GEMINI) 0.92f else 1f),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = if (provider.isGemini) 0.92f else 1f),
         shape = shape,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
-        tonalElevation = if (provider == ProviderMode.GEMINI) 4.dp else 1.dp,
+        tonalElevation = if (provider.isGemini) 4.dp else 1.dp,
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -1135,7 +1148,7 @@ private fun Composer(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (provider == ProviderMode.GEMINI) {
+                if (provider.isGemini) {
                     Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.padding(start = 8.dp).size(20.dp), tint = MaterialTheme.colorScheme.primary)
                 }
                 IconButton(onClick = onAttachFile, enabled = !isStreaming, modifier = Modifier.size(42.dp)) {
@@ -1209,14 +1222,42 @@ private fun readImageAttachment(context: Context, uri: Uri): ChatAttachment {
     )
 }
 
-private fun providerIcon(provider: ProviderMode): ImageVector = when (provider) {
-    ProviderMode.CHATGPT -> Icons.Outlined.ChatBubbleOutline
-    ProviderMode.GEMINI -> Icons.Outlined.AutoAwesome
-    ProviderMode.DEEPSEEK -> Icons.Outlined.Terminal
+private fun providerIcon(provider: ProviderMode): ImageVector = when {
+    provider.isChatGpt -> Icons.Outlined.ChatBubbleOutline
+    provider.isGemini -> Icons.Outlined.AutoAwesome
+    provider.isDeepSeek -> Icons.Outlined.Terminal
+    else -> Icons.Outlined.AutoAwesome
 }
 
-private fun providerImage(provider: ProviderMode) = when (provider) {
-    ProviderMode.CHATGPT -> R.drawable.model_gpt
-    ProviderMode.GEMINI -> R.drawable.model_gemini
-    ProviderMode.DEEPSEEK -> R.drawable.model_deepseek
+private fun providerImage(provider: ProviderMode): Int? = when {
+    provider.isChatGpt -> R.drawable.model_gpt
+    provider.isGemini -> R.drawable.model_gemini
+    provider.isDeepSeek -> R.drawable.model_deepseek
+    else -> null
 }
+
+@Composable
+private fun ChannelIcon(provider: ProviderMode, modifier: Modifier = Modifier) {
+    val bitmap = remember(provider.iconDataUrl) {
+        runCatching {
+            val encoded = provider.iconDataUrl.substringAfter("base64,", "")
+            if (encoded.isBlank()) null else Base64.decode(encoded, Base64.DEFAULT).let { bytes ->
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            }
+        }.getOrNull()
+    }
+    when {
+        bitmap != null -> Image(bitmap = bitmap, contentDescription = null, modifier = modifier)
+        providerImage(provider) != null -> Icon(
+            painterResource(providerImage(provider)!!),
+            contentDescription = null,
+            modifier = modifier,
+            tint = Color.Unspecified,
+        )
+        else -> Icon(providerIcon(provider), contentDescription = null, modifier = modifier, tint = MaterialTheme.colorScheme.primary)
+    }
+}
+
+private fun channelColor(value: String, fallback: Color): Color = runCatching {
+    Color(android.graphics.Color.parseColor(value))
+}.getOrDefault(fallback)

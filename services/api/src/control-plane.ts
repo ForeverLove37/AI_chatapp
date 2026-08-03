@@ -251,9 +251,7 @@ function policyKey(scope: RoutingScope, scopeId: string) {
 function normalizePolicyScope(scope: RoutingScope, scopeId: string) {
   const normalized = scopeId.trim().toLowerCase();
   if (!normalized) throw new Error("A routing policy target is required.");
-  if (scope === "channel" && !["chatgpt", "gemini", "deepseek"].includes(normalized)) {
-    throw new Error("Channel policies must target ChatGPT, Gemini, or DeepSeek.");
-  }
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(normalized)) throw new Error("Routing policy targets may contain only letters, numbers, dots, underscores, and dashes.");
   return normalized;
 }
 
@@ -341,7 +339,7 @@ export class MemoryControlPlane implements ControlPlane {
   private readonly feedbacks = new Map<string, StoredFeedback>();
   private readonly appVersions = new Map<string, AppVersion>();
   private readonly requests: RequestMetric[] = [];
-  private cursors: Record<Provider, number> = { openai: 0, gemini: 0, deepseek: 0 };
+  private cursors: Record<string, number> = { openai: 0, gemini: 0, deepseek: 0 };
   private activeStreams = 0;
   private strategy: LoadBalanceStrategy = "round_robin";
 
@@ -409,7 +407,8 @@ export class MemoryControlPlane implements ControlPlane {
       const tier = sorted.filter((key) => key.priority === priority);
       if (this.strategy === "random") tier.sort(() => Math.random() - 0.5);
       else if (tier.length > 1) {
-        const offset = this.cursors[provider]++ % tier.length;
+        const offset = (this.cursors[provider] ?? 0) % tier.length;
+        this.cursors[provider] = offset + 1;
         tier.push(...tier.splice(0, offset));
       }
       ordered.push(...tier);
@@ -836,6 +835,9 @@ export class PostgresControlPlane implements ControlPlane {
       CREATE INDEX IF NOT EXISTS request_logs_model_idx ON request_logs(model_id, created_at DESC);
       ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
       ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE provider_keys DROP CONSTRAINT IF EXISTS provider_keys_provider_check;
+      ALTER TABLE model_routes DROP CONSTRAINT IF EXISTS model_routes_provider_check;
+      ALTER TABLE model_routes DROP CONSTRAINT IF EXISTS model_routes_ui_mode_check;
       UPDATE provider_keys
       SET endpoint = regexp_replace(endpoint, '/v1/?$', '/v1/chat/completions')
       WHERE endpoint ~ '/v1/?$';

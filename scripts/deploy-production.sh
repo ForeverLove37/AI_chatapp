@@ -33,11 +33,11 @@ if ! command -v htpasswd >/dev/null 2>&1; then
   exit 1
 fi
 
-docker compose up -d --build
 run_root install -d -m 0755 /var/www/certbot
 run_root install -d -m 0755 /var/www/adaptive-chat-downloads
+docker compose up -d --build
 if [[ -f app/build/outputs/apk/debug/app-debug.apk ]]; then
-  run_root install -m 0644 app/build/outputs/apk/debug/app-debug.apk /var/www/adaptive-chat-downloads/adaptive-chat-1.2.0.apk
+  run_root install -m 0644 app/build/outputs/apk/debug/app-debug.apk /var/www/adaptive-chat-downloads/adaptive-chat-1.3.0-production.apk
 fi
 run_root install -m 0644 deploy/nginx/adaptive-chat.http.conf /etc/nginx/conf.d/adaptive-chat.conf
 run_root htpasswd -Bbc /etc/nginx/.adaptive-chat-admin.htpasswd admin "$ADMIN_API_KEY"

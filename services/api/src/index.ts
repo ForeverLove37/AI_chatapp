@@ -4,6 +4,7 @@ import { serve } from "@hono/node-server";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
+import { CronExpressionParser } from "cron-parser";
 import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
 import { z } from "zod";
 import {
@@ -14,8 +15,16 @@ import {
   type RoutingScope,
   type SelectedUpstream,
 } from "./control-plane.js";
+import {
+  createPostgresEnterpriseStore,
+  MemoryEnterpriseStore,
+  renderEmailTemplate,
+  type BackupDestinationInput,
+  type EmailTemplateTrigger,
+  type EnterpriseStore,
+} from "./enterprise.js";
 import { issueSessionToken, verifySessionToken } from "./auth.js";
-import { publicRemoteConfig, type LoadBalanceStrategy, type ModelRoute } from "./catalog.js";
+import { publicRemoteConfig, type LoadBalanceStrategy, type ModelRoute, type RemoteChannel } from "./catalog.js";
 
 const contentSchema = z.union([z.string(), z.array(z.unknown()), z.null()]).optional();
 const chatRequestSchema = z.object({
@@ -61,7 +70,7 @@ const userPatchSchema = z.object({
 }).refine((value) => Object.keys(value).length > 0);
 
 const providerKeySchema = z.object({
-  provider: z.enum(["openai", "gemini", "deepseek"]),
+  provider: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
   label: z.string().trim().min(2).max(120),
   endpoint: z.url().max(1_000),
   secret: z.string().trim().min(1).max(8_000),
@@ -78,11 +87,11 @@ const providerKeyPatchSchema = z.object({
 
 const modelRouteCreateSchema = z.object({
   id: z.string().trim().min(2).max(120).regex(/^[a-z0-9][a-z0-9._-]*$/),
-  provider: z.enum(["openai", "gemini", "deepseek"]),
+  provider: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
   upstreamModel: z.string().trim().min(1).max(256),
   label: z.string().trim().min(1).max(80),
   description: z.string().trim().min(1).max(300),
-  uiMode: z.enum(["chatgpt", "gemini", "deepseek"]),
+  uiMode: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
   aliases: z.array(z.string().trim().min(1).max(120)).max(24).default([]),
   enabled: z.boolean().default(true),
 });
@@ -123,10 +132,113 @@ const appVersionCreateSchema = z.object({
 });
 const appVersionPatchSchema = appVersionCreateSchema.omit({ versionCode: true }).partial().refine((value) => Object.keys(value).length > 0);
 
+const emailSettingsSchema = z.object({
+  host: z.string().trim().max(320),
+  port: z.number().int().min(1).max(65_535),
+  secure: z.boolean(),
+  username: z.string().trim().max(320),
+  password: z.string().max(2_000).optional(),
+  fromEmail: z.union([z.literal(""), z.email().max(320)]),
+  fromName: z.string().trim().min(1).max(160),
+  enabled: z.boolean(),
+});
+const emailTemplatePatchSchema = z.object({
+  name: z.string().trim().min(1).max(160).optional(),
+  subject: z.string().trim().min(1).max(500).optional(),
+  htmlBody: z.string().trim().min(1).max(250_000).optional(),
+  enabled: z.boolean().optional(),
+}).refine((value) => Object.keys(value).length > 0);
+const emailPreviewSchema = z.object({
+  trigger: z.enum(["suspicious_login", "announcement", "version_update"]),
+  subject: z.string().max(500).optional(),
+  htmlBody: z.string().max(250_000).optional(),
+  variables: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}),
+});
+const announcementSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  message: z.string().trim().min(1).max(10_000),
+  groupId: z.string().trim().min(1).max(120).optional(),
+});
+const colorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
+const dynamicModelSchema = z.object({
+  id: z.string().trim().min(2).max(120).regex(/^[a-z0-9][a-z0-9._-]*$/),
+  label: z.string().trim().min(1).max(80),
+  description: z.string().trim().max(300).default(""),
+  upstreamModel: z.string().trim().min(1).max(256),
+});
+const dynamicChannelSchema = z.object({
+  slug: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
+  displayName: z.string().trim().min(1).max(80),
+  description: z.string().trim().max(300).default(""),
+  provider: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
+  endpoint: z.url().max(1_000).optional(),
+  secret: z.string().trim().min(1).max(8_000).optional(),
+  priority: z.number().int().min(0).max(100_000).default(100),
+  iconDataUrl: z.union([z.literal(""), z.string().startsWith("data:image/").max(1_500_000)]).default(""),
+  backgroundStart: colorSchema,
+  backgroundEnd: colorSchema,
+  accentColor: colorSchema,
+  textColor: colorSchema,
+  surfaceColor: colorSchema,
+  typography: z.enum(["sans", "serif", "mono"]).default("sans"),
+  animatedGradient: z.boolean().default(false),
+  models: z.array(dynamicModelSchema).min(1).max(12)
+    .refine((models) => new Set(models.map((model) => model.id)).size === models.length, "Model ids must be unique within a channel."),
+  enabled: z.boolean().default(true),
+  sortOrder: z.number().int().min(0).max(10_000).default(100),
+});
+const dynamicChannelPatchSchema = dynamicChannelSchema.partial().refine((value) => Object.keys(value).length > 0);
+const userGroupSchema = z.object({
+  slug: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9-]*$/),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).default(""),
+  releaseRing: z.enum(["beta", "production"]),
+});
+const userGroupPatchSchema = userGroupSchema.omit({ slug: true }).partial().refine((value) => Object.keys(value).length > 0);
+const userMembershipSchema = z.object({ groupIds: z.array(z.string().trim().min(1).max(120)).max(32) });
+const backupCredentialsSchema = z.object({
+  encryptionPassphrase: z.string().min(12).max(1_000),
+  username: z.string().max(500).optional(),
+  password: z.string().max(2_000).optional(),
+  accessKeyId: z.string().max(500).optional(),
+  secretAccessKey: z.string().max(2_000).optional(),
+});
+const backupSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  protocol: z.enum(["local", "webdav", "s3"]),
+  scheduleCron: z.string().trim().min(5).max(120).default("0 2 * * *"),
+  enabled: z.boolean().default(true),
+  localDirectory: z.string().trim().max(1_000).default("/backups"),
+  webdavUrl: z.string().trim().max(2_000).default(""),
+  s3Endpoint: z.string().trim().max(2_000).default(""),
+  s3Region: z.string().trim().max(120).default("us-east-1"),
+  s3Bucket: z.string().trim().max(255).default(""),
+  s3Prefix: z.string().trim().max(1_000).default("adaptive-chat"),
+  s3ForcePathStyle: z.boolean().default(false),
+  credentials: backupCredentialsSchema.optional(),
+});
+const buildSchema = z.object({
+  versionCode: z.number().int().min(1).max(10_000_000),
+  versionName: z.string().trim().min(1).max(80),
+  releaseNotes: z.string().max(8_000).default(""),
+});
+
+function backupValidationError(input: z.infer<typeof backupSchema>) {
+  try { CronExpressionParser.parse(input.scheduleCron); }
+  catch { return "The backup schedule is not a valid UTC cron expression."; }
+  if (input.protocol === "local" && !input.localDirectory) return "A local backup directory is required.";
+  if (input.protocol === "webdav") {
+    try { new URL(input.webdavUrl); } catch { return "A valid WebDAV URL is required."; }
+  }
+  if (input.protocol === "s3" && !input.s3Bucket) return "An S3 bucket is required.";
+  return undefined;
+}
+
 type ChatRequest = z.infer<typeof chatRequestSchema>;
 
 export type CreateAppOptions = {
   controlPlane?: ControlPlane;
+  enterpriseStore?: EnterpriseStore;
   demoMode?: boolean;
   requireClientAuth?: boolean;
   synthesizeSpeech?: (input: string, voice: string) => Promise<Uint8Array>;
@@ -274,6 +386,7 @@ function usageFromBody(body: string) {
 export function createApp(options: CreateAppOptions = {}) {
   const app = new Hono();
   const controlPlane = options.controlPlane ?? new MemoryControlPlane();
+  const enterprise = options.enterpriseStore ?? new MemoryEnterpriseStore();
   const startedAt = Date.now();
   const demoMode = () => options.demoMode ?? flag(process.env.DEMO_MODE, true);
   const adminKey = () => process.env.ADMIN_API_KEY ?? "dev-admin-key";
@@ -333,6 +446,37 @@ export function createApp(options: CreateAppOptions = {}) {
     return { userId: authorization.userId };
   }
 
+  function clientAddress(context: Context) {
+    return context.req.header("x-real-ip")
+      ?? context.req.header("cf-connecting-ip")
+      ?? context.req.header("x-forwarded-for")?.split(",")[0]?.trim()
+      ?? "unknown";
+  }
+
+  async function remoteConfig() {
+    const [routes, dynamicChannels] = await Promise.all([
+      controlPlane.getModels(),
+      enterprise.listDynamicChannels(),
+    ]);
+    const channels: RemoteChannel[] = dynamicChannels.map((channel) => ({
+      id: channel.slug,
+      displayName: channel.displayName,
+      description: channel.description,
+      icon: { type: channel.iconDataUrl ? "data_url" : "builtin", value: channel.iconDataUrl || channel.slug },
+      style: {
+        backgroundStart: channel.backgroundStart,
+        backgroundEnd: channel.backgroundEnd,
+        accentColor: channel.accentColor,
+        textColor: channel.textColor,
+        surfaceColor: channel.surfaceColor,
+        typography: channel.typography,
+        animatedGradient: channel.animatedGradient,
+      },
+      models: channel.models.map(({ id, label, description }) => ({ id, label, description })),
+    }));
+    return publicRemoteConfig(routes, channels);
+  }
+
   const updateUser = async (context: Context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
     const parsed = userPatchSchema.safeParse(await context.req.json().catch(() => undefined));
@@ -365,13 +509,30 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
-  app.get("/v1/config", async (context) => context.json(publicRemoteConfig(await controlPlane.getModels())));
+  app.get("/v1/config", async (context) => context.json(await remoteConfig()));
 
   app.post("/v1/auth/login", async (context) => {
     const parsed = loginSchema.safeParse(await context.req.json().catch(() => undefined));
     if (!parsed.success) return context.json({ error: { message: "Email and password are required." } }, 400);
     const user = await controlPlane.authenticateUser(parsed.data.email, parsed.data.password);
     if (!user) return context.json({ error: { message: "Invalid email or password." } }, 401);
+    const ip = clientAddress(context);
+    const loginIp = await enterprise.recordLoginIp(user.id, ip, context.req.header("user-agent") ?? "Unknown device");
+    if (loginIp.isNew && !loginIp.isFirst) {
+      const [template, settings] = await Promise.all([
+        enterprise.getEmailTemplate("suspicious_login"),
+        enterprise.getEmailSettings(),
+      ]);
+      if (template?.enabled && settings.enabled) {
+        const rendered = renderEmailTemplate(template, {
+          email: user.email,
+          ip,
+          time: new Date().toISOString(),
+          userAgent: context.req.header("user-agent") ?? "Unknown device",
+        });
+        await enterprise.enqueueJob("email", { to: user.email, ...rendered });
+      }
+    }
     const token = issueSessionToken(user);
     const session = verifySessionToken(token);
     return context.json({
@@ -385,7 +546,10 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/v1/app/check-update", async (context) => {
     const parsed = updateCheckSchema.safeParse(await context.req.json().catch(() => undefined));
     if (!parsed.success) return context.json({ error: { message: "Invalid app version." } }, 400);
-    const latest = await controlPlane.getLatestAppVersion();
+    const sessionToken = requestBearer(context.req.header("authorization"));
+    const session = sessionToken ? verifySessionToken(sessionToken) : undefined;
+    const latest = await enterprise.getEligibleAppVersion(session?.sub)
+      ?? (options.enterpriseStore ? undefined : await controlPlane.getLatestAppVersion());
     return context.json({
       updateAvailable: Boolean(latest && latest.versionCode > parsed.data.versionCode),
       latest: latest ?? null,
@@ -598,7 +762,9 @@ export function createApp(options: CreateAppOptions = {}) {
     const parsed = userCreateSchema.safeParse(await context.req.json().catch(() => undefined));
     if (!parsed.success) return context.json({ error: { message: "Invalid user request.", details: parsed.error.issues } }, 400);
     try {
-      return context.json({ data: await controlPlane.createUser(parsed.data) }, 201);
+      const user = await controlPlane.createUser(parsed.data);
+      await enterprise.assignDefaultGroup(user.id);
+      return context.json({ data: user }, 201);
     } catch (error) {
       return context.json({ error: { message: error instanceof Error ? error.message : "Unable to create user." } }, 400);
     }
@@ -744,7 +910,278 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/admin/config", async (context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
-    return context.json(publicRemoteConfig(await controlPlane.getModels()));
+    return context.json(await remoteConfig());
+  });
+
+  app.get("/admin/email/settings", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await enterprise.getEmailSettings() });
+  });
+
+  app.put("/admin/email/settings", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = emailSettingsSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid SMTP configuration.", details: parsed.error.issues } }, 400);
+    if (parsed.data.enabled && (!parsed.data.host || !parsed.data.fromEmail)) {
+      return context.json({ error: { message: "An SMTP host and sender email are required before email can be enabled." } }, 400);
+    }
+    return context.json({ data: await enterprise.updateEmailSettings(parsed.data) });
+  });
+
+  app.get("/admin/email/templates", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await enterprise.listEmailTemplates() });
+  });
+
+  app.patch("/admin/email/templates/:trigger", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const trigger = z.enum(["suspicious_login", "announcement", "version_update"]).safeParse(context.req.param("trigger"));
+    const parsed = emailTemplatePatchSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!trigger.success || !parsed.success) return context.json({ error: { message: "Invalid email template update." } }, 400);
+    const template = await enterprise.updateEmailTemplate(trigger.data, parsed.data);
+    return template ? context.json({ data: template }) : context.json({ error: { message: "Email template was not found." } }, 404);
+  });
+
+  app.post("/admin/email/preview", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = emailPreviewSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid email preview request." } }, 400);
+    const stored = await enterprise.getEmailTemplate(parsed.data.trigger);
+    if (!stored) return context.json({ error: { message: "Email template was not found." } }, 404);
+    const rendered = renderEmailTemplate({
+      subject: parsed.data.subject ?? stored.subject,
+      htmlBody: parsed.data.htmlBody ?? stored.htmlBody,
+    }, parsed.data.variables);
+    return context.json({ data: rendered });
+  });
+
+  app.post("/admin/email/test", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = z.object({ to: z.email().max(320) }).safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "A valid test recipient is required." } }, 400);
+    const job = await enterprise.enqueueJob("email", {
+      to: parsed.data.to,
+      subject: "Adaptive Chat SMTP test",
+      html: "<!doctype html><html><body><h1>SMTP is configured</h1><p>This message was dispatched by the Adaptive Chat background worker.</p></body></html>",
+    });
+    return context.json({ data: job }, 202);
+  });
+
+  app.post("/admin/email/announcements", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = announcementSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid announcement." } }, 400);
+    const template = await enterprise.getEmailTemplate("announcement");
+    if (!template?.enabled) return context.json({ error: { message: "The announcement template is disabled." } }, 409);
+    const rendered = renderEmailTemplate(template, { title: parsed.data.title, message: parsed.data.message });
+    const recipients = await enterprise.listGroupEmails(parsed.data.groupId);
+    const jobs = await Promise.all(recipients.map((to) => enterprise.enqueueJob("email", { to, ...rendered })));
+    return context.json({ data: { recipientCount: recipients.length, jobIds: jobs.map((job) => job.id) } }, 202);
+  });
+
+  app.get("/admin/dynamic-channels", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await enterprise.listDynamicChannels(true) });
+  });
+
+  app.post("/admin/dynamic-channels", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = dynamicChannelSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success || !parsed.data.endpoint || !parsed.data.secret) {
+      return context.json({ error: { message: "A valid channel, upstream endpoint, and API key are required.", details: parsed.success ? undefined : parsed.error.issues } }, 400);
+    }
+    try {
+      const input = parsed.data;
+      const existingRoutes = await controlPlane.listModelRoutes();
+      const collision = input.models.find((model) => existingRoutes.some((route) => route.id === model.id));
+      if (collision) return context.json({ error: { message: `Model id ${collision.id} is already in use.` } }, 409);
+      const key = await controlPlane.createProviderKey({
+        provider: input.provider,
+        label: `${input.displayName} upstream`,
+        endpoint: input.endpoint!,
+        secret: input.secret!,
+        priority: input.priority,
+      });
+      for (const model of input.models) {
+        await controlPlane.createModelRoute({ ...model, provider: input.provider, uiMode: input.slug, aliases: [], enabled: input.enabled });
+      }
+      await controlPlane.setRoutingPolicy("channel", input.slug, [key.id]);
+      const { endpoint: _endpoint, secret: _secret, priority: _priority, ...channelInput } = input;
+      const channel = await enterprise.createDynamicChannel({ ...channelInput, providerKeyId: key.id });
+      return context.json({ data: channel }, 201);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to create dynamic channel." } }, 400);
+    }
+  });
+
+  app.patch("/admin/dynamic-channels/:id", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = dynamicChannelPatchSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid dynamic channel update.", details: parsed.error.issues } }, 400);
+    const existing = (await enterprise.listDynamicChannels(true)).find((channel) => channel.id === context.req.param("id"));
+    if (!existing) return context.json({ error: { message: "Dynamic channel was not found." } }, 404);
+    try {
+      const input = parsed.data;
+      if ((input.slug && input.slug !== existing.slug) || (input.provider && input.provider !== existing.provider)) {
+        return context.json({ error: { message: "Channel and provider identifiers cannot be changed after creation." } }, 409);
+      }
+      if (existing.providerKeyId && (input.endpoint !== undefined || input.secret !== undefined || input.priority !== undefined)) {
+        await controlPlane.updateProviderKey(existing.providerKeyId, {
+          endpoint: input.endpoint,
+          secret: input.secret,
+          priority: input.priority,
+        });
+      }
+      if (input.models) {
+        const routes = await controlPlane.listModelRoutes();
+        for (const model of input.models) {
+          const route = routes.find((item) => item.id === model.id);
+          if (route && route.uiMode !== existing.slug) throw new Error(`Model id ${model.id} is already owned by another channel.`);
+        }
+        const nextModelIds = new Set(input.models.map((model) => model.id));
+        await Promise.all(existing.models
+          .filter((model) => !nextModelIds.has(model.id))
+          .map((model) => controlPlane.updateModelRoute(model.id, { enabled: false })));
+        for (const model of input.models) {
+          const route = routes.find((item) => item.id === model.id);
+          if (route) {
+            await controlPlane.updateModelRoute(model.id, {
+              provider: existing.provider,
+              upstreamModel: model.upstreamModel,
+              label: model.label,
+              description: model.description,
+              enabled: input.enabled ?? existing.enabled,
+            });
+          } else {
+            await controlPlane.createModelRoute({
+              ...model,
+              provider: existing.provider,
+              uiMode: existing.slug,
+              aliases: [],
+              enabled: input.enabled ?? existing.enabled,
+            });
+          }
+        }
+      } else if (input.enabled !== undefined) {
+        await Promise.all(existing.models.map((model) => controlPlane.updateModelRoute(model.id, { enabled: input.enabled })));
+      }
+      const { endpoint: _endpoint, secret: _secret, priority: _priority, ...channelPatch } = input;
+      const channel = await enterprise.updateDynamicChannel(existing.id, channelPatch);
+      return context.json({ data: channel });
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to update dynamic channel." } }, 400);
+    }
+  });
+
+  app.delete("/admin/dynamic-channels/:id", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const existing = (await enterprise.listDynamicChannels(true)).find((channel) => channel.id === context.req.param("id"));
+    if (!existing) return context.json({ error: { message: "Dynamic channel was not found." } }, 404);
+    await Promise.all(existing.models.map((model) => controlPlane.updateModelRoute(model.id, { enabled: false })));
+    await controlPlane.deleteRoutingPolicy("channel", existing.slug);
+    if (existing.providerKeyId) await controlPlane.updateProviderKey(existing.providerKeyId, { status: "disabled" });
+    await enterprise.deleteDynamicChannel(existing.id);
+    return context.body(null, 204);
+  });
+
+  app.get("/admin/user-groups", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const [groups, users] = await Promise.all([enterprise.listUserGroups(), controlPlane.listUsers()]);
+    const memberships = Object.fromEntries(await Promise.all(users.map(async (user) => [user.id, await enterprise.getUserGroupIds(user.id)])));
+    return context.json({ data: groups, memberships });
+  });
+
+  app.post("/admin/user-groups", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = userGroupSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid user group." } }, 400);
+    try { return context.json({ data: await enterprise.createUserGroup(parsed.data) }, 201); }
+    catch (error) { return context.json({ error: { message: error instanceof Error ? error.message : "Unable to create user group." } }, 400); }
+  });
+
+  app.patch("/admin/user-groups/:id", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = userGroupPatchSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid user group update." } }, 400);
+    const group = await enterprise.updateUserGroup(context.req.param("id"), parsed.data);
+    return group ? context.json({ data: group }) : context.json({ error: { message: "User group was not found." } }, 404);
+  });
+
+  app.put("/admin/users/:id/groups", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = userMembershipSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid user group membership." } }, 400);
+    await enterprise.setUserGroups(context.req.param("id"), parsed.data.groupIds);
+    return context.json({ data: { userId: context.req.param("id"), groupIds: await enterprise.getUserGroupIds(context.req.param("id")) } });
+  });
+
+  app.get("/admin/backups", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await enterprise.listBackupDestinations() });
+  });
+
+  app.post("/admin/backups", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = backupSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success || !parsed.data.credentials) return context.json({ error: { message: "A valid backup destination and encryption credentials are required." } }, 400);
+    const validationError = backupValidationError(parsed.data);
+    if (validationError) return context.json({ error: { message: validationError } }, 400);
+    try { return context.json({ data: await enterprise.createBackupDestination(parsed.data as BackupDestinationInput) }, 201); }
+    catch (error) { return context.json({ error: { message: error instanceof Error ? error.message : "Unable to create backup destination." } }, 400); }
+  });
+
+  app.patch("/admin/backups/:id", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = backupSchema.partial().refine((value) => Object.keys(value).length > 0).safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid backup destination update." } }, 400);
+    const existingBackup = (await enterprise.listBackupDestinations()).find((item) => item.id === context.req.param("id"));
+    if (!existingBackup) return context.json({ error: { message: "Backup destination was not found." } }, 404);
+    const validationError = backupValidationError({ ...existingBackup, ...parsed.data });
+    if (validationError) return context.json({ error: { message: validationError } }, 400);
+    const backup = await enterprise.updateBackupDestination(context.req.param("id"), parsed.data);
+    return backup ? context.json({ data: backup }) : context.json({ error: { message: "Backup destination was not found." } }, 404);
+  });
+
+  app.delete("/admin/backups/:id", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return await enterprise.deleteBackupDestination(context.req.param("id"))
+      ? context.body(null, 204)
+      : context.json({ error: { message: "Backup destination was not found." } }, 404);
+  });
+
+  const triggerBackup = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = z.object({ configId: z.string().trim().min(1).max(120) }).safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success || !(await enterprise.getBackupExecutionConfig(parsed.data.configId))) {
+      return context.json({ error: { message: "A valid backup destination is required." } }, 400);
+    }
+    return context.json({ data: await enterprise.enqueueJob("backup", { configId: parsed.data.configId }) }, 202);
+  };
+  app.post("/admin/backups/trigger", triggerBackup);
+  app.post("/v1/admin/backups/trigger", triggerBackup);
+
+  const queueBuild = (ring: "beta" | "production") => async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = buildSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid Android build request." } }, 400);
+    const betaGroup = ring === "beta" ? (await enterprise.listUserGroups()).find((group) => group.releaseRing === "beta") : undefined;
+    const job = await enterprise.enqueueJob("build", {
+      ...parsed.data,
+      ring,
+      audienceGroupId: betaGroup?.id ?? null,
+    }, 1);
+    return context.json({ data: job }, 202);
+  };
+  const queueBetaBuild = queueBuild("beta");
+  const queueProductionBuild = queueBuild("production");
+  app.post("/admin/builds/beta", queueBetaBuild);
+  app.post("/v1/admin/builds/beta", queueBetaBuild);
+  app.post("/admin/builds/production", queueProductionBuild);
+  app.post("/v1/admin/builds/production", queueProductionBuild);
+
+  app.get("/admin/jobs", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await enterprise.listJobs() });
   });
 
   app.notFound((context) => context.json({ error: { message: "Route not found." } }, 404));
@@ -756,14 +1193,16 @@ export function createApp(options: CreateAppOptions = {}) {
 }
 
 export async function startServer() {
+  // Enterprise tables reference the core routing/user tables, so bootstrap them in order.
   const controlPlane = await createPostgresControlPlane();
-  const app = createApp({ controlPlane });
+  const enterpriseStore = await createPostgresEnterpriseStore();
+  const app = createApp({ controlPlane, enterpriseStore });
   const port = Number(process.env.API_PORT ?? 8787);
   const server = serve({ fetch: app.fetch, port });
   console.log(`Adaptive Chat API listening on http://localhost:${port}`);
   const shutdown = async () => {
     server.close();
-    await controlPlane.close();
+    await Promise.all([controlPlane.close(), enterpriseStore.close()]);
   };
   process.once("SIGINT", () => void shutdown());
   process.once("SIGTERM", () => void shutdown());

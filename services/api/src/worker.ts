@@ -1,0 +1,323 @@
+import { createHash, randomBytes, scryptSync, createCipheriv } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
+import { copyFile, mkdir, rename, stat, unlink } from "node:fs/promises";
+import { basename, join, relative, resolve } from "node:path";
+import { spawn } from "node:child_process";
+import { pipeline } from "node:stream/promises";
+import { pathToFileURL } from "node:url";
+import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { CronExpressionParser } from "cron-parser";
+import nodemailer from "nodemailer";
+import {
+  createPostgresEnterpriseStore,
+  renderEmailTemplate,
+  type BackgroundJob,
+  type BackupExecutionConfig,
+  type EnterpriseStore,
+} from "./enterprise.js";
+
+const logTime = () => new Date().toISOString();
+
+async function runCommand(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+  onLine?: (line: string) => Promise<void>,
+) {
+  return new Promise<void>((resolveCommand, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    const consume = (chunk: Buffer, isError: boolean) => {
+      const value = chunk.toString("utf8");
+      if (isError) stderr = `${stderr}${value}`.slice(-8_000);
+      for (const line of value.split(/\r?\n/).filter(Boolean)) void onLine?.(line);
+    };
+    child.stdout.on("data", (chunk: Buffer) => consume(chunk, false));
+    child.stderr.on("data", (chunk: Buffer) => consume(chunk, true));
+    child.once("error", reject);
+    child.once("close", (code) => code === 0
+      ? resolveCommand()
+      : reject(new Error(`${command} exited with code ${code}: ${stderr.trim()}`)));
+  });
+}
+
+async function sha256File(path: string) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
+  return hash.digest("hex");
+}
+
+export async function encryptBackup(sourcePath: string, targetPath: string, passphrase: string) {
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = scryptSync(passphrase, salt, 32);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const header = Buffer.from(`ACBACKUP1\n${JSON.stringify({
+    version: 1,
+    cipher: "aes-256-gcm",
+    kdf: "scrypt",
+    salt: salt.toString("base64url"),
+    iv: iv.toString("base64url"),
+    authTagBytes: 16,
+  })}\n`, "utf8");
+
+  async function* encryptedChunks() {
+    yield header;
+    for await (const chunk of createReadStream(sourcePath)) yield cipher.update(chunk as Buffer);
+    yield cipher.final();
+    yield cipher.getAuthTag();
+  }
+
+  await pipeline(encryptedChunks(), createWriteStream(targetPath, { mode: 0o600 }));
+}
+
+function postgresEnvironment(databaseUrl: string) {
+  const url = new URL(databaseUrl);
+  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") throw new Error("DATABASE_URL must use PostgreSQL.");
+  return {
+    PGHOST: url.hostname,
+    PGPORT: url.port || "5432",
+    PGUSER: decodeURIComponent(url.username),
+    PGPASSWORD: decodeURIComponent(url.password),
+    PGDATABASE: decodeURIComponent(url.pathname.replace(/^\//, "")),
+  };
+}
+
+function localDestination(config: BackupExecutionConfig, filename: string) {
+  const root = resolve(process.env.BACKUP_LOCAL_ROOT ?? "/backups");
+  const requested = config.localDirectory || root;
+  const configured = requested.startsWith("/") ? resolve(requested) : resolve(root, requested);
+  const traversal = relative(root, configured);
+  if (traversal.startsWith("..") || traversal === "..") throw new Error("Local backup path must stay inside BACKUP_LOCAL_ROOT.");
+  return { directory: configured, path: join(configured, filename) };
+}
+
+async function uploadBackup(config: BackupExecutionConfig, encryptedPath: string, filename: string) {
+  if (config.protocol === "local") {
+    const destination = localDestination(config, filename);
+    await mkdir(destination.directory, { recursive: true, mode: 0o700 });
+    try { await rename(encryptedPath, destination.path); }
+    catch { await copyFile(encryptedPath, destination.path); await unlink(encryptedPath); }
+    return destination.path;
+  }
+
+  if (config.protocol === "webdav") {
+    const base = new URL(config.webdavUrl.endsWith("/") ? config.webdavUrl : `${config.webdavUrl}/`);
+    const destination = new URL(encodeURIComponent(filename), base);
+    const authorization = config.credentials.username
+      ? `Basic ${Buffer.from(`${config.credentials.username}:${config.credentials.password ?? ""}`).toString("base64")}`
+      : undefined;
+    const response = await fetch(destination, {
+      method: "PUT",
+      headers: { "Content-Type": "application/octet-stream", ...(authorization ? { Authorization: authorization } : {}) },
+      body: createReadStream(encryptedPath) as unknown as BodyInit,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    if (!response.ok) throw new Error(`WebDAV upload failed with HTTP ${response.status}.`);
+    await unlink(encryptedPath);
+    return destination.toString();
+  }
+
+  const key = [config.s3Prefix.replace(/^\/+|\/+$/g, ""), filename].filter(Boolean).join("/");
+  const client = new S3Client({
+    region: config.s3Region,
+    endpoint: config.s3Endpoint || undefined,
+    forcePathStyle: config.s3ForcePathStyle,
+    credentials: config.credentials.accessKeyId && config.credentials.secretAccessKey
+      ? { accessKeyId: config.credentials.accessKeyId, secretAccessKey: config.credentials.secretAccessKey }
+      : undefined,
+  });
+  await client.send(new PutObjectCommand({
+    Bucket: config.s3Bucket,
+    Key: key,
+    Body: createReadStream(encryptedPath),
+    ContentType: "application/octet-stream",
+    Metadata: { format: "adaptive-chat-backup-v1" },
+  }));
+  client.destroy();
+  await unlink(encryptedPath);
+  return `s3://${config.s3Bucket}/${key}`;
+}
+
+async function executeEmail(store: EnterpriseStore, job: BackgroundJob) {
+  const config = await store.getSmtpDeliveryConfig();
+  if (!config.enabled) throw new Error("SMTP delivery is disabled.");
+  if (!config.host || !config.fromEmail) throw new Error("SMTP host and sender address are not configured.");
+  const to = String(job.payload.to ?? "");
+  const subject = String(job.payload.subject ?? "");
+  const html = String(job.payload.html ?? "");
+  if (!to || !subject || !html) throw new Error("Email job payload is incomplete.");
+  const transport = nodemailer.createTransport({
+    host: config.host,
+    port: config.port,
+    secure: config.secure,
+    auth: config.username ? { user: config.username, pass: config.password } : undefined,
+    connectionTimeout: 15_000,
+    socketTimeout: 30_000,
+  });
+  const result = await transport.sendMail({
+    from: { name: config.fromName, address: config.fromEmail },
+    to,
+    subject,
+    html,
+  });
+  transport.close();
+  return { messageId: result.messageId, accepted: result.accepted.map(String), recipient: to };
+}
+
+async function executeBackup(store: EnterpriseStore, job: BackgroundJob) {
+  const configId = String(job.payload.configId ?? "");
+  const config = await store.getBackupExecutionConfig(configId);
+  if (!config) throw new Error("Backup destination was not found.");
+  if (!config.credentials.encryptionPassphrase) throw new Error("Backup encryption passphrase is missing.");
+  const runId = await store.startBackupRun(config.id, job.id);
+  const tempRoot = resolve(process.env.BACKUP_TEMP_ROOT ?? "/tmp/adaptive-chat-backups");
+  await mkdir(tempRoot, { recursive: true, mode: 0o700 });
+  const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+  const rawPath = join(tempRoot, `${runId}.dump`);
+  const filename = `adaptive-chat-${timestamp}.dump.acb`;
+  const encryptedPath = join(tempRoot, `${runId}.acb`);
+  try {
+    await store.appendJobLog(job.id, "Creating PostgreSQL custom-format snapshot");
+    await runCommand("pg_dump", ["--format=custom", "--no-owner", "--no-acl", "--file", rawPath], {
+      env: postgresEnvironment(process.env.DATABASE_URL ?? "postgresql://adaptive_chat:adaptive_chat@postgres:5432/adaptive_chat"),
+    }, (line) => store.appendJobLog(job.id, line));
+    await store.appendJobLog(job.id, "Encrypting snapshot with AES-256-GCM");
+    await encryptBackup(rawPath, encryptedPath, config.credentials.encryptionPassphrase);
+    await unlink(rawPath);
+    const [checksum, fileStats] = await Promise.all([sha256File(encryptedPath), stat(encryptedPath)]);
+    await store.appendJobLog(job.id, `Uploading ${fileStats.size} encrypted bytes to ${config.protocol}`);
+    const location = await uploadBackup(config, encryptedPath, filename);
+    const result = { runId, location, bytes: fileStats.size, checksum };
+    await store.finishBackupRun(runId, { status: "succeeded", ...result });
+    return result;
+  } catch (error) {
+    await Promise.allSettled([unlink(rawPath), unlink(encryptedPath)]);
+    const message = error instanceof Error ? error.message : "Backup failed.";
+    await store.finishBackupRun(runId, { status: "failed", error: message });
+    throw error;
+  }
+}
+
+async function executeBuild(store: EnterpriseStore, job: BackgroundJob) {
+  const versionCode = Number(job.payload.versionCode);
+  const versionName = String(job.payload.versionName ?? "");
+  const releaseNotes = String(job.payload.releaseNotes ?? "");
+  const ring = job.payload.ring === "beta" ? "beta" : "production";
+  const audienceGroupId = typeof job.payload.audienceGroupId === "string" ? job.payload.audienceGroupId : null;
+  if (!Number.isInteger(versionCode) || !versionName) throw new Error("Build job version is invalid.");
+  const projectRoot = resolve(process.env.ANDROID_PROJECT_ROOT ?? "/workspace");
+  await store.appendJobLog(job.id, `Compiling Android ${versionName} for the ${ring} ring`);
+  await runCommand("./gradlew", [
+    ":app:assembleDebug",
+    `-PadaptiveVersionCode=${versionCode}`,
+    `-PadaptiveVersionName=${versionName}`,
+    `-PadaptiveReleaseRing=${ring}`,
+    "--no-daemon",
+    "--max-workers=1",
+    "-Pkotlin.compiler.execution.strategy=in-process",
+    "--console=plain",
+  ], { cwd: projectRoot }, (line) => store.appendJobLog(job.id, line));
+
+  const source = join(projectRoot, "app/build/outputs/apk/debug/app-debug.apk");
+  const outputRoot = resolve(process.env.APK_OUTPUT_DIR ?? "/artifacts");
+  await mkdir(outputRoot, { recursive: true, mode: 0o755 });
+  const filename = `adaptive-chat-${versionName}-${ring}.apk`.replace(/[^a-zA-Z0-9._-]/g, "-");
+  const target = join(outputRoot, filename);
+  await copyFile(source, target);
+  const checksum = await sha256File(target);
+  const publicBase = (process.env.PUBLIC_API_BASE_URL ?? "https://chatapi.zengjunjie.com").replace(/\/$/, "");
+  const downloadUrl = `${publicBase}/downloads/${basename(target)}`;
+  const release = await store.createRelease({
+    versionCode,
+    versionName,
+    downloadUrl,
+    releaseNotes,
+    isActive: true,
+    releaseRing: ring,
+    audienceGroupId: ring === "beta" ? audienceGroupId : null,
+  });
+
+  const [template, smtp] = await Promise.all([
+    store.getEmailTemplate("version_update"),
+    store.getSmtpDeliveryConfig(),
+  ]);
+  if (template?.enabled && smtp.enabled) {
+    const rendered = renderEmailTemplate(template, { versionName, releaseNotes, downloadUrl });
+    const recipients = await store.listGroupEmails(ring === "beta" ? audienceGroupId ?? undefined : undefined);
+    await Promise.all(recipients.map((to) => store.enqueueJob("email", { to, ...rendered })));
+  } else if (template?.enabled) {
+    await store.appendJobLog(job.id, "SMTP is disabled; release notification fan-out was skipped");
+  }
+  return { releaseId: release.id, ring, downloadUrl, sha256: checksum };
+}
+
+async function scheduleBackups(store: EnterpriseStore) {
+  const now = new Date();
+  for (const config of await store.listBackupDestinations()) {
+    if (!config.enabled) continue;
+    try {
+      const previous = CronExpressionParser.parse(config.scheduleCron, { currentDate: now }).prev().toDate();
+      const last = config.lastScheduledAt ? new Date(config.lastScheduledAt) : undefined;
+      if (!last || last < previous) {
+        await store.markBackupScheduled(config.id, now.toISOString());
+        await store.enqueueJob("backup", { configId: config.id, scheduled: true });
+      }
+    } catch (error) {
+      console.error(`[${logTime()}] Invalid backup schedule for ${config.id}`, error);
+    }
+  }
+}
+
+async function processJob(store: EnterpriseStore, id: string) {
+  const job = await store.claimJob(id);
+  if (!job) return;
+  await store.appendJobLog(job.id, `Worker started ${job.type} job at ${logTime()}`);
+  try {
+    const result = job.type === "email"
+      ? await executeEmail(store, job)
+      : job.type === "backup"
+        ? await executeBackup(store, job)
+        : await executeBuild(store, job);
+    await store.completeJob(job.id, result);
+    console.log(`[${logTime()}] Completed ${job.type} job ${job.id}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Background job failed.";
+    await store.appendJobLog(job.id, message);
+    await store.failJob(job.id, message);
+    console.error(`[${logTime()}] Failed ${job.type} job ${job.id}: ${message}`);
+  }
+}
+
+export async function startWorker() {
+  const store = await createPostgresEnterpriseStore();
+  let running = true;
+  let nextScheduleCheck = 0;
+  const stop = () => { running = false; };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  console.log(`[${logTime()}] Adaptive Chat worker is ready`);
+  try {
+    while (running) {
+      if (Date.now() >= nextScheduleCheck) {
+        await scheduleBackups(store);
+        nextScheduleCheck = Date.now() + 60_000;
+      }
+      const id = await store.waitForJob(5);
+      if (id) await processJob(store, id);
+    }
+  } finally {
+    await store.close();
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void startWorker().catch((error) => {
+    console.error("Unable to start Adaptive Chat worker", error);
+    process.exitCode = 1;
+  });
+}

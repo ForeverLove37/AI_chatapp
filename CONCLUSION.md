@@ -1,70 +1,84 @@
-# Iteration 3 Conclusion
+# Iteration 4 Conclusion
 
 ## Outcome
 
-Iteration 3 is implemented, verified, and deployed. The Android client now has
-the requested UX corrections, Markdown and multimodal input, persisted response
-branching, and network-to-device speech fallback. The Admin Console can edit
-existing users and reset passwords through the persistent PostgreSQL control
-plane.
+Iteration 4 is implemented, verified, and deployed. The platform now has
+persistent enterprise orchestration for email, dynamic channels, release rings,
+encrypted backups, and Redis-backed background work. The Android client consumes
+the live channel catalog without requiring a new app build for each provider.
 
 ## Delivered
 
-- Recalibrated channel/model selectors with bounded widths, explicit margins,
-  balanced spacing, and fixed 18-20 dp icon sizing based on the supplied visual
-  anomaly.
-- Settings now consumes system back navigation, conversation deletion requires
-  a blocking confirmation, and the chat composer plus newest message react to
-  IME insets without being obscured by the keyboard.
-- Assistant messages render basic Markdown (bold, italic, inline/fenced code,
-  and lists) and expose Copy, Branch, Listen, and terminal-only Redo actions.
-- Room schema version 3 persists image attachments. Branching clones history
-  through the selected message in one transaction into an independent session;
-  Redo overwrites only the terminal assistant response and restores it if the
-  network retry fails.
-- Native Android speech recognition populates the composer. JPEG, PNG, WEBP,
-  and GIF attachments use OpenAI Chat Completions content arrays with data URL
-  `image_url` parts and remain available to the sliding context window.
-- Authenticated `/v1/audio/speech` uses Edge TTS with a 12-second server/client
-  deadline. Android falls back to the device `TextToSpeech` engine for network
-  errors, timeouts, rate limits, empty audio, or playback failures.
-- The Admin Console edits role, status, quotas, and optional replacement
-  passwords. Protected `PATCH`/`PUT /v1/users/{id}` endpoints hash replacement
-  passwords before PostgreSQL persistence and never return password material.
-- The npm production tree pins patched PostCSS and sharp releases. The final
-  production audit reports no known vulnerabilities.
+- Added encrypted SMTP configuration, editable HTML templates, a sandboxed live
+  preview, test delivery, announcements, and new-IP sign-in alerts. Templates
+  escape runtime values, credentials remain server-side, and automatic release
+  email fan-out is skipped cleanly while SMTP is disabled.
+- Added the no-code Dynamic Channel Builder. Admins can configure an arbitrary
+  OpenAI-compatible provider, server-only key, upstream model mappings, icon,
+  gradient, accent/surface/text colors, typography, animation, priority, and
+  visibility. `/v1/config` exposes only safe client tokens and model aliases.
+- Refactored Android channel/model types into a runtime catalog. Compose applies
+  downloaded icons, colors, gradients, typography, and animated backgrounds;
+  channel switching still changes the UI while model switching changes only the
+  OpenAI-compatible API payload. Existing Room history remains compatible.
+- Added Standard and Beta user groups with persistent membership management.
+  Build Beta targets `grp_beta`; Publish Production targets all users. OTA update
+  selection is authenticated and release-ring aware.
+- Added a PostgreSQL-backed build/release pipeline with persisted logs and APK
+  checksums. Release notifications are queued only when SMTP is enabled.
+- Added scheduled encrypted backups for local storage, WebDAV, and S3-compatible
+  services. Backups stream through `pg_dump`, AES-256-GCM encryption, and the
+  selected destination without buffering the complete archive in memory.
+- Added the `ACBACKUP1` restore utility and a precise recovery runbook covering
+  decryption, `pg_restore`, Redis queue recovery, validation, and rollback.
+- Added the Redis worker for email, backup, and Android build jobs with durable
+  PostgreSQL status/logs, retries, stale-job recovery, and non-blocking API
+  requests. PostgreSQL, Redis, backup data, and APK artifacts use persistent
+  Docker volumes or host storage.
+- Expanded the Admin Console with Email, Channels, Groups & builds, Backups &
+  recovery, and Jobs views. The deployed console remains protected by Nginx HTTP
+  Basic Auth and proxies authenticated Admin API calls through Next.js.
 
 ## Verification
 
-- Android: 5 unit tests passed; `testDebugUnitTest` and `assembleDebug` completed
-  successfully. The APK is `com.zengjunjie.adaptivechat`, version code 4,
-  version name `1.2.0`, target SDK 36, and includes the microphone permission
-  plus adaptive launcher icons.
-- APK SHA-256:
-  `0d18184a51df53b25c6c1f295a3db4140fde47544df9a422244fd8167ba73558`.
-  The local and publicly downloaded files match exactly.
-- Gateway: TypeScript build passed and all 9 API tests passed, including the
-  protected password-update and TTS contracts.
-- Admin: Next.js production build and TypeScript validation passed with the
-  patched dependency tree. `npm audit --omit=dev` reports 0 vulnerabilities.
-- Production: PostgreSQL and Redis remained healthy; the recreated API reports
-  relay mode with OpenAI, Gemini, and DeepSeek providers configured. The Admin
-  Console returns an immediate Basic Auth challenge and HTTP 200 after valid
-  authentication.
-- A controlled production account test rejected the old password immediately
-  after reset, accepted the replacement password, completed a real OpenAI-format
-  image request with HTTP 200, and received 16,992 bytes of `audio/mpeg` from
-  Edge TTS. The verification account was suspended afterward.
-- The active release record is version `1.2.0`: version code 3 receives an
-  update, while version code 4 is reported current.
+- API and worker: TypeScript build passed; 13 Vitest tests passed across two test
+  files, including runtime Qwen publication, suspicious-IP queuing, release-ring
+  jobs, backup triggering, and encrypted backup/restore round trips.
+- Admin: the Next.js 16 production build and TypeScript validation passed. All six
+  new deployed Admin data surfaces return HTTP 200 through the authenticated API.
+- Android: Kotlin compilation and all 5 unit tests passed. APK metadata reports
+  package `com.zengjunjie.adaptivechat`, version code 5, version `1.3.0`, target
+  SDK 36, application label `Adaptive Chat`, and adaptive launcher resources.
+- Security: `npm audit --omit=dev` reports 0 vulnerabilities. Public console
+  access immediately returns HTTP 401 with `WWW-Authenticate: Basic`; valid
+  credentials return HTTP 200. The API health route returns HTTPS 200.
+- Database: all nine Iteration 4 tables are present. Standard and Beta groups are
+  seeded, and existing accounts were assigned to Standard during migration.
+- Queue and backup: a live Redis job produced a full encrypted PostgreSQL snapshot
+  in persistent storage (40,358 bytes), recorded its checksum, and finished as
+  `succeeded`; the Redis pending queue then returned to zero.
+- Release pipeline: production `1.3.0` was compiled and published globally. Beta
+  `1.3.0-beta.1` was separately compiled with audience `grp_beta`. Both jobs
+  succeeded, both public downloads return HTTP 200, and their file hashes match
+  the worker records. The disabled-SMTP guard was verified on the beta build.
+- Runtime: API, Admin, worker, PostgreSQL, and Redis containers are running;
+  health checks pass and Nginx configuration validation succeeds.
 
 ## Access
 
 - Admin Console: `https://console.zengjunjie.com`
 - API Gateway: `https://chatapi.zengjunjie.com`
-- APK download:
-  `https://chatapi.zengjunjie.com/downloads/adaptive-chat-1.2.0.apk`
-- Local APK: `app/build/outputs/apk/debug/app-debug.apk`
+- Production APK:
+  `https://chatapi.zengjunjie.com/downloads/adaptive-chat-1.3.0-production.apk`
+- Beta APK:
+  `https://chatapi.zengjunjie.com/downloads/adaptive-chat-1.3.0-beta.1-beta.apk`
+- Local production APK:
+  `app/build/outputs/apk/iteration4/adaptive-chat-1.3.0-production.apk`
+- Canonical local APK: `app/build/outputs/apk/debug/app-debug.apk`
+- Production SHA-256:
+  `a468a97d472ab8fb065a8ff061676b57deb362d2c9b87f961bf626cd2036d432`
+- Beta SHA-256:
+  `3a917d2096600007c42b80daedfc352d62cc66727986e840ec9c7e4c87669422`
 
 Android visual validation remains with the Product Owner. No emulator, Xvfb,
 noVNC, Lavapipe, or other headless UI environment was used.

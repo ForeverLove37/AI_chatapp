@@ -66,21 +66,23 @@ data class AppCopy(
     val messagePlaceholder: (String) -> String,
     val welcome: (ProviderMode) -> String,
 ) {
-    fun providerName(provider: ProviderMode) = when (provider) {
-        ProviderMode.CHATGPT -> "ChatGPT"
-        ProviderMode.GEMINI -> "Gemini"
-        ProviderMode.DEEPSEEK -> "DeepSeek"
+    fun providerName(provider: ProviderMode) = when (provider.wireName) {
+        ProviderMode.CHATGPT.wireName -> "ChatGPT"
+        ProviderMode.GEMINI.wireName -> "Gemini"
+        ProviderMode.DEEPSEEK.wireName -> "DeepSeek"
+        else -> provider.displayName
     }
 
-    fun modelName(model: ChatModel) = when (model) {
-        ChatModel.CHATGPT_LITE -> if (this === ChineseCopy) "轻量" else "Lite"
-        ChatModel.CHATGPT_STANDARD -> if (this === ChineseCopy) "标准" else "Standard"
-        ChatModel.CHATGPT_PRO -> if (this === ChineseCopy) "专业" else "Pro"
-        ChatModel.GEMINI_FLASH -> if (this === ChineseCopy) "极速" else "Flash"
-        ChatModel.GEMINI_STANDARD -> if (this === ChineseCopy) "标准" else "Standard"
-        ChatModel.GEMINI_EXTENDED -> if (this === ChineseCopy) "扩展" else "Extended"
-        ChatModel.DEEPSEEK_FLASH -> if (this === ChineseCopy) "极速" else "Flash"
-        ChatModel.DEEPSEEK_EXPERT -> if (this === ChineseCopy) "专家" else "Expert"
+    fun modelName(model: ChatModel) = when (model.wireName) {
+        ChatModel.CHATGPT_LITE.wireName -> if (this === ChineseCopy) "轻量" else "Lite"
+        ChatModel.CHATGPT_STANDARD.wireName -> if (this === ChineseCopy) "标准" else "Standard"
+        ChatModel.CHATGPT_PRO.wireName -> if (this === ChineseCopy) "专业" else "Pro"
+        ChatModel.GEMINI_FLASH.wireName -> if (this === ChineseCopy) "极速" else "Flash"
+        ChatModel.GEMINI_STANDARD.wireName -> if (this === ChineseCopy) "标准" else "Standard"
+        ChatModel.GEMINI_EXTENDED.wireName -> if (this === ChineseCopy) "扩展" else "Extended"
+        ChatModel.DEEPSEEK_FLASH.wireName -> if (this === ChineseCopy) "极速" else "Flash"
+        ChatModel.DEEPSEEK_EXPERT.wireName -> if (this === ChineseCopy) "专家" else "Expert"
+        else -> model.displayName
     }
 
     fun localizedError(message: String) = if (this === ChineseCopy) {
@@ -165,10 +167,11 @@ private val EnglishCopy = AppCopy(
     versionAvailable = { version -> "Version $version is available." },
     reasoning = { seconds -> "Reasoning ${seconds}s" },
     messagePlaceholder = { provider -> "Message $provider" },
-    welcome = { provider -> when (provider) {
-        ProviderMode.CHATGPT -> "How can I help today?"
-        ProviderMode.GEMINI -> "What's next?"
-        ProviderMode.DEEPSEEK -> "Start a precise session"
+    welcome = { provider -> when {
+        provider.isChatGpt -> "How can I help today?"
+        provider.isGemini -> "What's next?"
+        provider.isDeepSeek -> "Start a precise session"
+        else -> "Start a ${provider.displayName} conversation"
     } },
 )
 
@@ -228,10 +231,11 @@ private val ChineseCopy = AppCopy(
     versionAvailable = { version -> "发现新版本 $version。" },
     reasoning = { seconds -> "正在推理 ${seconds}秒" },
     messagePlaceholder = { provider -> "向 $provider 发送消息" },
-    welcome = { provider -> when (provider) {
-        ProviderMode.CHATGPT -> "今天想聊些什么？"
-        ProviderMode.GEMINI -> "接下来做什么？"
-        ProviderMode.DEEPSEEK -> "开始一次精确对话"
+    welcome = { provider -> when {
+        provider.isChatGpt -> "今天想聊些什么？"
+        provider.isGemini -> "接下来做什么？"
+        provider.isDeepSeek -> "开始一次精确对话"
+        else -> "开始 ${provider.displayName} 会话"
     } },
 )
 

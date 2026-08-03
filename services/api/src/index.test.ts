@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createApp } from "./index.js";
+import { MemoryEnterpriseStore } from "./enterprise.js";
 
 describe("Adaptive Chat API", () => {
   it("serves the advertised models and remote configuration", async () => {
@@ -21,6 +22,131 @@ describe("Adaptive Chat API", () => {
     ]));
     expect(config.status).toBe(200);
     expect((await config.json()).featureFlags.reasoningBlocks).toBe(true);
+  });
+
+  it("publishes no-code channels through config without exposing upstream credentials", async () => {
+    const app = createApp();
+    const headers = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    const create = await app.request("/admin/dynamic-channels", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        slug: "qwen",
+        displayName: "Qwen",
+        description: "Enterprise Qwen channel",
+        provider: "qwen",
+        endpoint: "https://qwen.example.test/v1",
+        secret: "qwen-server-only-secret",
+        priority: 20,
+        iconDataUrl: "",
+        backgroundStart: "#FFF3A6",
+        backgroundEnd: "#FFE066",
+        accentColor: "#B7791F",
+        textColor: "#2D2600",
+        surfaceColor: "#FFFFFF",
+        typography: "sans",
+        animatedGradient: true,
+        models: [{ id: "qwen-standard", label: "Standard", description: "Balanced", upstreamModel: "qwen-max" }],
+        enabled: true,
+        sortOrder: 40,
+      }),
+    });
+    expect(create.status).toBe(201);
+    const createText = await create.text();
+    expect(createText).not.toContain("qwen-server-only-secret");
+    const channelId = JSON.parse(createText).data.id as string;
+
+    const config = await app.request("/v1/config");
+    const payload = await config.json();
+    expect(payload.version).toBe(4);
+    expect(payload.channels.find((channel: { id: string }) => channel.id === "qwen")).toMatchObject({
+      displayName: "Qwen",
+      style: { backgroundStart: "#FFF3A6", animatedGradient: true },
+      models: [{ id: "qwen-standard", label: "Standard" }],
+    });
+    expect(JSON.stringify(payload)).not.toContain("qwen-max");
+    expect(JSON.stringify(payload)).not.toContain("qwen-server-only-secret");
+
+    const immutableProvider = await app.request(`/admin/dynamic-channels/${channelId}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ provider: "different-provider" }),
+    });
+    expect(immutableProvider.status).toBe(409);
+
+    const replaceModel = await app.request(`/admin/dynamic-channels/${channelId}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        models: [{ id: "qwen-expert", label: "Expert", description: "Deep analysis", upstreamModel: "qwen-max" }],
+      }),
+    });
+    expect(replaceModel.status).toBe(200);
+    const routes = await app.request("/admin/models", { headers });
+    expect((await routes.json()).data.find((route: { id: string }) => route.id === "qwen-standard").enabled).toBe(false);
+    const updatedConfig = await app.request("/v1/config");
+    expect((await updatedConfig.json()).channels.find((channel: { id: string }) => channel.id === "qwen").models)
+      .toEqual([{ id: "qwen-expert", label: "Expert", description: "Deep analysis" }]);
+  });
+
+  it("queues the exact rendered security alert after a successful login from a new IP", async () => {
+    const enterprise = new MemoryEnterpriseStore();
+    const app = createApp({ enterpriseStore: enterprise });
+    const headers = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    await app.request("/admin/email/settings", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ host: "smtp.example.test", port: 587, secure: false, username: "mailer", password: "smtp-secret", fromEmail: "security@example.test", fromName: "Adaptive Chat", enabled: true }),
+    });
+    const settings = await app.request("/admin/email/settings", { headers });
+    expect(await settings.text()).not.toContain("smtp-secret");
+    await app.request("/admin/users", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ email: "security@example.test", password: "security-password", role: "standard", rpmLimit: 60, dailyLimit: 1_000 }),
+    });
+    const loginBody = JSON.stringify({ email: "security@example.test", password: "security-password" });
+    expect((await app.request("/v1/auth/login", { method: "POST", headers: { "Content-Type": "application/json", "x-real-ip": "192.0.2.10" }, body: loginBody })).status).toBe(200);
+    expect((await app.request("/v1/auth/login", { method: "POST", headers: { "Content-Type": "application/json", "x-real-ip": "203.0.113.42", "user-agent": "Test Android" }, body: loginBody })).status).toBe(200);
+    const jobs = await app.request("/admin/jobs", { headers });
+    const queued = (await jobs.json()).data;
+    expect(queued).toHaveLength(1);
+    expect(queued[0].type).toBe("email");
+    expect(queued[0].payload.html).toContain("203.0.113.42");
+    expect(queued[0].payload.html).toContain("Test Android");
+  });
+
+  it("queues beta builds and manual encrypted backups through protected worker endpoints", async () => {
+    const app = createApp();
+    const headers = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    const backup = await app.request("/admin/backups", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: "Local recovery",
+        protocol: "local",
+        scheduleCron: "0 2 * * *",
+        enabled: true,
+        localDirectory: "/backups",
+        webdavUrl: "",
+        s3Endpoint: "",
+        s3Region: "us-east-1",
+        s3Bucket: "",
+        s3Prefix: "adaptive-chat",
+        s3ForcePathStyle: false,
+        credentials: { encryptionPassphrase: "strong-test-passphrase" },
+      }),
+    });
+    expect(backup.status).toBe(201);
+    const configId = (await backup.json()).data.id;
+    expect((await app.request("/v1/admin/backups/trigger", { method: "POST", headers, body: JSON.stringify({ configId }) })).status).toBe(202);
+    const build = await app.request("/v1/admin/builds/beta", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ versionCode: 20, versionName: "2.0.0-beta.1", releaseNotes: "Beta ring" }),
+    });
+    expect(build.status).toBe(202);
+    expect((await build.json()).data.payload).toMatchObject({ ring: "beta", audienceGroupId: "grp_beta" });
   });
 
   it("streams DeepSeek reasoning separately from response content in demo mode", async () => {

@@ -2,42 +2,94 @@ package com.zengjunjie.adaptivechat.data
 
 import java.util.UUID
 
-enum class ChatModel(
+data class ChatModel(
     val wireName: String,
     val channelWireName: String,
     val displayName: String,
+    val description: String = "",
 ) {
-    CHATGPT_LITE("chatgpt-lite", "openai", "Lite"),
-    CHATGPT_STANDARD("chatgpt-standard", "openai", "Standard"),
-    CHATGPT_PRO("chatgpt-pro", "openai", "Pro"),
-    GEMINI_FLASH("gemini-flash", "gemini", "Flash"),
-    GEMINI_STANDARD("gemini-standard", "gemini", "Standard"),
-    GEMINI_EXTENDED("gemini-extended", "gemini", "Extended"),
-    DEEPSEEK_FLASH("deepseek-flash", "deepseek", "Flash"),
-    DEEPSEEK_EXPERT("deepseek-expert", "deepseek", "Expert");
-
     companion object {
+        val CHATGPT_LITE = ChatModel("chatgpt-lite", "chatgpt", "Lite")
+        val CHATGPT_STANDARD = ChatModel("chatgpt-standard", "chatgpt", "Standard")
+        val CHATGPT_PRO = ChatModel("chatgpt-pro", "chatgpt", "Pro")
+        val GEMINI_FLASH = ChatModel("gemini-flash", "gemini", "Flash")
+        val GEMINI_STANDARD = ChatModel("gemini-standard", "gemini", "Standard")
+        val GEMINI_EXTENDED = ChatModel("gemini-extended", "gemini", "Extended")
+        val DEEPSEEK_FLASH = ChatModel("deepseek-flash", "deepseek", "Flash")
+        val DEEPSEEK_EXPERT = ChatModel("deepseek-expert", "deepseek", "Expert")
+        val entries = listOf(
+            CHATGPT_LITE, CHATGPT_STANDARD, CHATGPT_PRO,
+            GEMINI_FLASH, GEMINI_STANDARD, GEMINI_EXTENDED,
+            DEEPSEEK_FLASH, DEEPSEEK_EXPERT,
+        )
+
         fun fromWireName(value: String, fallback: ProviderMode): ChatModel =
             entries.firstOrNull { it.wireName == value && it.channelWireName == fallback.wireName }
-                ?: fallback.defaultModel
+                ?: fallback.models.firstOrNull { it.wireName == value }
+                ?: ChatModel(value, fallback.wireName, value.substringAfterLast('-').replaceFirstChar(Char::uppercase))
     }
 }
 
-enum class ProviderMode(
+data class ChannelStyle(
+    val backgroundStart: String,
+    val backgroundEnd: String,
+    val accentColor: String,
+    val textColor: String,
+    val surfaceColor: String,
+    val typography: String = "sans",
+    val animatedGradient: Boolean = false,
+)
+
+data class ProviderMode(
     val wireName: String,
     val displayName: String,
-    val defaultModel: ChatModel,
+    val description: String,
+    val iconDataUrl: String,
+    val style: ChannelStyle,
+    val models: List<ChatModel>,
 ) {
-    CHATGPT("openai", "ChatGPT", ChatModel.CHATGPT_LITE),
-    GEMINI("gemini", "Gemini", ChatModel.GEMINI_FLASH),
-    DEEPSEEK("deepseek", "DeepSeek", ChatModel.DEEPSEEK_FLASH);
-
-    val models: List<ChatModel>
-        get() = ChatModel.entries.filter { it.channelWireName == wireName }
+    val defaultModel: ChatModel get() = models.first()
+    val isChatGpt: Boolean get() = wireName == "chatgpt"
+    val isGemini: Boolean get() = wireName == "gemini"
+    val isDeepSeek: Boolean get() = wireName == "deepseek"
 
     companion object {
+        val CHATGPT = ProviderMode(
+            wireName = "chatgpt",
+            displayName = "ChatGPT",
+            description = "Minimal and focused",
+            iconDataUrl = "",
+            style = ChannelStyle("#FAFAFA", "#FAFAFA", "#1A1A1A", "#202123", "#FFFFFF"),
+            models = listOf(ChatModel.CHATGPT_LITE, ChatModel.CHATGPT_STANDARD, ChatModel.CHATGPT_PRO),
+        )
+        val GEMINI = ProviderMode(
+            wireName = "gemini",
+            displayName = "Gemini",
+            description = "Colorful Material intelligence",
+            iconDataUrl = "",
+            style = ChannelStyle("#EAF0FF", "#F7EEFF", "#315FD6", "#202124", "#FCFBFF", animatedGradient = true),
+            models = listOf(ChatModel.GEMINI_FLASH, ChatModel.GEMINI_STANDARD, ChatModel.GEMINI_EXTENDED),
+        )
+        val DEEPSEEK = ProviderMode(
+            wireName = "deepseek",
+            displayName = "DeepSeek",
+            description = "Technical reasoning workspace",
+            iconDataUrl = "",
+            style = ChannelStyle("#F4FAF9", "#E2F0EE", "#00695C", "#17213A", "#F8FCFC", typography = "mono"),
+            models = listOf(ChatModel.DEEPSEEK_FLASH, ChatModel.DEEPSEEK_EXPERT),
+        )
+        val entries = listOf(CHATGPT, GEMINI, DEEPSEEK)
+
         fun fromWireName(value: String): ProviderMode =
-            entries.firstOrNull { it.wireName == value } ?: CHATGPT
+            entries.firstOrNull { it.wireName == value || (value == "openai" && it.isChatGpt) }
+                ?: ProviderMode(
+                    wireName = value,
+                    displayName = value.replace('-', ' ').replaceFirstChar(Char::uppercase),
+                    description = "",
+                    iconDataUrl = "",
+                    style = ChannelStyle("#F7F9F8", "#EEF3F1", "#087F73", "#172126", "#FFFFFF"),
+                    models = listOf(ChatModel("$value-standard", value, "Standard")),
+                )
     }
 }
 

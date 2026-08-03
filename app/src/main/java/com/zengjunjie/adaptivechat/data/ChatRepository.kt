@@ -182,7 +182,7 @@ class ChatRepository(
                 }
                 if (chunk.reasoning.isNotEmpty()) reasoning += chunk.reasoning
                 if (chunk.content.isNotEmpty()) {
-                    if (session.provider == ProviderMode.DEEPSEEK) {
+                    if (session.provider.isDeepSeek) {
                         val parsed = parser.consume(chunk.content)
                         response += parsed.content
                         reasoning += parsed.reasoning
@@ -191,7 +191,7 @@ class ChatRepository(
                     }
                 }
                 if (chunk.completed) {
-                    if (session.provider == ProviderMode.DEEPSEEK) {
+                    if (session.provider.isDeepSeek) {
                         val tail = parser.finish()
                         response += tail.content
                         reasoning += tail.reasoning
@@ -217,8 +217,10 @@ class ChatRepository(
 
     suspend fun login(email: String, password: String): LoginResult = chatApi.login(email, password)
 
-    suspend fun checkForUpdate(versionCode: Int, versionName: String): UpdateCheckResult =
-        chatApi.checkForUpdate(versionCode, versionName)
+    suspend fun fetchRemoteConfig(): RemoteConfig = chatApi.fetchConfig()
+
+    suspend fun checkForUpdate(accessToken: String, versionCode: Int, versionName: String): UpdateCheckResult =
+        chatApi.checkForUpdate(accessToken, versionCode, versionName)
 
     suspend fun submitFeedback(
         accessToken: String,

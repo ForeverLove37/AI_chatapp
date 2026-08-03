@@ -54,6 +54,7 @@ data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val provider: ProviderMode = ProviderMode.CHATGPT,
     val model: ChatModel = ChatModel.CHATGPT_LITE,
+    val channels: List<ProviderMode> = ProviderMode.entries,
     val account: AppPreferencesState = AppPreferencesState(),
     val destination: AppDestination = AppDestination.CHAT,
     val isLoggingIn: Boolean = false,
@@ -79,6 +80,7 @@ class ChatViewModel(
     private val loginError = MutableStateFlow<String?>(null)
     private val updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
     private val feedbackState = MutableStateFlow<FeedbackState>(FeedbackState.Idle)
+    private val channelCatalog = MutableStateFlow(ProviderMode.entries)
 
     private val sessions = repository.observeSessions().stateIn(
         scope = viewModelScope,
@@ -90,19 +92,27 @@ class ChatViewModel(
         if (sessionId == null) flowOf(emptyList()) else repository.observeMessages(sessionId)
     }
 
-    val uiState: StateFlow<ChatUiState> = combine(sessions, selectedSessionId, messages, preferences.state) {
+    val uiState: StateFlow<ChatUiState> = combine(sessions, selectedSessionId, messages, preferences.state, channelCatalog) {
             availableSessions,
             currentSessionId,
             currentMessages,
             account,
+            channels,
             ->
-        val selected = availableSessions.firstOrNull { it.id == currentSessionId }
+        fun resolveSession(session: ChatSession): ChatSession {
+            val provider = channels.firstOrNull { it.wireName == session.provider.wireName } ?: session.provider
+            val model = provider.models.firstOrNull { it.wireName == session.model.wireName } ?: provider.defaultModel
+            return session.copy(provider = provider, model = model)
+        }
+        val resolvedSessions = availableSessions.map(::resolveSession)
+        val selected = resolvedSessions.firstOrNull { it.id == currentSessionId }
         ChatUiState(
-            sessions = availableSessions,
+            sessions = resolvedSessions,
             selectedSession = selected,
             messages = currentMessages,
             provider = selected?.provider ?: ProviderMode.CHATGPT,
             model = selected?.model ?: ChatModel.CHATGPT_LITE,
+            channels = channels,
             account = account,
         )
     }.combine(isStreaming) { state, streaming ->
@@ -130,6 +140,10 @@ class ChatViewModel(
     init {
         viewModelScope.launch(Dispatchers.IO) {
             selectedSessionId.value = repository.getOrCreateDefaultSession().id
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repository.fetchRemoteConfig() }
+                .onSuccess { config -> channelCatalog.value = config.channels }
         }
     }
 
@@ -275,9 +289,10 @@ class ChatViewModel(
 
     fun checkForUpdates() {
         if (updateState.value is UpdateState.Checking) return
+        val accessToken = uiState.value.account.accessToken ?: return
         viewModelScope.launch(Dispatchers.IO) {
             updateState.value = UpdateState.Checking
-            runCatching { repository.checkForUpdate(BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME) }
+            runCatching { repository.checkForUpdate(accessToken, BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME) }
                 .onSuccess { result ->
                     updateState.value = when {
                         result.updateAvailable && result.latest != null -> UpdateState.Available(result.latest)

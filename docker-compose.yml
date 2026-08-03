@@ -42,6 +42,34 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  worker:
+    build:
+      context: .
+      dockerfile: services/api/worker.Dockerfile
+    environment:
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}
+      UPSTREAM_KEY_ENCRYPTION_SECRET: ${UPSTREAM_KEY_ENCRYPTION_SECRET:?Set UPSTREAM_KEY_ENCRYPTION_SECRET in .env}
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://${POSTGRES_USER:-adaptive_chat}:${POSTGRES_PASSWORD:-adaptive_chat}@postgres:5432/${POSTGRES_DB:-adaptive_chat}
+      ANDROID_PROJECT_ROOT: /workspace
+      ANDROID_SDK_ROOT: /workspace/.tooling/android-sdk
+      ANDROID_HOME: /workspace/.tooling/android-sdk
+      ANDROID_USER_HOME: /workspace/.tooling/android-user-home
+      GRADLE_USER_HOME: /workspace/.tooling/gradle-user-home
+      JAVA_HOME: /workspace/.tooling/jdk
+      APK_OUTPUT_DIR: /artifacts
+      BACKUP_LOCAL_ROOT: /backups
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-https://chatapi.zengjunjie.com}
+    volumes:
+      - ./app:/workspace/app
+      - ./.tooling:/workspace/.tooling
+      - /var/www/adaptive-chat-downloads:/artifacts
+      - backup_data:/backups
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres:
     image: postgres:17-alpine
     environment:
@@ -72,3 +100,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  backup_data:

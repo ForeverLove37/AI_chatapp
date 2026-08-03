@@ -47,6 +47,11 @@ data class UpdateCheckResult(
     val latest: RemoteAppVersion?,
 )
 
+data class RemoteConfig(
+    val version: Int,
+    val channels: List<ProviderMode>,
+)
+
 class ChatApi(baseUrl: String) {
     private val baseEndpoint = baseUrl.trimEnd('/')
     private val endpoint = "$baseEndpoint/v1/chat/completions"
@@ -124,6 +129,61 @@ class ChatApi(baseUrl: String) {
         awaitClose { eventSource.cancel() }
     }
 
+    suspend fun fetchConfig(): RemoteConfig = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseEndpoint/v1/config")
+            .header("Accept", "application/json")
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException("Configuration request failed with HTTP ${response.code}.")
+            val payload = runCatching { JSONObject(body) }.getOrElse { throw IOException("The server returned invalid configuration.") }
+            val values = payload.optJSONArray("channels") ?: JSONArray()
+            val channels = buildList {
+                for (index in 0 until values.length()) {
+                    val item = values.optJSONObject(index) ?: continue
+                    val id = item.optString("id").trim()
+                    val displayName = item.optString("displayName").trim()
+                    val modelsJson = item.optJSONArray("models") ?: JSONArray()
+                    if (id.isBlank() || displayName.isBlank() || modelsJson.length() == 0) continue
+                    val models = buildList {
+                        for (modelIndex in 0 until modelsJson.length()) {
+                            val model = modelsJson.optJSONObject(modelIndex) ?: continue
+                            val modelId = model.optString("id").trim()
+                            val label = model.optString("label").trim()
+                            if (modelId.isNotBlank() && label.isNotBlank()) {
+                                add(ChatModel(modelId, id, label, model.optString("description")))
+                            }
+                        }
+                    }
+                    if (models.isEmpty()) continue
+                    val style = item.optJSONObject("style") ?: JSONObject()
+                    val icon = item.optJSONObject("icon")
+                    add(
+                        ProviderMode(
+                            wireName = id,
+                            displayName = displayName,
+                            description = item.optString("description"),
+                            iconDataUrl = icon?.takeIf { it.optString("type") == "data_url" }?.optString("value").orEmpty(),
+                            style = ChannelStyle(
+                                backgroundStart = style.optString("backgroundStart", "#F7F9F8"),
+                                backgroundEnd = style.optString("backgroundEnd", "#EEF3F1"),
+                                accentColor = style.optString("accentColor", "#087F73"),
+                                textColor = style.optString("textColor", "#172126"),
+                                surfaceColor = style.optString("surfaceColor", "#FFFFFF"),
+                                typography = style.optString("typography", "sans"),
+                                animatedGradient = style.optBoolean("animatedGradient"),
+                            ),
+                            models = models,
+                        ),
+                    )
+                }
+            }
+            RemoteConfig(payload.optInt("version", 1), channels.ifEmpty { ProviderMode.entries })
+        }
+    }
+
     suspend fun login(email: String, password: String): LoginResult = postJson(
         path = "/v1/auth/login",
         payload = JSONObject().put("email", email).put("password", password),
@@ -135,9 +195,10 @@ class ChatApi(baseUrl: String) {
         LoginResult(accessToken = token, email = userEmail)
     }
 
-    suspend fun checkForUpdate(versionCode: Int, versionName: String): UpdateCheckResult = postJson(
+    suspend fun checkForUpdate(accessToken: String, versionCode: Int, versionName: String): UpdateCheckResult = postJson(
         path = "/v1/app/check-update",
         payload = JSONObject().put("versionCode", versionCode).put("versionName", versionName),
+        accessToken = accessToken,
     ) { body ->
         val latest = body.optJSONObject("latest")?.let { item ->
             RemoteAppVersion(
