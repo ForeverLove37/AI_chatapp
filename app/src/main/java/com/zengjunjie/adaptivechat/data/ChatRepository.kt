@@ -19,7 +19,10 @@ class ChatRepository(
     suspend fun getOrCreateDefaultSession(): ChatSession =
         chatDao.getLatestSession()?.toModel() ?: createSession()
 
-    suspend fun createSession(provider: ProviderMode = ProviderMode.CHATGPT): ChatSession {
+    suspend fun createSession(
+        provider: ProviderMode = ProviderMode.CHATGPT,
+        accessToken: String? = null,
+    ): ChatSession {
         val now = System.currentTimeMillis()
         val session = ChatSession(
             id = newId(),
@@ -30,23 +33,27 @@ class ChatRepository(
             updatedAt = now,
         )
         chatDao.upsertSession(session.toEntity())
+        if (accessToken != null) runCatching { syncSession(session.id, accessToken) }
         return session
     }
 
-    suspend fun updateChannel(sessionId: String, provider: ProviderMode) {
+    suspend fun updateChannel(sessionId: String, provider: ProviderMode, accessToken: String? = null) {
         chatDao.updateChannel(
             sessionId = sessionId,
             provider = provider.wireName,
             model = provider.defaultModel.wireName,
             updatedAt = System.currentTimeMillis(),
         )
+        if (accessToken != null) runCatching { syncSession(sessionId, accessToken) }
     }
 
-    suspend fun updateModel(sessionId: String, model: ChatModel) {
+    suspend fun updateModel(sessionId: String, model: ChatModel, accessToken: String? = null) {
         chatDao.updateModel(sessionId, model.wireName, System.currentTimeMillis())
+        if (accessToken != null) runCatching { syncSession(sessionId, accessToken) }
     }
 
-    suspend fun deleteSession(sessionId: String) {
+    suspend fun deleteSession(sessionId: String, accessToken: String? = null) {
+        if (accessToken != null) chatApi.deleteConversation(accessToken, sessionId)
         chatDao.deleteSessionWithMessages(sessionId)
     }
 
@@ -70,6 +77,8 @@ class ChatRepository(
             isStreaming = false,
             modelId = "",
             errorText = "",
+            parentMessageId = "",
+            updatedAt = now,
         )
         val assistantMessage = ChatMessage(
             id = newId(),
@@ -82,11 +91,14 @@ class ChatRepository(
             isStreaming = true,
             modelId = session.model.wireName,
             errorText = "",
+            parentMessageId = userMessage.id,
+            updatedAt = now + 1,
         )
         chatDao.upsertMessage(userMessage.toEntity())
         chatDao.upsertMessage(assistantMessage.toEntity())
         val title = text.ifBlank { attachments.firstOrNull()?.fileName ?: "New conversation" }
         chatDao.updateTitle(session.id, title.take(52), now)
+        runCatching { syncSession(session.id, accessToken) }
 
         val persistedMessages = chatDao.getMessages(session.id)
         streamAssistant(
@@ -122,6 +134,7 @@ class ChatRepository(
             model = session.model.wireName,
             updatedAt = System.currentTimeMillis(),
         )
+        runCatching { syncSession(session.id, accessToken) }
         try {
             streamAssistant(
                 session = session,
@@ -135,6 +148,7 @@ class ChatRepository(
                 message.copy(
                     isStreaming = false,
                     errorText = if (index == 0) error.persistedErrorText() else message.errorText,
+                    updatedAt = System.currentTimeMillis() + index,
                 )
             }
             chatDao.restoreMessageTail(
@@ -143,6 +157,7 @@ class ChatRepository(
                 messages = restoredTail,
                 updatedAt = System.currentTimeMillis(),
             )
+            runCatching { syncSession(session.id, accessToken) }
             throw error
         }
     }
@@ -173,6 +188,7 @@ class ChatRepository(
             isStreaming = false,
             model = "",
             errorText = "",
+            updatedAt = now,
         )
         val assistant = ChatMessageEntity(
             id = newId(),
@@ -185,9 +201,12 @@ class ChatRepository(
             isStreaming = true,
             model = session.model.wireName,
             errorText = "",
+            parentMessageId = original.id,
+            updatedAt = now,
         )
         chatDao.replaceUserMessageAndTail(editedUser, assistant, now)
         chatDao.updateTitle(session.id, text.ifBlank { attachments.firstOrNull()?.fileName ?: session.title }.take(52), now)
+        runCatching { syncSession(session.id, accessToken) }
         val sourceMessages = chatDao.getMessages(session.id).filterNot { it.id == assistant.id }
         streamAssistant(
             session = session,
@@ -199,16 +218,31 @@ class ChatRepository(
         )
     }
 
-    suspend fun deleteAssistantMessage(sessionId: String, messageId: String) {
+    suspend fun deleteAssistantMessage(sessionId: String, messageId: String, accessToken: String? = null) {
         val message = chatDao.getMessages(sessionId).firstOrNull { it.id == messageId }
             ?: throw IllegalArgumentException("The message was not found.")
         require(message.role == MessageRole.ASSISTANT.name) { "Only assistant messages can be deleted." }
+        if (accessToken != null) chatApi.deleteMessage(accessToken, messageId)
         check(chatDao.deleteMessageAndTouch(sessionId, messageId, System.currentTimeMillis())) {
             "The message could not be deleted."
         }
     }
 
-    suspend fun branchConversation(session: ChatSession, throughMessageId: String): ChatSession {
+    suspend fun deleteUserMessage(sessionId: String, messageId: String, accessToken: String? = null) {
+        val message = chatDao.getMessages(sessionId).firstOrNull { it.id == messageId }
+            ?: throw IllegalArgumentException("The message was not found.")
+        require(message.role == MessageRole.USER.name) { "Only user messages can be deleted with their response." }
+        if (accessToken != null) chatApi.deleteMessage(accessToken, messageId)
+        check(chatDao.deleteUserMessagePair(sessionId, messageId, System.currentTimeMillis())) {
+            "The message could not be deleted."
+        }
+    }
+
+    suspend fun branchConversation(
+        session: ChatSession,
+        throughMessageId: String,
+        accessToken: String? = null,
+    ): ChatSession {
         val sourceMessages = chatDao.getMessages(session.id)
         val lastIncludedIndex = sourceMessages.indexOfFirst { it.id == throughMessageId }
         require(lastIncludedIndex >= 0) { "The selected message was not found." }
@@ -220,15 +254,19 @@ class ChatRepository(
             title = "$baseTitle (branch)",
             updatedAt = now,
         )
+        val copiedIds = sourceMessages.take(lastIncludedIndex + 1).associate { it.id to newId() }
         val copiedMessages = sourceMessages.take(lastIncludedIndex + 1).mapIndexed { index, message ->
             message.copy(
-                id = newId(),
+                id = copiedIds.getValue(message.id),
                 sessionId = branch.id,
                 createdAt = now + index,
                 isStreaming = false,
+                parentMessageId = copiedIds[message.parentMessageId].orEmpty(),
+                updatedAt = now + index,
             )
         }
         chatDao.createSessionWithMessages(branch.toEntity(), copiedMessages)
+        if (accessToken != null) runCatching { syncSession(branch.id, accessToken) }
         return branch
     }
 
@@ -280,6 +318,7 @@ class ChatRepository(
                     model = session.model.wireName,
                     errorText = "",
                     isStreaming = !chunk.completed,
+                    updatedAt = System.currentTimeMillis(),
                 )
             }
         } catch (error: Throwable) {
@@ -293,9 +332,40 @@ class ChatRepository(
                 model = session.model.wireName,
                 errorText = streamFailure?.persistedErrorText().orEmpty(),
                 isStreaming = false,
+                updatedAt = System.currentTimeMillis(),
             )
             chatDao.touchSession(session.id, System.currentTimeMillis())
+            runCatching { syncSession(session.id, accessToken) }
         }
+    }
+
+    suspend fun synchronizeFromServer(accessToken: String) {
+        val remote = chatApi.fetchConversations(accessToken)
+        val remoteById = remote.associateBy { it.session.id }
+        val local = chatDao.getSessions()
+        for (snapshot in remote) {
+            val localSession = local.firstOrNull { it.id == snapshot.session.id }
+            if (localSession == null || snapshot.session.updatedAt >= localSession.updatedAt) {
+                chatDao.replaceSessionSnapshot(snapshot.session, snapshot.messages)
+            } else {
+                syncSession(localSession.id, accessToken)
+            }
+        }
+        for (session in local) {
+            if (session.id !in remoteById) {
+                val messages = chatDao.getMessages(session.id)
+                if (remote.isNotEmpty() && messages.isEmpty() && session.title == "New conversation") {
+                    chatDao.deleteSessionWithMessages(session.id)
+                } else {
+                    syncSession(session.id, accessToken)
+                }
+            }
+        }
+    }
+
+    private suspend fun syncSession(sessionId: String, accessToken: String) {
+        val session = chatDao.getSession(sessionId) ?: return
+        chatApi.upsertConversation(accessToken, session, chatDao.getMessages(sessionId))
     }
 
     suspend fun login(email: String, password: String): LoginResult = chatApi.login(email, password)
@@ -378,6 +448,8 @@ private fun ChatMessageEntity.toModel() = ChatMessage(
     isStreaming = isStreaming,
     modelId = model,
     errorText = errorText,
+    parentMessageId = parentMessageId,
+    updatedAt = updatedAt,
 )
 
 private fun ChatMessage.toEntity() = ChatMessageEntity(
@@ -391,6 +463,8 @@ private fun ChatMessage.toEntity() = ChatMessageEntity(
     isStreaming = isStreaming,
     model = modelId,
     errorText = errorText,
+    parentMessageId = parentMessageId,
+    updatedAt = updatedAt,
 )
 
 private fun List<ChatAttachment>.toJson(): String = JSONArray().apply {

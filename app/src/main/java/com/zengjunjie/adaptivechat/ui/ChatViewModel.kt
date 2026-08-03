@@ -23,8 +23,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -152,6 +155,19 @@ class ChatViewModel(
                     webSearchAvailable.value = config.webSearchEnabled
                 }
         }
+        viewModelScope.launch(Dispatchers.IO) {
+            preferences.state
+                .map { it.accessToken }
+                .distinctUntilChanged()
+                .collectLatest { accessToken ->
+                    if (!accessToken.isNullOrBlank()) {
+                        runCatching {
+                            repository.synchronizeFromServer(accessToken)
+                            repository.getOrCreateDefaultSession()
+                        }.onSuccess { session -> selectedSessionId.value = session.id }
+                    }
+                }
+        }
     }
 
     fun login(email: String, password: String) {
@@ -187,13 +203,16 @@ class ChatViewModel(
 
     fun createSession() {
         viewModelScope.launch(Dispatchers.IO) {
-            selectedSessionId.value = repository.createSession(uiState.value.provider).id
+            selectedSessionId.value = repository.createSession(
+                uiState.value.provider,
+                uiState.value.account.accessToken,
+            ).id
         }
     }
 
     fun deleteSession(sessionId: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.deleteSession(sessionId)
+            repository.deleteSession(sessionId, uiState.value.account.accessToken)
             if (selectedSessionId.value == sessionId) {
                 selectedSessionId.value = repository.getOrCreateDefaultSession().id
             }
@@ -203,7 +222,7 @@ class ChatViewModel(
     fun selectChannel(provider: ProviderMode) {
         val sessionId = selectedSessionId.value ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            repository.updateChannel(sessionId, provider)
+            repository.updateChannel(sessionId, provider, uiState.value.account.accessToken)
         }
     }
 
@@ -211,7 +230,7 @@ class ChatViewModel(
         val sessionId = selectedSessionId.value ?: return
         if (model.channelWireName != uiState.value.provider.wireName) return
         viewModelScope.launch(Dispatchers.IO) {
-            repository.updateModel(sessionId, model)
+            repository.updateModel(sessionId, model, uiState.value.account.accessToken)
         }
     }
 
@@ -295,11 +314,19 @@ class ChatViewModel(
         }
     }
 
-    fun deleteAssistantMessage(messageId: String) {
+    fun deleteMessage(messageId: String) {
         val sessionId = uiState.value.selectedSession?.id ?: return
+        val accessToken = uiState.value.account.accessToken
+        val message = uiState.value.messages.firstOrNull { it.id == messageId } ?: return
         if (isStreaming.value) return
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { repository.deleteAssistantMessage(sessionId, messageId) }
+            runCatching {
+                if (message.role == com.zengjunjie.adaptivechat.data.MessageRole.USER) {
+                    repository.deleteUserMessage(sessionId, messageId, accessToken)
+                } else {
+                    repository.deleteAssistantMessage(sessionId, messageId, accessToken)
+                }
+            }
                 .onSuccess { errorMessage.value = null }
                 .onFailure { errorMessage.value = it.message ?: "Unable to delete the message." }
         }
@@ -310,7 +337,7 @@ class ChatViewModel(
         if (isStreaming.value) return
 
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { repository.branchConversation(session, messageId) }
+            runCatching { repository.branchConversation(session, messageId, uiState.value.account.accessToken) }
                 .onSuccess { branch -> selectedSessionId.value = branch.id }
                 .onFailure { errorMessage.value = it.message ?: "Unable to create a conversation branch." }
         }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./index.js";
 import { MemoryEnterpriseStore } from "./enterprise.js";
+import { SearchUnavailableError } from "./search.js";
 
 describe("Adaptive Chat API", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -96,7 +97,7 @@ describe("Adaptive Chat API", () => {
     const seeded = await app.request("/v1/admin/search-providers", { headers });
     expect(seeded.status).toBe(200);
     expect((await seeded.json()).data.map((item: { kind: string }) => item.kind))
-      .toEqual(expect.arrayContaining(["duckduckgo", "tavily", "serpapi"]));
+      .toEqual(expect.arrayContaining(["duckduckgo", "bing_rss", "tavily", "serpapi"]));
 
     const created = await app.request("/v1/admin/search-providers", {
       method: "POST",
@@ -120,7 +121,19 @@ describe("Adaptive Chat API", () => {
 
   it("injects web results into an otherwise standard OpenAI request", async () => {
     const upstream = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+      const body = JSON.parse(String(init?.body)) as {
+        stream: boolean;
+        messages: Array<{ role: string; content: string }>;
+        tools?: unknown[];
+      };
+      if (upstream.mock.calls.length === 1) {
+        expect(body.stream).toBe(false);
+        expect(body.tools).toHaveLength(1);
+        return new Response(JSON.stringify({ error: { message: "Tools are not supported." } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
       expect(body.messages.map((message) => message.role)).toEqual(["system", "user"]);
       expect(body.messages[0].content).toContain("untrusted external evidence");
       expect(body.messages[0].content).toContain("https://news.example.test/current");
@@ -152,7 +165,186 @@ describe("Adaptive Chat API", () => {
       body: JSON.stringify({ model: "chatgpt-lite", messages: [{ role: "user", content: "What happened today?" }] }),
     });
     expect(response.status).toBe(200);
-    expect(upstream).toHaveBeenCalledOnce();
+    expect(upstream).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps internal tool calls out of the final SSE stream and appends a terminal event", async () => {
+    const upstream = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        stream: boolean;
+        messages: Array<Record<string, unknown>>;
+        tool_choice?: string;
+      };
+      if (upstream.mock.calls.length === 1) {
+        expect(body.stream).toBe(false);
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_gateway_search",
+                type: "function",
+                function: { name: "web_search", arguments: JSON.stringify({ query: "verified current status" }) },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      expect(body.stream).toBe(true);
+      expect(body.tool_choice).toBe("none");
+      expect(body.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
+      expect(String(body.messages[2].content)).toContain("https://source.example.test/status");
+      const encoder = new TextEncoder();
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode("data: {\"choices\":[{\"delta\":{\"content\":\"Ground"));
+          controller.enqueue(encoder.encode("ed response\"},\"finish_reason\":null}]}\n\n"));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } });
+    });
+    vi.stubGlobal("fetch", upstream);
+    const executeSearch = vi.fn()
+      .mockRejectedValueOnce(new SearchUnavailableError(["generated query returned no results"]))
+      .mockResolvedValueOnce({
+        providerId: "search_test",
+        providerName: "Test Search",
+        query: "Check status",
+        results: [{ title: "Current status", url: "https://source.example.test/status", snippet: "Verified status" }],
+      });
+    const app = createApp({
+      demoMode: false,
+      executeSearch,
+    });
+    const adminHeaders = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    await app.request("/admin/provider-keys", {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ provider: "openai", label: "SSE upstream", endpoint: "https://llm.example.test/chat", secret: "llm-key", priority: 1 }),
+    });
+    const response = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Web-Search": "true" },
+      body: JSON.stringify({ model: "chatgpt-lite", stream: true, messages: [{ role: "user", content: "Check status" }] }),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const stream = await response.text();
+    expect(stream).toContain("Grounded response");
+    expect(stream).toContain("data: [DONE]");
+    expect(stream).not.toContain("call_gateway_search");
+    expect(upstream).toHaveBeenCalledTimes(2);
+    expect(executeSearch).toHaveBeenNthCalledWith(1, expect.any(Array), "verified current status");
+    expect(executeSearch).toHaveBeenNthCalledWith(2, expect.any(Array), "Check status");
+  });
+
+  it("synchronizes user-owned conversations and cascades paired response deletion", async () => {
+    const app = createApp();
+    const adminHeaders = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    await app.request("/admin/users", {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({
+        email: "sync@example.test",
+        password: "synchronized-password",
+        role: "standard",
+        rpmLimit: 60,
+        dailyLimit: 1_000,
+      }),
+    });
+    const login = await app.request("/v1/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "sync@example.test", password: "synchronized-password" }),
+    });
+    const token = (await login.json()).token as string;
+    const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+    const createdAt = 1_800_000_000_000;
+    const snapshot = {
+      id: "session-sync-test",
+      title: "Shared history",
+      channelId: "deepseek",
+      modelId: "deepseek-expert",
+      systemPrompt: "Be precise.",
+      createdAt,
+      updatedAt: createdAt + 10,
+      messages: [
+        {
+          id: "message-user",
+          role: "user",
+          content: "Explain the result",
+          attachments: [],
+          reasoning: "",
+          modelId: "",
+          errorText: "",
+          parentMessageId: null,
+          createdAt: createdAt + 1,
+          updatedAt: createdAt + 1,
+        },
+        {
+          id: "message-assistant",
+          role: "assistant",
+          content: "The result is synchronized.",
+          attachments: [],
+          reasoning: "Checked the constraints.",
+          modelId: "deepseek-expert",
+          errorText: "",
+          parentMessageId: "message-user",
+          createdAt: createdAt + 2,
+          updatedAt: createdAt + 2,
+        },
+      ],
+    };
+    expect((await app.request("/v1/sessions", { method: "POST", headers, body: JSON.stringify(snapshot) })).status).toBe(201);
+    const synchronized = await app.request("/v1/sessions", { headers });
+    expect((await synchronized.json()).data[0]).toMatchObject({
+      id: "session-sync-test",
+      messages: [
+        { id: "message-user", role: "user" },
+        { id: "message-assistant", role: "assistant", parentMessageId: "message-user" },
+      ],
+    });
+
+    const deletion = await app.request("/v1/messages/message-user", { method: "DELETE", headers });
+    expect(deletion.status).toBe(200);
+    expect((await deletion.json()).data.deletedIds.sort()).toEqual(["message-assistant", "message-user"]);
+    const afterDelete = await app.request("/v1/sessions/session-sync-test", { headers });
+    expect((await afterDelete.json()).data.messages).toEqual([]);
+
+    const staleWrite = await app.request("/v1/sessions/session-sync-test", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ ...snapshot, id: undefined }),
+    });
+    expect(staleWrite.status).toBe(200);
+    expect((await staleWrite.json()).data.messages).toEqual([]);
+
+    const replacementAt = snapshot.updatedAt + 5_000;
+    const replacement = {
+      ...snapshot,
+      id: undefined,
+      updatedAt: replacementAt,
+      messages: [{ ...snapshot.messages[0], updatedAt: replacementAt }],
+    };
+    const replaced = await app.request("/v1/sessions/session-sync-test", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify(replacement),
+    });
+    expect(replaced.status).toBe(200);
+    expect((await replaced.json()).data.messages.map((message: { id: string }) => message.id)).toEqual(["message-user"]);
+  });
+
+  it("allows only the three production browser origins", async () => {
+    const app = createApp();
+    const allowed = await app.request("/v1/config", { headers: { Origin: "https://chat.zengjunjie.com" } });
+    expect(allowed.status).toBe(200);
+    expect(allowed.headers.get("access-control-allow-origin")).toBe("https://chat.zengjunjie.com");
+
+    const denied = await app.request("/v1/config", { headers: { Origin: "https://untrusted.example.test" } });
+    expect(denied.status).toBe(403);
+    expect(denied.headers.get("access-control-allow-origin")).toBeNull();
   });
 
   it("requires explicit API confirmation flow support and protects the final administrator", async () => {

@@ -124,6 +124,8 @@ data class ChatMessage(
     val isStreaming: Boolean,
     val modelId: String,
     val errorText: String,
+    val parentMessageId: String = "",
+    val updatedAt: Long = createdAt,
 )
 
 /**

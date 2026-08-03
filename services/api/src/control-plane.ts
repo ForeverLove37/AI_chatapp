@@ -177,6 +177,7 @@ export interface ControlPlane {
   changeActiveStreams(delta: number): Promise<number>;
   getOverview(): Promise<Overview>;
   listUsers(): Promise<UserRecord[]>;
+  getUser(id: string): Promise<UserRecord | undefined>;
   createUser(input: CreateUserInput): Promise<UserRecord>;
   updateUser(id: string, patch: UpdateUserInput): Promise<UserRecord | undefined>;
   deleteUser(id: string): Promise<boolean>;
@@ -508,6 +509,13 @@ export class MemoryControlPlane implements ControlPlane {
     return [...this.users.values()]
       .sort((left, right) => left.email.localeCompare(right.email))
       .map(({ passwordHash: _passwordHash, ...user }) => user);
+  }
+
+  async getUser(id: string) {
+    const user = this.users.get(id);
+    if (!user) return undefined;
+    const { passwordHash: _passwordHash, ...view } = user;
+    return view;
   }
 
   async createUser(input: CreateUserInput) {
@@ -1077,6 +1085,11 @@ export class PostgresControlPlane implements ControlPlane {
   async listUsers() {
     const result = await this.pool.query<Record<string, unknown>>("SELECT * FROM users ORDER BY created_at DESC");
     return result.rows.map(userFromRow);
+  }
+
+  async getUser(id: string) {
+    const result = await this.pool.query<Record<string, unknown>>("SELECT * FROM users WHERE id = $1", [id]);
+    return result.rows[0] ? userFromRow(result.rows[0]) : undefined;
   }
 
   async createUser(input: CreateUserInput) {

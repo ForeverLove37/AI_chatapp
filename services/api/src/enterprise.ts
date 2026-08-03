@@ -13,7 +13,7 @@ export type JobType = "email" | "backup" | "build";
 export type JobStatus = "queued" | "running" | "retrying" | "succeeded" | "failed";
 export type ReleaseRing = "beta" | "production";
 export type BackupProtocol = "local" | "webdav" | "s3";
-export type SearchProviderKind = "duckduckgo" | "tavily" | "serpapi";
+export type SearchProviderKind = "duckduckgo" | "bing_rss" | "tavily" | "serpapi";
 
 export type EmailSettings = {
   host: string;
@@ -503,7 +503,7 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
         id TEXT PRIMARY KEY,
         slug TEXT NOT NULL UNIQUE,
         display_name TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK (kind IN ('duckduckgo', 'tavily', 'serpapi')),
+        kind TEXT NOT NULL CHECK (kind IN ('duckduckgo', 'bing_rss', 'tavily', 'serpapi')),
         endpoint TEXT NOT NULL,
         encrypted_api_key TEXT NOT NULL DEFAULT '',
         priority INTEGER NOT NULL DEFAULT 100 CHECK (priority >= 0 AND priority <= 100000),
@@ -512,6 +512,18 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      DO $$
+      DECLARE kind_constraint TEXT;
+      BEGIN
+        SELECT pg_get_constraintdef(oid) INTO kind_constraint
+        FROM pg_constraint
+        WHERE conrelid = 'search_providers'::regclass AND conname = 'search_providers_kind_check';
+        IF kind_constraint IS NULL OR kind_constraint NOT LIKE '%bing_rss%' THEN
+          ALTER TABLE search_providers DROP CONSTRAINT IF EXISTS search_providers_kind_check;
+          ALTER TABLE search_providers ADD CONSTRAINT search_providers_kind_check
+            CHECK (kind IN ('duckduckgo', 'bing_rss', 'tavily', 'serpapi'));
+        END IF;
+      END $$;
       CREATE INDEX IF NOT EXISTS search_providers_routing_idx ON search_providers(enabled, priority, created_at);
       CREATE TABLE IF NOT EXISTS user_groups (
         id TEXT PRIMARY KEY,
@@ -603,6 +615,7 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
     await this.pool.query(
       `INSERT INTO search_providers (id, slug, display_name, kind, endpoint, priority, max_results, enabled) VALUES
        ('search_duckduckgo', 'duckduckgo', 'DuckDuckGo Instant Answers', 'duckduckgo', 'https://api.duckduckgo.com/', 10, 5, TRUE),
+       ('search_bing_rss', 'bing-rss', 'Bing Search RSS', 'bing_rss', 'https://www.bing.com/search', 15, 5, TRUE),
        ('search_tavily', 'tavily', 'Tavily Search', 'tavily', 'https://api.tavily.com/search', 20, 5, FALSE),
        ('search_serpapi', 'serpapi', 'SerpApi Google Search', 'serpapi', 'https://serpapi.com/search.json', 30, 5, FALSE)
        ON CONFLICT (slug) DO NOTHING`,
@@ -1028,6 +1041,11 @@ export class MemoryEnterpriseStore implements EnterpriseStore {
     ["search_duckduckgo", {
       id: "search_duckduckgo", slug: "duckduckgo", displayName: "DuckDuckGo Instant Answers", kind: "duckduckgo",
       endpoint: "https://api.duckduckgo.com/", priority: 10, maxResults: 5, enabled: true, apiKeyConfigured: false,
+      apiKey: "", createdAt: nowIso(), updatedAt: nowIso(),
+    }],
+    ["search_bing_rss", {
+      id: "search_bing_rss", slug: "bing-rss", displayName: "Bing Search RSS", kind: "bing_rss",
+      endpoint: "https://www.bing.com/search", priority: 15, maxResults: 5, enabled: true, apiKeyConfigured: false,
       apiKey: "", createdAt: nowIso(), updatedAt: nowIso(),
     }],
     ["search_tavily", {

@@ -12,6 +12,7 @@ WORKDIR /workspace
 
 COPY package.json package-lock.json ./
 COPY apps/admin/package.json ./apps/admin/package.json
+COPY apps/web/package.json ./apps/web/package.json
 COPY services/api/package.json ./services/api/package.json
 RUN npm ci
 

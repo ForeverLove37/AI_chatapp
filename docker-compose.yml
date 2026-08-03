@@ -11,7 +11,7 @@ services:
       AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:-}
       AUTH_TOKEN_TTL_SECONDS: ${AUTH_TOKEN_TTL_SECONDS:-604800}
       REQUIRE_CLIENT_AUTH: ${REQUIRE_CLIENT_AUTH:-true}
-      CORS_ORIGINS: ${CORS_ORIGINS:-https://console.zengjunjie.com}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://console.zengjunjie.com,https://chatapi.zengjunjie.com,https://chat.zengjunjie.com}
       REDIS_URL: redis://redis:6379
       DATABASE_URL: postgresql://${POSTGRES_USER:-adaptive_chat}:${POSTGRES_PASSWORD:-adaptive_chat}@postgres:5432/${POSTGRES_DB:-adaptive_chat}
     ports:
@@ -37,6 +37,19 @@ services:
       ADMIN_API_KEY: ${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}
     ports:
       - "127.0.0.1:3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: https://chatapi.zengjunjie.com
+    ports:
+      - "127.0.0.1:3001:3001"
     depends_on:
       api:
         condition: service_healthy

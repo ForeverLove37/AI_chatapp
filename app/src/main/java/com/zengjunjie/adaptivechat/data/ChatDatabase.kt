@@ -40,12 +40,20 @@ data class ChatMessageEntity(
     val isStreaming: Boolean,
     @ColumnInfo(defaultValue = "''") val model: String = "",
     @ColumnInfo(defaultValue = "''") val errorText: String = "",
+    @ColumnInfo(defaultValue = "''") val parentMessageId: String = "",
+    @ColumnInfo(defaultValue = "0") val updatedAt: Long = createdAt,
 )
 
 @Dao
 interface ChatDao {
     @Query("SELECT * FROM chat_sessions ORDER BY updatedAt DESC")
     fun observeSessions(): Flow<List<ChatSessionEntity>>
+
+    @Query("SELECT * FROM chat_sessions ORDER BY updatedAt DESC")
+    suspend fun getSessions(): List<ChatSessionEntity>
+
+    @Query("SELECT * FROM chat_sessions WHERE id = :sessionId LIMIT 1")
+    suspend fun getSession(sessionId: String): ChatSessionEntity?
 
     @Query("SELECT * FROM chat_sessions ORDER BY updatedAt DESC LIMIT 1")
     suspend fun getLatestSession(): ChatSessionEntity?
@@ -77,7 +85,7 @@ interface ChatDao {
     @Query("UPDATE chat_sessions SET updatedAt = :updatedAt WHERE id = :sessionId")
     suspend fun touchSession(sessionId: String, updatedAt: Long)
 
-    @Query("UPDATE chat_messages SET content = :content, reasoning = :reasoning, model = :model, errorText = :errorText, isStreaming = :isStreaming WHERE id = :messageId")
+    @Query("UPDATE chat_messages SET content = :content, reasoning = :reasoning, model = :model, errorText = :errorText, isStreaming = :isStreaming, updatedAt = :updatedAt WHERE id = :messageId")
     suspend fun updateAssistantMessage(
         messageId: String,
         content: String,
@@ -85,10 +93,14 @@ interface ChatDao {
         model: String,
         errorText: String,
         isStreaming: Boolean,
+        updatedAt: Long,
     )
 
     @Query("DELETE FROM chat_messages WHERE id = :messageId AND sessionId = :sessionId")
     suspend fun deleteMessage(sessionId: String, messageId: String): Int
+
+    @Query("DELETE FROM chat_messages WHERE sessionId = :sessionId AND (id = :userMessageId OR parentMessageId = :userMessageId)")
+    suspend fun deleteUserMessageAndChildren(sessionId: String, userMessageId: String): Int
 
     @Query("DELETE FROM chat_messages WHERE sessionId = :sessionId AND createdAt > :createdAt")
     suspend fun deleteMessagesAfter(sessionId: String, createdAt: Long)
@@ -115,10 +127,27 @@ interface ChatDao {
     }
 
     @Transaction
+    suspend fun replaceSessionSnapshot(session: ChatSessionEntity, messages: List<ChatMessageEntity>) {
+        upsertSession(session)
+        deleteMessagesForSession(session.id)
+        upsertMessages(messages)
+    }
+
+    @Transaction
     suspend fun deleteMessageAndTouch(sessionId: String, messageId: String, updatedAt: Long): Boolean {
         val deleted = deleteMessage(sessionId, messageId) > 0
         if (deleted) touchSession(sessionId, updatedAt)
         return deleted
+    }
+
+    @Transaction
+    suspend fun deleteUserMessagePair(sessionId: String, messageId: String, updatedAt: Long): Boolean {
+        val messages = getMessages(sessionId)
+        val ids = pairedDeletionIds(messages, messageId)
+        if (ids.isEmpty()) return false
+        ids.forEach { deleteMessage(sessionId, it) }
+        touchSession(sessionId, updatedAt)
+        return true
     }
 
     @Transaction
@@ -142,7 +171,7 @@ interface ChatDao {
         updatedAt: Long,
     ) {
         deleteMessagesAfter(sessionId, createdAt)
-        updateAssistantMessage(messageId, "", "", model, "", true)
+        updateAssistantMessage(messageId, "", "", model, "", true, updatedAt)
         touchSession(sessionId, updatedAt)
     }
 
@@ -159,9 +188,22 @@ interface ChatDao {
     }
 }
 
+internal fun pairedDeletionIds(messages: List<ChatMessageEntity>, messageId: String): Set<String> {
+    val targetIndex = messages.indexOfFirst { it.id == messageId }
+    val target = messages.getOrNull(targetIndex) ?: return emptySet()
+    require(target.role == MessageRole.USER.name) { "Only user messages can be deleted with their response." }
+    return buildSet {
+        add(target.id)
+        messages.forEach { message -> if (message.parentMessageId == target.id) add(message.id) }
+        messages.getOrNull(targetIndex + 1)
+            ?.takeIf { it.role == MessageRole.ASSISTANT.name && it.parentMessageId.isBlank() }
+            ?.let { add(it.id) }
+    }
+}
+
 @Database(
     entities = [ChatSessionEntity::class, ChatMessageEntity::class],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -187,6 +229,27 @@ abstract class ChatDatabase : RoomDatabase() {
                            ''
                        )
                        WHERE role = 'ASSISTANT'""".trimIndent(),
+                )
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN parentMessageId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE chat_messages SET updatedAt = createdAt WHERE updatedAt = 0")
+                db.execSQL(
+                    """UPDATE chat_messages
+                       SET parentMessageId = COALESCE(
+                           (SELECT user.id FROM chat_messages AS user
+                            WHERE user.sessionId = chat_messages.sessionId
+                              AND user.role = 'USER'
+                              AND user.createdAt < chat_messages.createdAt
+                            ORDER BY user.createdAt DESC
+                            LIMIT 1),
+                           ''
+                       )
+                       WHERE chat_messages.role = 'ASSISTANT'""".trimIndent(),
                 )
             }
         }

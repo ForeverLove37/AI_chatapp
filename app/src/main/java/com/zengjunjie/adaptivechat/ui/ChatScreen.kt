@@ -373,7 +373,7 @@ fun ChatScreen(
                     confirmButton = {
                         TextButton(
                             onClick = {
-                                if (deleting) viewModel.deleteAssistantMessage(pending.messageId)
+                                if (deleting) viewModel.deleteMessage(pending.messageId)
                                 else viewModel.branchConversation(pending.messageId)
                                 pendingMessageConfirmation = null
                             },
@@ -873,6 +873,7 @@ private fun MessageItem(
         buildList {
             add(MessageAction.COPY)
             if (isTerminalUser) add(MessageAction.EDIT)
+            add(MessageAction.DELETE)
         }
     } else {
         listOf(

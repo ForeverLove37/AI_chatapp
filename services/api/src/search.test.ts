@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SearchProviderExecutionConfig } from "./enterprise.js";
 import {
+  buildSearchToolDecisionRequest,
   buildSearchGroundingMessage,
   executeWebSearch,
   extractLatestUserQuery,
   injectSearchGrounding,
+  injectSearchToolResult,
+  parseWebSearchToolCall,
 } from "./search.js";
 
 const provider = (patch: Partial<SearchProviderExecutionConfig>): SearchProviderExecutionConfig => ({
@@ -59,6 +62,32 @@ describe("web search orchestration", () => {
     expect(String(tavilyInit.body)).not.toContain("server-only-key");
   });
 
+  it("parses the no-key Bing RSS fallback when Instant Answers has no result", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ RelatedTopics: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(`<?xml version="1.0"?>
+        <rss><channel><item><title>Current &amp; verified</title><link>https://source.example.test/current</link>
+        <description>Fresh public information.</description></item></channel></rss>`, {
+        status: 200,
+        headers: { "content-type": "text/xml" },
+      }));
+
+    const result = await executeWebSearch([
+      provider({ id: "ddg", kind: "duckduckgo", endpoint: "https://api.duckduckgo.com/", apiKey: "", apiKeyConfigured: false }),
+      provider({ id: "bing", kind: "bing_rss", endpoint: "https://www.bing.com/search", apiKey: "", apiKeyConfigured: false, priority: 15 }),
+    ], "current verified event", fetcher);
+
+    expect(result.providerId).toBe("bing");
+    expect(result.results[0]).toMatchObject({
+      title: "Current & verified",
+      url: "https://source.example.test/current",
+    });
+    expect(String(fetcher.mock.calls[1][0])).toContain("format=rss");
+  });
+
   it("retries a directive-heavy prompt with its first question", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ RelatedTopics: [] }), { status: 202, headers: { "content-type": "application/x-javascript" } }))
@@ -98,5 +127,31 @@ describe("web search orchestration", () => {
     expect(messages.map((message) => message.role)).toEqual(["system", "system", "user"]);
     expect(messages[1].content).toContain("untrusted external evidence");
     expect(messages[1].content).toContain("https://weather.example.test");
+  });
+
+  it("parses a web-search tool decision and creates valid assistant/tool history", () => {
+    const request = buildSearchToolDecisionRequest({
+      model: "internal-model",
+      stream: true,
+      messages: [{ role: "user", content: "What changed today?" }],
+    }, "upstream-model");
+    expect(request).toMatchObject({ model: "upstream-model", stream: false, tool_choice: "auto" });
+
+    const call = parseWebSearchToolCall({
+      choices: [{
+        message: {
+          role: "assistant",
+          tool_calls: [{
+            id: "call_search_1",
+            type: "function",
+            function: { name: "web_search", arguments: JSON.stringify({ query: "current verified change" }) },
+          }],
+        },
+      }],
+    });
+    expect(call).toMatchObject({ id: "call_search_1", query: "current verified change" });
+    const messages = injectSearchToolResult(request.messages, call!, "Grounded sources");
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
+    expect(messages[2]).toMatchObject({ tool_call_id: "call_search_1", content: "Grounded sources" });
   });
 });

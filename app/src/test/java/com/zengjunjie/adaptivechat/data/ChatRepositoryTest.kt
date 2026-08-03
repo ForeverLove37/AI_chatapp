@@ -86,6 +86,18 @@ class ChatRepositoryTest {
         assertEquals("Try again", window.single().content)
     }
 
+    @Test
+    fun deletingAUserMessageSelectsOnlyItsPairedAssistantResponse() {
+        val messages = listOf(
+            testMessage("user-1", "First"),
+            testMessage("assistant-1", "First answer").copy(role = "ASSISTANT", parentMessageId = "user-1"),
+            testMessage("user-2", "Second"),
+            testMessage("assistant-2", "Second answer").copy(role = "ASSISTANT", parentMessageId = "user-2"),
+        )
+
+        assertEquals(setOf("user-1", "assistant-1"), pairedDeletionIds(messages, "user-1"))
+    }
+
     private fun testMessage(id: String, content: String) = ChatMessageEntity(
         id = id,
         sessionId = "session",

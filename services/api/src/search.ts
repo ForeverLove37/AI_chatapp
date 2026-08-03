@@ -1,4 +1,5 @@
 import type { SearchProviderExecutionConfig } from "./enterprise.js";
+import { XMLParser } from "fast-xml-parser";
 
 export type SearchResult = {
   title: string;
@@ -13,12 +14,46 @@ export type WebSearchResponse = {
   results: SearchResult[];
 };
 
+export type WebSearchToolCall = {
+  id: string;
+  query: string;
+  raw: Record<string, unknown>;
+};
+
+export const WEB_SEARCH_TOOL = {
+  type: "function",
+  function: {
+    name: "web_search",
+    description: "Search the public web for current or externally verifiable information before answering.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "A concise standalone search query containing the entities and timeframe needed to answer.",
+        },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+} as const;
+
 export type SearchFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 const SEARCH_TIMEOUT_MS = 10_000;
 const MAX_QUERY_LENGTH = 500;
 const MAX_SNIPPET_LENGTH = 1_200;
 const MAX_CONTEXT_LENGTH = 12_000;
+const MAX_PROVIDER_RESPONSE_LENGTH = 2_000_000;
+const rssParser = new XMLParser({
+  ignoreAttributes: true,
+  ignoreDeclaration: true,
+  ignorePiTags: true,
+  parseTagValue: false,
+  processEntities: false,
+  trimValues: true,
+});
 
 export class SearchUnavailableError extends Error {
   constructor(readonly attempts: string[]) {
@@ -30,6 +65,9 @@ export class SearchUnavailableError extends Error {
 function cleanText(value: unknown, limit = MAX_SNIPPET_LENGTH) {
   return String(value ?? "")
     .replace(/<[^>]*>/g, " ")
+    .replace(/&(amp|lt|gt|quot|apos);/g, (_match, entity: string) => ({
+      amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+    })[entity] ?? " ")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
@@ -67,6 +105,27 @@ async function fetchJson(fetcher: SearchFetch, input: string | URL, init?: Reque
     const isJsonLike = contentType.includes("json") || contentType.includes("javascript");
     if (!isJsonLike) throw new Error("provider returned a non-JSON response");
     return await response.json() as Record<string, unknown>;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchXml(fetcher: SearchFetch, input: string | URL, init?: RequestInit) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
+  try {
+    const response = await fetcher(input, { ...init, signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+    if (!contentType.includes("xml") && !contentType.includes("rss")) {
+      throw new Error("provider returned a non-XML response");
+    }
+    const declaredLength = Number(response.headers.get("content-length") ?? 0);
+    if (declaredLength > MAX_PROVIDER_RESPONSE_LENGTH) throw new Error("provider response is too large");
+    const body = await response.text();
+    if (body.length > MAX_PROVIDER_RESPONSE_LENGTH) throw new Error("provider response is too large");
+    if (/<!DOCTYPE/i.test(body)) throw new Error("provider response contains a disallowed document type");
+    return rssParser.parse(body) as Record<string, unknown>;
   } finally {
     clearTimeout(timeout);
   }
@@ -117,6 +176,25 @@ async function searchDuckDuckGo(provider: SearchProviderExecutionConfig, query: 
     if (results.length) return results.slice(0, provider.maxResults);
   }
   return [];
+}
+
+async function searchBingRss(provider: SearchProviderExecutionConfig, query: string, fetcher: SearchFetch) {
+  const url = new URL(provider.endpoint);
+  url.searchParams.set("q", query);
+  url.searchParams.set("format", "rss");
+  const payload = await fetchXml(fetcher, url, {
+    headers: {
+      Accept: "application/rss+xml, application/xml, text/xml",
+      "User-Agent": "AdaptiveChatSearch/1.0",
+    },
+  });
+  const rss = payload.rss && typeof payload.rss === "object" ? payload.rss as Record<string, unknown> : {};
+  const channel = rss.channel && typeof rss.channel === "object" ? rss.channel as Record<string, unknown> : {};
+  const values = Array.isArray(channel.item) ? channel.item : channel.item ? [channel.item] : [];
+  return values.map((item) => {
+    const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    return normalizeResult(record.title, record.link, record.description);
+  }).filter((item): item is SearchResult => Boolean(item)).slice(0, provider.maxResults);
 }
 
 async function searchTavily(provider: SearchProviderExecutionConfig, query: string, fetcher: SearchFetch) {
@@ -179,9 +257,11 @@ export async function executeWebSearch(
     try {
       const results = provider.kind === "duckduckgo"
         ? await searchDuckDuckGo(provider, normalizedQuery, fetcher)
-        : provider.kind === "tavily"
-          ? await searchTavily(provider, normalizedQuery, fetcher)
-          : await searchSerpApi(provider, normalizedQuery, fetcher);
+        : provider.kind === "bing_rss"
+          ? await searchBingRss(provider, normalizedQuery, fetcher)
+          : provider.kind === "tavily"
+            ? await searchTavily(provider, normalizedQuery, fetcher)
+            : await searchSerpApi(provider, normalizedQuery, fetcher);
       if (results.length) {
         return { providerId: provider.id, providerName: provider.displayName, query: normalizedQuery, results };
       }
@@ -230,5 +310,74 @@ export function injectSearchGrounding<T extends { role: string }>(messages: T[],
     ...messages.slice(0, index),
     { role: "system", content: grounding },
     ...messages.slice(index),
+  ];
+}
+
+export function buildSearchToolDecisionRequest<T extends { messages: Array<{ role: string }> }>(request: T, upstreamModel: string) {
+  return {
+    ...request,
+    model: upstreamModel,
+    stream: false,
+    messages: request.messages,
+    tools: [WEB_SEARCH_TOOL],
+    tool_choice: "auto",
+  };
+}
+
+export function parseWebSearchToolCall(payload: unknown): WebSearchToolCall | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const choices = (payload as Record<string, unknown>).choices;
+  const first = Array.isArray(choices) && choices[0] && typeof choices[0] === "object"
+    ? choices[0] as Record<string, unknown>
+    : undefined;
+  const message = first?.message && typeof first.message === "object"
+    ? first.message as Record<string, unknown>
+    : undefined;
+  const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+  for (const value of calls) {
+    if (!value || typeof value !== "object") continue;
+    const call = value as Record<string, unknown>;
+    const fn = call.function && typeof call.function === "object"
+      ? call.function as Record<string, unknown>
+      : undefined;
+    if (fn?.name !== "web_search") continue;
+    const args = (() => {
+      try {
+        return typeof fn.arguments === "string"
+          ? JSON.parse(fn.arguments) as Record<string, unknown>
+          : fn.arguments as Record<string, unknown> | undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+    const query = cleanText(args?.query, MAX_QUERY_LENGTH);
+    if (!query) continue;
+    return {
+      id: cleanText(call.id, 256) || "gateway_web_search",
+      query,
+      raw: call,
+    };
+  }
+  return undefined;
+}
+
+export function injectSearchToolResult<T extends { role: string }>(
+  messages: T[],
+  toolCall: WebSearchToolCall,
+  grounding: string,
+) {
+  return [
+    ...messages,
+    {
+      role: "assistant" as const,
+      content: null,
+      tool_calls: [toolCall.raw],
+    },
+    {
+      role: "tool" as const,
+      tool_call_id: toolCall.id,
+      name: "web_search",
+      content: grounding,
+    },
   ];
 }

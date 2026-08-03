@@ -11,8 +11,9 @@ RUN npm ci
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build --workspace=@adaptive-chat/admin
+ENV NEXT_PUBLIC_API_BASE_URL=https://chatapi.zengjunjie.com
+RUN npm run build --workspace=@adaptive-chat/web
 
-EXPOSE 3000
+EXPOSE 3001
 
-CMD ["npm", "run", "start", "--workspace=@adaptive-chat/admin", "--", "-p", "3000"]
+CMD ["npm", "run", "start", "--workspace=@adaptive-chat/web", "--", "-p", "3001"]

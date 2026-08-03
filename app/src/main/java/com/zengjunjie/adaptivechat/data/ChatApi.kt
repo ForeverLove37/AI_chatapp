@@ -53,6 +53,11 @@ data class RemoteConfig(
     val webSearchEnabled: Boolean,
 )
 
+data class RemoteConversationSnapshot(
+    val session: ChatSessionEntity,
+    val messages: List<ChatMessageEntity>,
+)
+
 class ChatApi(baseUrl: String) {
     private val baseEndpoint = baseUrl.trimEnd('/')
     private val endpoint = "$baseEndpoint/v1/chat/completions"
@@ -93,6 +98,8 @@ class ChatApi(baseUrl: String) {
         val eventSource = EventSources.createFactory(client).newEventSource(
             request,
             object : EventSourceListener() {
+                private var completed = false
+
                 override fun onEvent(
                     eventSource: EventSource,
                     id: String?,
@@ -100,6 +107,7 @@ class ChatApi(baseUrl: String) {
                     data: String,
                 ) {
                     if (data == "[DONE]") {
+                        completed = true
                         trySend(StreamChunk(completed = true))
                         close()
                         return
@@ -121,6 +129,11 @@ class ChatApi(baseUrl: String) {
                     if (content.isNotEmpty() || reasoning.isNotEmpty()) {
                         trySend(StreamChunk(content = content, reasoning = reasoning))
                     }
+                }
+
+                override fun onClosed(eventSource: EventSource) {
+                    if (!completed) trySend(StreamChunk(completed = true))
+                    close()
                 }
 
                 override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
@@ -195,6 +208,128 @@ class ChatApi(baseUrl: String) {
             )
         }
     }
+
+    suspend fun fetchConversations(accessToken: String): List<RemoteConversationSnapshot> =
+        requestJson(
+            path = "/v1/sessions",
+            method = "GET",
+            accessToken = accessToken,
+        ) { body ->
+            val values = body.optJSONArray("data") ?: JSONArray()
+            buildList {
+                for (index in 0 until values.length()) {
+                    val value = values.optJSONObject(index) ?: continue
+                    val sessionId = value.optString("id")
+                    if (sessionId.isBlank()) continue
+                    val messagesJson = value.optJSONArray("messages") ?: JSONArray()
+                    val messages = buildList {
+                        for (messageIndex in 0 until messagesJson.length()) {
+                            val message = messagesJson.optJSONObject(messageIndex) ?: continue
+                            val messageId = message.optString("id")
+                            val role = message.optString("role").uppercase()
+                            if (messageId.isBlank() || role !in MessageRole.entries.map { it.name }) continue
+                            add(
+                                ChatMessageEntity(
+                                    id = messageId,
+                                    sessionId = sessionId,
+                                    role = role,
+                                    content = message.optString("content"),
+                                    attachmentsJson = (message.optJSONArray("attachments") ?: JSONArray()).toString(),
+                                    reasoning = message.optString("reasoning"),
+                                    createdAt = message.optLong("createdAt"),
+                                    isStreaming = message.optBoolean("isStreaming"),
+                                    model = message.optString("modelId"),
+                                    errorText = message.optString("errorText"),
+                                    parentMessageId = message.optString("parentMessageId"),
+                                    updatedAt = message.optLong("updatedAt", message.optLong("createdAt")),
+                                ),
+                            )
+                        }
+                    }
+                    val updatedAt = value.optLong("updatedAt")
+                    add(
+                        RemoteConversationSnapshot(
+                            session = ChatSessionEntity(
+                                id = sessionId,
+                                title = value.optString("title", "New conversation"),
+                                provider = value.optString("channelId", "chatgpt"),
+                                model = value.optString("modelId", "chatgpt-lite"),
+                                systemPrompt = value.optString("systemPrompt"),
+                                updatedAt = updatedAt,
+                            ),
+                            messages = messages,
+                        ),
+                    )
+                }
+            }
+        }
+
+    suspend fun upsertConversation(
+        accessToken: String,
+        session: ChatSessionEntity,
+        messages: List<ChatMessageEntity>,
+    ) {
+        val createdAt = minOf(
+            session.updatedAt,
+            messages.minOfOrNull { it.createdAt } ?: session.updatedAt,
+        )
+        val payload = JSONObject()
+            .put("title", session.title)
+            .put("channelId", session.provider)
+            .put("modelId", session.model)
+            .put("systemPrompt", session.systemPrompt)
+            .put("createdAt", createdAt.coerceAtLeast(1L))
+            .put("updatedAt", session.updatedAt.coerceAtLeast(1L))
+            .put(
+                "messages",
+                JSONArray().apply {
+                    messages.forEach { message ->
+                        put(
+                            JSONObject()
+                                .put("id", message.id)
+                                .put("role", message.role.lowercase())
+                                .put("content", message.content)
+                                .put("attachments", runCatching { JSONArray(message.attachmentsJson) }.getOrDefault(JSONArray()))
+                                .put("reasoning", message.reasoning)
+                                .put("modelId", message.model)
+                                .put("errorText", message.errorText)
+                                .put("isStreaming", message.isStreaming)
+                                .put("parentMessageId", message.parentMessageId.ifBlank { JSONObject.NULL })
+                                .put("createdAt", message.createdAt.coerceAtLeast(1L))
+                                .put("updatedAt", message.updatedAt.coerceAtLeast(message.createdAt).coerceAtLeast(1L)),
+                        )
+                    }
+                },
+            )
+        requestJson(
+            path = "/v1/sessions/${session.id}",
+            method = "PUT",
+            payload = payload,
+            accessToken = accessToken,
+        ) { Unit }
+    }
+
+    suspend fun deleteConversation(accessToken: String, sessionId: String) {
+        requestJson(
+            path = "/v1/sessions/$sessionId",
+            method = "DELETE",
+            accessToken = accessToken,
+            allowNotFound = true,
+        ) { Unit }
+    }
+
+    suspend fun deleteMessage(accessToken: String, messageId: String): List<String> =
+        requestJson(
+            path = "/v1/messages/$messageId",
+            method = "DELETE",
+            accessToken = accessToken,
+            allowNotFound = true,
+        ) { body ->
+            val values = body.optJSONObject("data")?.optJSONArray("deletedIds") ?: JSONArray()
+            buildList {
+                for (index in 0 until values.length()) values.optString(index).takeIf(String::isNotBlank)?.let(::add)
+            }
+        }
 
     private fun resolvePublicUrl(value: String): String = when {
         value.isBlank() -> ""
@@ -284,23 +419,33 @@ class ChatApi(baseUrl: String) {
         payload: JSONObject,
         accessToken: String? = null,
         transform: (JSONObject) -> T,
+    ): T = requestJson(path, "POST", payload, accessToken = accessToken, transform = transform)
+
+    private suspend fun <T> requestJson(
+        path: String,
+        method: String,
+        payload: JSONObject? = null,
+        accessToken: String? = null,
+        allowNotFound: Boolean = false,
+        transform: (JSONObject) -> T,
     ): T = withContext(Dispatchers.IO) {
+        val requestBody = payload?.toString()?.toRequestBody("application/json; charset=utf-8".toMediaType())
         val request = Request.Builder()
             .url("$baseEndpoint$path")
             .header("Accept", "application/json")
             .apply { if (accessToken != null) header("Authorization", "Bearer $accessToken") }
-            .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .method(method, requestBody)
             .build()
         client.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             val parsed = runCatching { JSONObject(body) }.getOrNull()
-            if (!response.isSuccessful) {
+            if (!response.isSuccessful && !(allowNotFound && response.code == 404)) {
                 val message = parsed?.optJSONObject("error")?.optString("message")
                     ?.takeIf(String::isNotBlank)
                     ?: "Request failed with HTTP ${response.code}."
                 throw IOException(message)
             }
-            transform(parsed ?: throw IOException("The server returned an invalid response."))
+            transform(parsed ?: JSONObject())
         }
     }
 }

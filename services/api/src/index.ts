@@ -27,11 +27,21 @@ import {
 import { issueSessionToken, verifySessionToken } from "./auth.js";
 import { publicRemoteConfig, type LoadBalanceStrategy, type ModelRoute, type RemoteChannel } from "./catalog.js";
 import {
+  createPostgresConversationStore,
+  MemoryConversationStore,
+  type ConversationSnapshotInput,
+  type ConversationStore,
+} from "./conversations.js";
+import {
+  buildSearchToolDecisionRequest,
   buildSearchGroundingMessage,
   executeWebSearch,
   extractLatestUserQuery,
   injectSearchGrounding,
+  injectSearchToolResult,
+  parseWebSearchToolCall,
   SearchUnavailableError,
+  WEB_SEARCH_TOOL,
   type WebSearchResponse,
 } from "./search.js";
 
@@ -205,7 +215,7 @@ const dynamicChannelPatchSchema = dynamicChannelSchema.partial().refine((value) 
 const searchProviderSchema = z.object({
   slug: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9-]*$/),
   displayName: z.string().trim().min(1).max(120),
-  kind: z.enum(["duckduckgo", "tavily", "serpapi"]),
+  kind: z.enum(["duckduckgo", "bing_rss", "tavily", "serpapi"]),
   endpoint: z.url().max(2_000),
   apiKey: z.string().trim().max(8_000).optional(),
   priority: z.number().int().min(0).max(100_000).default(100),
@@ -213,6 +223,36 @@ const searchProviderSchema = z.object({
   enabled: z.boolean().default(false),
 });
 const searchProviderPatchSchema = searchProviderSchema.partial().refine((value) => Object.keys(value).length > 0);
+const conversationAttachmentSchema = z.object({
+  fileName: z.string().trim().min(1).max(500),
+  mimeType: z.string().trim().min(1).max(200),
+  dataUrl: z.string().startsWith("data:").max(4_000_000),
+});
+const conversationMessageSchema = z.object({
+  id: z.string().trim().min(1).max(160),
+  role: z.enum(["system", "user", "assistant"]),
+  content: z.string().max(2_000_000).default(""),
+  attachments: z.array(conversationAttachmentSchema).max(12).default([]),
+  reasoning: z.string().max(2_000_000).default(""),
+  modelId: z.string().max(256).default(""),
+  errorText: z.string().max(4_000).default(""),
+  isStreaming: z.boolean().default(false),
+  parentMessageId: z.string().trim().min(1).max(160).nullable().default(null),
+  createdAt: z.number().int().positive().max(9_999_999_999_999),
+  updatedAt: z.number().int().positive().max(9_999_999_999_999),
+});
+const conversationSnapshotSchema = z.object({
+  title: z.string().trim().min(1).max(500),
+  channelId: z.string().trim().min(1).max(120),
+  modelId: z.string().trim().min(1).max(256),
+  systemPrompt: z.string().max(100_000).default(""),
+  createdAt: z.number().int().positive().max(9_999_999_999_999),
+  updatedAt: z.number().int().positive().max(9_999_999_999_999),
+  messages: z.array(conversationMessageSchema).max(1_000).default([]),
+});
+const conversationCreateSchema = conversationSnapshotSchema.extend({
+  id: z.string().trim().min(1).max(160),
+});
 const userGroupSchema = z.object({
   slug: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9-]*$/),
   name: z.string().trim().min(1).max(120),
@@ -264,6 +304,7 @@ type ChatRequest = z.infer<typeof chatRequestSchema>;
 export type CreateAppOptions = {
   controlPlane?: ControlPlane;
   enterpriseStore?: EnterpriseStore;
+  conversationStore?: ConversationStore;
   demoMode?: boolean;
   requireClientAuth?: boolean;
   synthesizeSpeech?: (input: string, voice: string) => Promise<Uint8Array>;
@@ -390,13 +431,149 @@ async function fetchUpstream(upstreams: SelectedUpstream[], body: Record<string,
         },
         body: JSON.stringify(body),
       });
-      if (response.ok || response.status < 500) return response;
+      if (response.ok || [400, 404, 422].includes(response.status)) return response;
+      await response.body?.cancel().catch(() => undefined);
       lastError = new Error(`Upstream returned HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
     }
   }
   throw lastError instanceof Error ? lastError : new Error("No upstream provider responded");
+}
+
+type PreparedSearchRequest = {
+  primary: ChatRequest;
+  fallback?: ChatRequest;
+};
+
+async function prepareSearchRequest(
+  request: ChatRequest,
+  route: ModelRoute,
+  upstreams: SelectedUpstream[],
+  providers: SearchProviderExecutionConfig[],
+  search: (providers: SearchProviderExecutionConfig[], query: string) => Promise<WebSearchResponse>,
+): Promise<PreparedSearchRequest> {
+  let toolCall;
+  try {
+    const decision = await fetchUpstream(upstreams, buildSearchToolDecisionRequest(request, route.upstreamModel));
+    if (decision.ok) toolCall = parseWebSearchToolCall(await decision.json().catch(() => undefined));
+    else await decision.body?.cancel().catch(() => undefined);
+  } catch {
+    // Tool support differs between OpenAI-compatible providers. Direct grounding below is the compatibility path.
+  }
+  const originalQuery = extractLatestUserQuery(request.messages);
+  const query = toolCall?.query || originalQuery;
+  let result: WebSearchResponse;
+  try {
+    result = await search(providers, query);
+  } catch (error) {
+    if (!(error instanceof SearchUnavailableError) || !toolCall || query === originalQuery) throw error;
+    result = await search(providers, originalQuery);
+  }
+  const grounding = buildSearchGroundingMessage(result);
+  const fallback = {
+    ...request,
+    messages: injectSearchGrounding(request.messages, grounding) as ChatRequest["messages"],
+  } as ChatRequest;
+  if (!toolCall) return { primary: fallback };
+  return {
+    primary: {
+      ...request,
+      messages: injectSearchToolResult(request.messages, toolCall, grounding) as ChatRequest["messages"],
+      tools: [WEB_SEARCH_TOOL],
+      tool_choice: "none",
+    } as ChatRequest,
+    fallback,
+  };
+}
+
+async function fetchFinalUpstream(
+  upstreams: SelectedUpstream[],
+  route: ModelRoute,
+  prepared: PreparedSearchRequest,
+) {
+  const primaryBody = { ...prepared.primary, model: route.upstreamModel };
+  try {
+    const response = await fetchUpstream(upstreams, primaryBody);
+    if (!prepared.fallback || ![400, 404, 422].includes(response.status)) return response;
+    await response.body?.cancel().catch(() => undefined);
+  } catch (error) {
+    if (!prepared.fallback) throw error;
+  }
+  return fetchUpstream(upstreams, { ...prepared.fallback, model: route.upstreamModel });
+}
+
+function completionContent(value: unknown) {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value.map((part) => part && typeof part === "object" && "text" in part
+    ? String((part as Record<string, unknown>).text ?? "")
+    : "").join("");
+}
+
+function completionJsonAsSse(body: string, model: string) {
+  const payload = JSON.parse(body) as Record<string, unknown>;
+  const choices = Array.isArray(payload.choices) ? payload.choices : [];
+  const first = choices[0] && typeof choices[0] === "object" ? choices[0] as Record<string, unknown> : {};
+  const message = first.message && typeof first.message === "object" ? first.message as Record<string, unknown> : {};
+  const content = completionContent(message.content);
+  const reasoning = typeof message.reasoning_content === "string"
+    ? message.reasoning_content
+    : typeof message.reasoning === "string" ? message.reasoning : "";
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const piece of chunks(reasoning)) {
+        if (piece) controller.enqueue(encoder.encode(`data: ${ssePayload(model, { reasoning_content: piece })}\n\n`));
+      }
+      for (const piece of chunks(content)) {
+        if (piece) controller.enqueue(encoder.encode(`data: ${ssePayload(model, { content: piece })}\n\n`));
+      }
+      controller.enqueue(encoder.encode(`data: ${ssePayload(model, {}, "stop")}\n\ndata: [DONE]\n\n`));
+      controller.close();
+    },
+  });
+}
+
+function finalizedSseStream(
+  source: ReadableStream<Uint8Array>,
+  finalize: (status: RequestMetric["status"]) => Promise<void>,
+) {
+  const reader = source.getReader();
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let tail = "";
+  let finished = false;
+  const settle = async (status: RequestMetric["status"]) => {
+    if (finished) return;
+    finished = true;
+    await finalize(status);
+  };
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const result = await reader.read();
+        if (!result.done) {
+          tail = `${tail}${decoder.decode(result.value, { stream: true })}`.slice(-1_024);
+          controller.enqueue(result.value);
+          return;
+        }
+        tail = `${tail}${decoder.decode()}`.slice(-1_024);
+        if (!/(?:^|\n)data:\s*\[DONE\]\s*(?:\n|$)/.test(tail)) {
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        }
+        await settle("success");
+        controller.close();
+      } catch (error) {
+        await settle("failure");
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason).catch(() => undefined);
+      await settle("failure");
+    },
+  });
 }
 
 function usageFromBody(body: string) {
@@ -420,18 +597,28 @@ export function createApp(options: CreateAppOptions = {}) {
   const app = new Hono();
   const controlPlane = options.controlPlane ?? new MemoryControlPlane();
   const enterprise = options.enterpriseStore ?? new MemoryEnterpriseStore();
+  const conversations = options.conversationStore ?? new MemoryConversationStore();
   const startedAt = Date.now();
   const demoMode = () => options.demoMode ?? flag(process.env.DEMO_MODE, true);
   const adminKey = () => process.env.ADMIN_API_KEY ?? "dev-admin-key";
-  const allowedOrigins = (process.env.CORS_ORIGINS ?? "http://localhost:3000")
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean);
+  const allowedOrigins = new Set([
+    "https://console.zengjunjie.com",
+    "https://chatapi.zengjunjie.com",
+    "https://chat.zengjunjie.com",
+  ]);
 
+  app.use("*", async (context, next) => {
+    const origin = context.req.header("origin");
+    if (origin && !allowedOrigins.has(origin)) {
+      return context.json({ error: { code: "origin_not_allowed", message: "This request origin is not allowed." } }, 403);
+    }
+    await next();
+  });
   app.use("*", cors({
-    origin: (origin) => !origin || allowedOrigins.includes(origin) ? origin || allowedOrigins[0] : "",
+    origin: (origin) => origin && allowedOrigins.has(origin) ? origin : "",
     allowHeaders: ["Authorization", "Content-Type", "X-Admin-Key", "X-Web-Search"],
     allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    maxAge: 600,
   }));
   app.use("*", async (context, next) => {
     context.header("Cache-Control", "no-store");
@@ -474,9 +661,11 @@ export function createApp(options: CreateAppOptions = {}) {
     const token = requestBearer(context.req.header("authorization"));
     const session = token ? verifySessionToken(token) : undefined;
     if (!session) return { response: context.json({ error: { message: "Sign in is required for this action." } }, 401) };
-    const authorization = await controlPlane.authorizeUser(session.sub);
-    if (!authorization.allowed) return { response: context.json({ error: { message: authorization.message } }, authorization.status) };
-    return { userId: authorization.userId };
+    const user = await controlPlane.getUser(session.sub);
+    if (!user || user.status !== "active") {
+      return { response: context.json({ error: { message: "Your session is no longer active." } }, 401) };
+    }
+    return { userId: user.id };
   }
 
   function clientAddress(context: Context) {
@@ -543,7 +732,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
     const parsed = searchProviderSchema.safeParse(await context.req.json().catch(() => undefined));
     if (!parsed.success) return context.json({ error: { code: "invalid_search_provider", message: "Invalid search provider.", details: parsed.error.issues } }, 400);
-    if (parsed.data.enabled && parsed.data.kind !== "duckduckgo" && !parsed.data.apiKey) {
+    if (parsed.data.enabled && !["duckduckgo", "bing_rss"].includes(parsed.data.kind) && !parsed.data.apiKey) {
       return context.json({ error: { code: "search_api_key_required", message: "An API key is required before this search provider can be enabled." } }, 400);
     }
     try {
@@ -562,7 +751,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const enabled = parsed.data.enabled ?? existing.enabled;
     const kind = parsed.data.kind ?? existing.kind;
     const keyConfigured = parsed.data.apiKey !== undefined ? Boolean(parsed.data.apiKey) : existing.apiKeyConfigured;
-    if (enabled && kind !== "duckduckgo" && !keyConfigured) {
+    if (enabled && !["duckduckgo", "bing_rss"].includes(kind) && !keyConfigured) {
       return context.json({ error: { code: "search_api_key_required", message: "An API key is required before this search provider can be enabled." } }, 400);
     }
     try {
@@ -650,6 +839,67 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
+  app.get("/v1/sessions", async (context) => {
+    const session = await requireSessionUser(context);
+    if ("response" in session) return session.response;
+    return context.json({ data: await conversations.listSessions(session.userId) });
+  });
+
+  app.get("/v1/sessions/:id", async (context) => {
+    const session = await requireSessionUser(context);
+    if ("response" in session) return session.response;
+    const conversation = await conversations.getSession(session.userId, context.req.param("id"));
+    return conversation
+      ? context.json({ data: conversation })
+      : context.json({ error: { code: "session_not_found", message: "Conversation was not found." } }, 404);
+  });
+
+  app.post("/v1/sessions", async (context) => {
+    const session = await requireSessionUser(context);
+    if ("response" in session) return session.response;
+    const parsed = conversationCreateSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) {
+      return context.json({ error: { code: "invalid_session", message: "Invalid conversation snapshot.", details: parsed.error.issues } }, 400);
+    }
+    try {
+      return context.json({ data: await conversations.upsertSnapshot(session.userId, parsed.data as ConversationSnapshotInput) }, 201);
+    } catch (error) {
+      return context.json({ error: { code: "session_write_failed", message: error instanceof Error ? error.message : "Unable to save the conversation." } }, 409);
+    }
+  });
+
+  app.put("/v1/sessions/:id", async (context) => {
+    const session = await requireSessionUser(context);
+    if ("response" in session) return session.response;
+    const parsed = conversationSnapshotSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) {
+      return context.json({ error: { code: "invalid_session", message: "Invalid conversation snapshot.", details: parsed.error.issues } }, 400);
+    }
+    try {
+      const snapshot = { id: context.req.param("id"), ...parsed.data } satisfies ConversationSnapshotInput;
+      return context.json({ data: await conversations.upsertSnapshot(session.userId, snapshot) });
+    } catch (error) {
+      return context.json({ error: { code: "session_write_failed", message: error instanceof Error ? error.message : "Unable to save the conversation." } }, 409);
+    }
+  });
+
+  app.delete("/v1/sessions/:id", async (context) => {
+    const session = await requireSessionUser(context);
+    if ("response" in session) return session.response;
+    return await conversations.deleteSession(session.userId, context.req.param("id"))
+      ? context.body(null, 204)
+      : context.json({ error: { code: "session_not_found", message: "Conversation was not found." } }, 404);
+  });
+
+  app.delete("/v1/messages/:id", async (context) => {
+    const session = await requireSessionUser(context);
+    if ("response" in session) return session.response;
+    const result = await conversations.deleteMessage(session.userId, context.req.param("id"));
+    return result
+      ? context.json({ data: result })
+      : context.json({ error: { code: "message_not_found", message: "Message was not found." } }, 404);
+  });
+
   app.post("/v1/app/check-update", async (context) => {
     const parsed = updateCheckSchema.safeParse(await context.req.json().catch(() => undefined));
     if (!parsed.success) return context.json({ error: { message: "Invalid app version." } }, 400);
@@ -709,29 +959,10 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!parsed.success) return context.json({ error: { message: "Invalid chat completion request.", details: parsed.error.issues } }, 400);
 
     let request = parsed.data;
-    const webSearchEnabled = flag(context.req.header("x-web-search"), false);
-    if (webSearchEnabled) {
-      try {
-        const query = extractLatestUserQuery(request.messages);
-        const search = await (options.executeSearch ?? executeWebSearch)(
-          await enterprise.listSearchExecutionConfigs(),
-          query,
-        );
-        request = {
-          ...request,
-          messages: injectSearchGrounding(request.messages, buildSearchGroundingMessage(search)) as ChatRequest["messages"],
-        };
-      } catch (error) {
-        const message = error instanceof SearchUnavailableError
-          ? error.message
-          : error instanceof Error ? error.message : "Web search failed.";
-        return context.json({ error: { code: "web_search_unavailable", message } }, 502);
-      }
-    }
     const route = await controlPlane.findModelRoute(request.model);
     if (!route) return context.json({ error: { message: `Unknown or disabled model: ${request.model}` } }, 404);
     const requestStartedAt = Date.now();
-    const promptTokens = estimateTokens(request.messages);
+    let promptTokens = estimateTokens(request.messages);
     const makeMetric = (status: RequestMetric["status"], completionTokens = 0): RequestMetric => ({
       model: route.id,
       provider: route.provider,
@@ -742,8 +973,43 @@ export function createApp(options: CreateAppOptions = {}) {
       completionTokens,
       latencyMs: Date.now() - requestStartedAt,
     });
+    const isDemo = demoMode();
+    const webSearchEnabled = flag(context.req.header("x-web-search"), false);
+    let upstreams: SelectedUpstream[] = [];
+    let prepared: PreparedSearchRequest = { primary: request };
+    if (!isDemo) {
+      upstreams = await resolveUpstreams(route);
+      if (!upstreams.length) {
+        await record(makeMetric("failure"));
+        return context.json({ error: { message: `No ${route.provider} upstream is configured. Add an active provider key and routing policy in the admin console.` } }, 503);
+      }
+    }
+    if (webSearchEnabled) {
+      try {
+        const providers = await enterprise.listSearchExecutionConfigs();
+        const search = options.executeSearch ?? executeWebSearch;
+        if (isDemo) {
+          const result = await search(providers, extractLatestUserQuery(request.messages));
+          request = {
+            ...request,
+            messages: injectSearchGrounding(request.messages, buildSearchGroundingMessage(result)) as ChatRequest["messages"],
+          };
+          prepared = { primary: request };
+        } else {
+          prepared = await prepareSearchRequest(request, route, upstreams, providers, search);
+          request = prepared.primary;
+        }
+        promptTokens = estimateTokens(request.messages);
+      } catch (error) {
+        await record(makeMetric("failure"));
+        const message = error instanceof SearchUnavailableError
+          ? error.message
+          : error instanceof Error ? error.message : "Web search failed.";
+        return context.json({ error: { code: "web_search_unavailable", message } }, 502);
+      }
+    }
 
-    if (demoMode()) {
+    if (isDemo) {
       const answer = demoAnswer(request, route);
       const completionTokens = Math.ceil(((answer.reasoning?.length ?? 0) + answer.content.length) / 4);
       if (!request.stream) {
@@ -789,14 +1055,8 @@ export function createApp(options: CreateAppOptions = {}) {
       });
     }
 
-    const upstreams = await resolveUpstreams(route);
-    if (!upstreams.length) {
-      await record(makeMetric("failure"));
-      return context.json({ error: { message: `No ${route.provider} upstream is configured. Add an active provider key and routing policy in the admin console.` } }, 503);
-    }
-
     try {
-      const response = await fetchUpstream(upstreams, { ...request, model: route.upstreamModel });
+      const response = await fetchFinalUpstream(upstreams, route, prepared);
       if (!request.stream) {
         const contentType = response.headers.get("content-type") ?? "application/json";
         const body = await response.text();
@@ -809,6 +1069,10 @@ export function createApp(options: CreateAppOptions = {}) {
         return context.json({ error: { message: `Upstream returned HTTP ${response.status}` } }, 502);
       }
 
+      const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+      const source = contentType.includes("text/event-stream")
+        ? response.body
+        : completionJsonAsSse(await response.text(), route.id);
       await controlPlane.changeActiveStreams(1);
       let finalized = false;
       const finalize = async (status: RequestMetric["status"]) => {
@@ -817,14 +1081,11 @@ export function createApp(options: CreateAppOptions = {}) {
         await controlPlane.changeActiveStreams(-1);
         await record(makeMetric(status));
       };
-      const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-        transform(chunk, controller) { controller.enqueue(chunk); },
-        async flush() { await finalize("success"); },
-      }));
+      const body = finalizedSseStream(source, finalize);
       return new Response(body, {
         status: response.status,
         headers: {
-          "Content-Type": response.headers.get("content-type") ?? "text/event-stream",
+          "Content-Type": "text/event-stream; charset=utf-8",
           "Cache-Control": "no-cache, no-transform",
           Connection: "keep-alive",
         },
@@ -1332,14 +1593,17 @@ export function createApp(options: CreateAppOptions = {}) {
 export async function startServer() {
   // Enterprise tables reference the core routing/user tables, so bootstrap them in order.
   const controlPlane = await createPostgresControlPlane();
-  const enterpriseStore = await createPostgresEnterpriseStore();
-  const app = createApp({ controlPlane, enterpriseStore });
+  const [enterpriseStore, conversationStore] = await Promise.all([
+    createPostgresEnterpriseStore(),
+    createPostgresConversationStore(),
+  ]);
+  const app = createApp({ controlPlane, enterpriseStore, conversationStore });
   const port = Number(process.env.API_PORT ?? 8787);
   const server = serve({ fetch: app.fetch, port });
   console.log(`Adaptive Chat API listening on http://localhost:${port}`);
   const shutdown = async () => {
     server.close();
-    await Promise.all([controlPlane.close(), enterpriseStore.close()]);
+    await Promise.all([controlPlane.close(), enterpriseStore.close(), conversationStore.close()]);
   };
   process.once("SIGINT", () => void shutdown());
   process.once("SIGTERM", () => void shutdown());

@@ -5,9 +5,10 @@ import { basename, join, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { CronExpressionParser } from "cron-parser";
 import nodemailer from "nodemailer";
+import { Client } from "pg";
 import { installBuildAppIcon } from "./app-icon.js";
 import {
   createPostgresEnterpriseStore,
@@ -25,23 +26,25 @@ async function runCommand(
   options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
   onLine?: (line: string) => Promise<void>,
 ) {
-  return new Promise<void>((resolveCommand, reject) => {
+  return new Promise<{ stdout: string; stderr: string }>((resolveCommand, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    let stdout = "";
     let stderr = "";
     const consume = (chunk: Buffer, isError: boolean) => {
       const value = chunk.toString("utf8");
       if (isError) stderr = `${stderr}${value}`.slice(-8_000);
+      else stdout = `${stdout}${value}`.slice(-4_000_000);
       for (const line of value.split(/\r?\n/).filter(Boolean)) void onLine?.(line);
     };
     child.stdout.on("data", (chunk: Buffer) => consume(chunk, false));
     child.stderr.on("data", (chunk: Buffer) => consume(chunk, true));
     child.once("error", reject);
     child.once("close", (code) => code === 0
-      ? resolveCommand()
+      ? resolveCommand({ stdout, stderr })
       : reject(new Error(`${command} exited with code ${code}: ${stderr.trim()}`)));
   });
 }
@@ -88,6 +91,86 @@ function postgresEnvironment(databaseUrl: string) {
   };
 }
 
+export type BackupTableManifest = {
+  schema: string;
+  table: string;
+  rows: number;
+};
+
+function quoteIdentifier(value: string) {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function regexEscape(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function missingArchiveTables(listing: string, manifest: BackupTableManifest[]) {
+  return manifest.filter(({ schema, table }) => {
+    const target = `${regexEscape(schema)}\\s+${regexEscape(table)}(?:\\s|$)`;
+    return !new RegExp(`\\bTABLE\\s+${target}`, "m").test(listing)
+      || !new RegExp(`\\bTABLE DATA\\s+${target}`, "m").test(listing);
+  });
+}
+
+export async function createConsistentPostgresDump(
+  databaseUrl: string,
+  targetPath: string,
+  onLine?: (line: string) => Promise<void>,
+) {
+  const client = new Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    await client.query("BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE READ ONLY DEFERRABLE");
+    const invalidConstraints = await client.query<{ name: string }>(
+      `SELECT conname AS name FROM pg_constraint
+       WHERE contype = 'f' AND convalidated = FALSE`,
+    );
+    if (invalidConstraints.rows.length) {
+      throw new Error(`Database has unvalidated foreign keys: ${invalidConstraints.rows.map((row) => row.name).join(", ")}`);
+    }
+    const snapshot = await client.query<{ snapshot: string }>("SELECT pg_export_snapshot() AS snapshot");
+    const snapshotId = snapshot.rows[0]?.snapshot;
+    if (!snapshotId) throw new Error("PostgreSQL did not export a backup snapshot.");
+    const tableRows = await client.query<{ schema: string; table: string }>(
+      `SELECT namespace.nspname AS schema, class.relname AS table
+       FROM pg_class AS class
+       JOIN pg_namespace AS namespace ON namespace.oid = class.relnamespace
+       WHERE class.relkind = 'r'
+         AND namespace.nspname NOT IN ('pg_catalog', 'information_schema')
+         AND namespace.nspname !~ '^pg_toast'
+       ORDER BY namespace.nspname, class.relname`,
+    );
+    const manifest: BackupTableManifest[] = [];
+    for (const table of tableRows.rows) {
+      const count = await client.query<{ count: string }>(
+        `SELECT COUNT(*)::bigint AS count FROM ${quoteIdentifier(table.schema)}.${quoteIdentifier(table.table)}`,
+      );
+      manifest.push({ schema: table.schema, table: table.table, rows: Number(count.rows[0]?.count ?? 0) });
+    }
+    await runCommand("pg_dump", [
+      "--format=custom",
+      "--no-owner",
+      "--no-acl",
+      `--snapshot=${snapshotId}`,
+      "--file",
+      targetPath,
+    ], { env: postgresEnvironment(databaseUrl) }, onLine);
+    const listing = await runCommand("pg_restore", ["--list", targetPath], {}, onLine);
+    const missing = missingArchiveTables(listing.stdout, manifest);
+    if (missing.length) {
+      throw new Error(`Backup archive omitted table objects: ${missing.map((item) => `${item.schema}.${item.table}`).join(", ")}`);
+    }
+    await client.query("COMMIT");
+    return manifest;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await client.end();
+  }
+}
+
 function localDestination(config: BackupExecutionConfig, filename: string) {
   const root = resolve(process.env.BACKUP_LOCAL_ROOT ?? "/backups");
   const requested = config.localDirectory || root;
@@ -97,12 +180,20 @@ function localDestination(config: BackupExecutionConfig, filename: string) {
   return { directory: configured, path: join(configured, filename) };
 }
 
-async function uploadBackup(config: BackupExecutionConfig, encryptedPath: string, filename: string) {
+async function uploadBackup(
+  config: BackupExecutionConfig,
+  encryptedPath: string,
+  filename: string,
+  checksum: string,
+  bytes: number,
+) {
   if (config.protocol === "local") {
     const destination = localDestination(config, filename);
     await mkdir(destination.directory, { recursive: true, mode: 0o700 });
     try { await rename(encryptedPath, destination.path); }
     catch { await copyFile(encryptedPath, destination.path); await unlink(encryptedPath); }
+    const stored = await stat(destination.path);
+    if (stored.size !== bytes) throw new Error("Local backup verification failed: stored size differs from the encrypted archive.");
     return destination.path;
   }
 
@@ -119,6 +210,15 @@ async function uploadBackup(config: BackupExecutionConfig, encryptedPath: string
       duplex: "half",
     } as RequestInit & { duplex: "half" });
     if (!response.ok) throw new Error(`WebDAV upload failed with HTTP ${response.status}.`);
+    const verification = await fetch(destination, {
+      method: "HEAD",
+      headers: authorization ? { Authorization: authorization } : {},
+    });
+    if (!verification.ok) throw new Error(`WebDAV verification failed with HTTP ${verification.status}.`);
+    const remoteLength = Number(verification.headers.get("content-length"));
+    if (Number.isFinite(remoteLength) && remoteLength > 0 && remoteLength !== bytes) {
+      throw new Error("WebDAV verification failed: remote size differs from the encrypted archive.");
+    }
     await unlink(encryptedPath);
     return destination.toString();
   }
@@ -132,14 +232,22 @@ async function uploadBackup(config: BackupExecutionConfig, encryptedPath: string
       ? { accessKeyId: config.credentials.accessKeyId, secretAccessKey: config.credentials.secretAccessKey }
       : undefined,
   });
-  await client.send(new PutObjectCommand({
-    Bucket: config.s3Bucket,
-    Key: key,
-    Body: createReadStream(encryptedPath),
-    ContentType: "application/octet-stream",
-    Metadata: { format: "adaptive-chat-backup-v1" },
-  }));
-  client.destroy();
+  try {
+    await client.send(new PutObjectCommand({
+      Bucket: config.s3Bucket,
+      Key: key,
+      Body: createReadStream(encryptedPath),
+      ContentLength: bytes,
+      ContentType: "application/octet-stream",
+      Metadata: { format: "adaptive-chat-backup-v1", sha256: checksum },
+    }));
+    const head = await client.send(new HeadObjectCommand({ Bucket: config.s3Bucket, Key: key }));
+    if (head.ContentLength !== bytes || head.Metadata?.sha256 !== checksum) {
+      throw new Error("S3 verification failed: remote size or SHA-256 metadata differs from the encrypted archive.");
+    }
+  } finally {
+    client.destroy();
+  }
   await unlink(encryptedPath);
   return `s3://${config.s3Bucket}/${key}`;
 }
@@ -183,17 +291,29 @@ async function executeBackup(store: EnterpriseStore, job: BackgroundJob) {
   const filename = `adaptive-chat-${timestamp}.dump.acb`;
   const encryptedPath = join(tempRoot, `${runId}.acb`);
   try {
-    await store.appendJobLog(job.id, "Creating PostgreSQL custom-format snapshot");
-    await runCommand("pg_dump", ["--format=custom", "--no-owner", "--no-acl", "--file", rawPath], {
-      env: postgresEnvironment(process.env.DATABASE_URL ?? "postgresql://adaptive_chat:adaptive_chat@postgres:5432/adaptive_chat"),
-    }, (line) => store.appendJobLog(job.id, line));
+    const databaseUrl = process.env.DATABASE_URL ?? "postgresql://adaptive_chat:adaptive_chat@postgres:5432/adaptive_chat";
+    await store.appendJobLog(job.id, "Creating a transactionally consistent PostgreSQL snapshot");
+    const manifest = await createConsistentPostgresDump(
+      databaseUrl,
+      rawPath,
+      (line) => store.appendJobLog(job.id, line),
+    );
+    await store.appendJobLog(job.id, `Verified schema and table-data entries for ${manifest.length} active tables`);
     await store.appendJobLog(job.id, "Encrypting snapshot with AES-256-GCM");
     await encryptBackup(rawPath, encryptedPath, config.credentials.encryptionPassphrase);
     await unlink(rawPath);
     const [checksum, fileStats] = await Promise.all([sha256File(encryptedPath), stat(encryptedPath)]);
     await store.appendJobLog(job.id, `Uploading ${fileStats.size} encrypted bytes to ${config.protocol}`);
-    const location = await uploadBackup(config, encryptedPath, filename);
-    const result = { runId, location, bytes: fileStats.size, checksum };
+    const location = await uploadBackup(config, encryptedPath, filename, checksum, fileStats.size);
+    const result = {
+      runId,
+      location,
+      bytes: fileStats.size,
+      checksum,
+      verifiedTableCount: manifest.length,
+      tableManifest: manifest,
+      relationalSnapshot: "serializable-read-only-exported-snapshot",
+    };
     await store.finishBackupRun(runId, { status: "succeeded", ...result });
     return result;
   } catch (error) {
