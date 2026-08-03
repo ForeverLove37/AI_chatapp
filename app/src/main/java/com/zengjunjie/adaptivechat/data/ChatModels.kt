@@ -117,6 +117,8 @@ data class ChatMessage(
     val reasoning: String,
     val createdAt: Long,
     val isStreaming: Boolean,
+    val modelId: String,
+    val errorText: String,
 )
 
 /**

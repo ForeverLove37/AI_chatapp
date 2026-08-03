@@ -41,37 +41,37 @@ class MainActivity : ComponentActivity() {
                         viewModel.closeSettings()
                     }
                     AnimatedContent(
-                    targetState = when {
-                        !state.account.isAuthenticated -> "login"
-                        state.destination == AppDestination.SETTINGS -> "settings"
-                        else -> "chat-${state.provider.wireName}"
-                    },
-                    transitionSpec = { fadeIn() togetherWith fadeOut() },
-                    label = "app-destination-transition",
-                    ) {
+                        targetState = when {
+                            !state.account.isAuthenticated -> "login"
+                            state.destination == AppDestination.SETTINGS -> "settings"
+                            else -> "chat-${state.provider.wireName}"
+                        },
+                        transitionSpec = { fadeIn() togetherWith fadeOut() },
+                        label = "app-destination-transition",
+                    ) { destination ->
                         when {
-                        !state.account.isAuthenticated -> LoginScreen(
-                            isLoading = state.isLoggingIn,
-                            errorMessage = state.loginError,
-                            onDismissError = viewModel::dismissLoginError,
-                            onLogin = viewModel::login,
-                        )
-                        state.destination == AppDestination.SETTINGS -> SettingsScreen(
-                            state = state,
-                            onBack = viewModel::closeSettings,
-                            onCheckForUpdates = viewModel::checkForUpdates,
-                            onDismissFeedbackState = viewModel::dismissFeedbackState,
-                            onLogout = viewModel::logout,
-                            onSetAppearance = viewModel::setAppearance,
-                            onSetFontScale = viewModel::setFontScale,
-                            onSetLanguage = viewModel::setLanguage,
-                            onSubmitFeedback = viewModel::submitFeedback,
-                        )
-                        else -> ChatScreen(
-                            state = state,
-                            viewModel = viewModel,
-                            onOpenSettings = viewModel::openSettings,
-                        )
+                            destination == "login" -> LoginScreen(
+                                isLoading = state.isLoggingIn,
+                                errorMessage = state.loginError,
+                                onDismissError = viewModel::dismissLoginError,
+                                onLogin = viewModel::login,
+                            )
+                            destination == "settings" -> SettingsScreen(
+                                state = state,
+                                onBack = viewModel::closeSettings,
+                                onCheckForUpdates = viewModel::checkForUpdates,
+                                onDismissFeedbackState = viewModel::dismissFeedbackState,
+                                onLogout = viewModel::logout,
+                                onSetAppearance = viewModel::setAppearance,
+                                onSetFontScale = viewModel::setFontScale,
+                                onSetLanguage = viewModel::setLanguage,
+                                onSubmitFeedback = viewModel::submitFeedback,
+                            )
+                            else -> ChatScreen(
+                                state = state,
+                                viewModel = viewModel,
+                                onOpenSettings = viewModel::openSettings,
+                            )
                         }
                     }
                 }

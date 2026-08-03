@@ -2,6 +2,7 @@ package com.zengjunjie.adaptivechat.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -25,9 +26,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,6 +56,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Send
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.AttachFile
@@ -61,6 +65,8 @@ import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -69,7 +75,6 @@ import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -79,6 +84,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
@@ -97,6 +103,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -109,18 +116,16 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.zengjunjie.adaptivechat.R
 import com.zengjunjie.adaptivechat.BuildConfig
@@ -149,6 +154,8 @@ fun ChatScreen(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val composerFocusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
     val speechPlayer = remember(context.applicationContext) {
         SpeechPlayer(context.applicationContext, BuildConfig.API_BASE_URL)
     }
@@ -156,6 +163,20 @@ fun ChatScreen(
     var attachments by remember { mutableStateOf<List<ChatAttachment>>(emptyList()) }
     var sessionPendingDeletion by remember { mutableStateOf<ChatSession?>(null) }
     var attachmentError by remember { mutableStateOf<String?>(null) }
+    var editingMessageId by rememberSaveable { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(state.selectedSession?.id) {
+        editingMessageId = null
+        draft = ""
+        attachments = emptyList()
+    }
+    LaunchedEffect(editingMessageId) {
+        if (editingMessageId != null) {
+            delay(60)
+            composerFocusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
 
     DisposableEffect(speechPlayer) {
         onDispose { speechPlayer.release() }
@@ -257,13 +278,25 @@ fun ChatScreen(
                     draft = draft,
                     onDraftChange = { draft = it },
                     onSend = {
-                        viewModel.sendMessage(draft, attachments)
+                        val messageId = editingMessageId
+                        if (messageId == null) {
+                            viewModel.sendMessage(draft, attachments)
+                        } else {
+                            viewModel.editLatestUserMessage(messageId, draft, attachments)
+                        }
+                        editingMessageId = null
                         draft = ""
                         attachments = emptyList()
                     },
-                    onRedo = viewModel::redoTerminalAssistant,
+                    onRedo = viewModel::redoAssistant,
                     onBranch = viewModel::branchConversation,
                     onListen = { markdown -> viewModel.listenToMessage(markdown, speechPlayer) },
+                    onDelete = viewModel::deleteAssistantMessage,
+                    onEdit = { message ->
+                        editingMessageId = message.id
+                        draft = message.content
+                        attachments = message.attachments
+                    },
                     attachments = attachments,
                     onRemoveAttachment = { attachment -> attachments = attachments - attachment },
                     onAttachFile = { imagePicker.launch(arrayOf("image/*")) },
@@ -275,6 +308,13 @@ fun ChatScreen(
                         }
                     },
                     onDismissError = viewModel::dismissError,
+                    editingMessageId = editingMessageId,
+                    onCancelEdit = {
+                        editingMessageId = null
+                        draft = ""
+                        attachments = emptyList()
+                    },
+                    composerFocusRequester = composerFocusRequester,
                     modifier = Modifier.padding(contentPadding),
                 )
             }
@@ -496,11 +536,16 @@ private fun ChatContent(
     onRedo: (String) -> Unit,
     onBranch: (String) -> Unit,
     onListen: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onEdit: (ChatMessage) -> Unit,
     attachments: List<ChatAttachment>,
     onRemoveAttachment: (ChatAttachment) -> Unit,
     onAttachFile: () -> Unit,
     onVoiceInput: () -> Unit,
     onDismissError: () -> Unit,
+    editingMessageId: String?,
+    onCancelEdit: () -> Unit,
+    composerFocusRequester: FocusRequester,
     modifier: Modifier = Modifier,
 ) {
     val copy = LocalAppCopy.current
@@ -517,13 +562,30 @@ private fun ChatContent(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        state.errorMessage?.let { message ->
-            AlertDialog(
-                onDismissRequest = onDismissError,
-                confirmButton = { TextButton(onClick = onDismissError) { Text(copy.close) } },
-                title = { Text(copy.streamingError) },
-                text = { Text(copy.localizedError(message)) },
-            )
+        AnimatedVisibility(visible = state.errorMessage != null) {
+            state.errorMessage?.let { message ->
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 7.dp, bottom = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Outlined.ErrorOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = copy.localizedError(message),
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        IconButton(onClick = onDismissError, modifier = Modifier.size(36.dp)) {
+                            Icon(Icons.Outlined.Close, contentDescription = copy.close, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
         }
         AnimatedVisibility(visible = state.isStreaming) {
             LinearProgressIndicator(
@@ -536,6 +598,7 @@ private fun ChatContent(
         if (state.messages.isEmpty()) {
             WelcomePanel(provider = state.provider, model = state.model, modifier = Modifier.weight(1f))
         } else {
+            val terminalUserId = state.messages.lastOrNull { it.role == MessageRole.USER }?.id
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f),
@@ -546,11 +609,15 @@ private fun ChatContent(
                     MessageItem(
                         message = message,
                         provider = state.provider,
+                        modelLabel = messageModelLabel(message, state.channels, state.provider, copy),
                         isWaitingForFirstToken = state.isWaitingForFirstToken && message.isStreaming,
-                        isTerminalAssistant = message.role == MessageRole.ASSISTANT && message.id == state.messages.lastOrNull()?.id,
+                        isTerminalUser = message.role == MessageRole.USER && message.id == terminalUserId,
+                        interactionsLocked = state.isStreaming,
                         onRedo = onRedo,
                         onBranch = onBranch,
                         onListen = onListen,
+                        onDelete = onDelete,
+                        onEdit = onEdit,
                     )
                 }
             }
@@ -566,6 +633,9 @@ private fun ChatContent(
             onRemoveAttachment = onRemoveAttachment,
             onAttachFile = onAttachFile,
             onVoiceInput = onVoiceInput,
+            isEditing = editingMessageId != null,
+            onCancelEdit = onCancelEdit,
+            focusRequester = composerFocusRequester,
             modifier = Modifier.imePadding(),
         )
     }
@@ -722,18 +792,73 @@ private fun WelcomePanel(provider: ProviderMode, model: ChatModel, modifier: Mod
     }
 }
 
+private enum class MessageAction {
+    REDO,
+    COPY,
+    EDIT,
+    BRANCH,
+    LISTEN,
+    DELETE,
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun MessageItem(
     message: ChatMessage,
     provider: ProviderMode,
+    modelLabel: String,
     isWaitingForFirstToken: Boolean,
-    isTerminalAssistant: Boolean,
+    isTerminalUser: Boolean,
+    interactionsLocked: Boolean,
     onRedo: (String) -> Unit,
     onBranch: (String) -> Unit,
     onListen: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onEdit: (ChatMessage) -> Unit,
 ) {
+    val copy = LocalAppCopy.current
     val fromUser = message.role == MessageRole.USER
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val actionScope = rememberCoroutineScope()
+    var showActionSheet by rememberSaveable(message.id) { mutableStateOf(false) }
+    val actions = if (fromUser) {
+        buildList {
+            add(MessageAction.COPY)
+            if (isTerminalUser) add(MessageAction.EDIT)
+        }
+    } else {
+        listOf(
+            MessageAction.REDO,
+            MessageAction.COPY,
+            MessageAction.BRANCH,
+            MessageAction.LISTEN,
+            MessageAction.DELETE,
+        )
+    }
+    val actionPayload = message.content.ifBlank { message.errorText }
+    val isActionEnabled: (MessageAction) -> Boolean = { action ->
+        when (action) {
+            MessageAction.COPY -> actionPayload.isNotBlank()
+            MessageAction.LISTEN -> actionPayload.isNotBlank() && !message.isStreaming
+            else -> !interactionsLocked && !message.isStreaming
+        }
+    }
+    val performAction: (MessageAction) -> Unit = { action ->
+        showActionSheet = false
+        when (action) {
+            MessageAction.REDO -> onRedo(message.id)
+            MessageAction.COPY -> actionScope.launch {
+                clipboard.setClipEntry(
+                    ClipEntry(ClipData.newPlainText(copy.copyMessage, actionPayload)),
+                )
+            }
+            MessageAction.EDIT -> onEdit(message)
+            MessageAction.BRANCH -> onBranch(message.id)
+            MessageAction.LISTEN -> onListen(actionPayload)
+            MessageAction.DELETE -> onDelete(message.id)
+        }
+    }
+
     Column(modifier = Modifier.fillMaxWidth().animateContentSize()) {
         if (!fromUser && message.reasoning.isNotBlank()) {
             ReasoningBlock(
@@ -762,31 +887,165 @@ private fun MessageItem(
                 contentColor = bubbleContent,
                 shape = bubbleShape(fromUser, provider),
                 border = if (!fromUser && provider.isDeepSeek) BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)) else null,
-                modifier = Modifier.fillMaxWidth(if (fromUser) 0.84f else 0.94f).widthIn(max = 760.dp),
+                modifier = Modifier
+                    .fillMaxWidth(if (fromUser) 0.84f else 0.94f)
+                    .widthIn(max = 760.dp)
+                    .combinedClickable(
+                        onClick = {},
+                        onLongClick = { showActionSheet = true },
+                    ),
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
+                    if (!fromUser) {
+                        Text(
+                            text = modelLabel,
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        Spacer(Modifier.height(7.dp))
+                    }
                     if (message.attachments.isNotEmpty()) {
                         AttachmentSummary(message.attachments)
                         if (message.content.isNotBlank()) Spacer(Modifier.height(8.dp))
                     }
                     if (isWaitingForFirstToken && message.content.isBlank() && message.reasoning.isBlank()) {
                         WaitingForResponse()
-                    } else {
-                        StreamingMarkdown(text = message.content, provider = provider)
-                    }
-                    if (!fromUser && !message.isStreaming && message.content.isNotBlank()) {
-                        AssistantActionBar(
-                            isTerminalAssistant = isTerminalAssistant,
-                            onRedo = { onRedo(message.id) },
-                            onCopy = { clipboard.setText(AnnotatedString(message.content)) },
-                            onBranch = { onBranch(message.id) },
-                            onListen = { onListen(message.content) },
+                    } else if (message.content.isNotBlank()) {
+                        StreamingMarkdown(
+                            text = message.content,
+                            provider = provider,
+                            isStreaming = message.isStreaming,
                         )
                     }
+                    if (!fromUser && message.errorText.isNotBlank()) {
+                        if (message.content.isNotBlank()) Spacer(Modifier.height(9.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(5.dp))
+                                .background(MaterialTheme.colorScheme.errorContainer)
+                                .padding(horizontal = 9.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            Icon(
+                                Icons.Outlined.ErrorOutline,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(17.dp),
+                            )
+                            Spacer(Modifier.width(7.dp))
+                            Text(
+                                text = copy.localizedError(message.errorText),
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(7.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+                    MessageActionBar(
+                        actions = actions,
+                        isEnabled = isActionEnabled,
+                        onAction = performAction,
+                    )
                 }
             }
         }
     }
+
+    if (showActionSheet) {
+        ModalBottomSheet(onDismissRequest = { showActionSheet = false }) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    text = copy.messageActions,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                actions.forEach { action ->
+                    TextButton(
+                        onClick = { performAction(action) },
+                        enabled = isActionEnabled(action),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(messageActionIcon(action), contentDescription = null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Text(messageActionLabel(action, copy))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageActionBar(
+    actions: List<MessageAction>,
+    isEnabled: (MessageAction) -> Boolean,
+    onAction: (MessageAction) -> Unit,
+) {
+    val copy = LocalAppCopy.current
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        actions.forEach { action ->
+            IconButton(
+                onClick = { onAction(action) },
+                enabled = isEnabled(action),
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    imageVector = messageActionIcon(action),
+                    contentDescription = messageActionLabel(action, copy),
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+private fun messageActionIcon(action: MessageAction): ImageVector = when (action) {
+    MessageAction.REDO -> Icons.Outlined.Refresh
+    MessageAction.COPY -> Icons.Outlined.ContentCopy
+    MessageAction.EDIT -> Icons.Outlined.Edit
+    MessageAction.BRANCH -> Icons.Outlined.AccountTree
+    MessageAction.LISTEN -> Icons.AutoMirrored.Outlined.VolumeUp
+    MessageAction.DELETE -> Icons.Outlined.DeleteOutline
+}
+
+private fun messageActionLabel(action: MessageAction, copy: AppCopy): String = when (action) {
+    MessageAction.REDO -> copy.redo
+    MessageAction.COPY -> copy.copyMessage
+    MessageAction.EDIT -> copy.editMessage
+    MessageAction.BRANCH -> copy.branch
+    MessageAction.LISTEN -> copy.listen
+    MessageAction.DELETE -> copy.delete
+}
+
+private fun messageModelLabel(
+    message: ChatMessage,
+    channels: List<ProviderMode>,
+    activeProvider: ProviderMode,
+    copy: AppCopy,
+): String {
+    val storedModel = message.modelId.ifBlank { activeProvider.defaultModel.wireName }
+    val provider = channels.firstOrNull { channel -> channel.models.any { it.wireName == storedModel } }
+        ?: channels.firstOrNull { storedModel.startsWith("${it.wireName}-") }
+        ?: activeProvider
+    val model = provider.models.firstOrNull { it.wireName == storedModel }
+    val modelName = model?.let(copy::modelName)
+        ?: storedModel.substringAfterLast('-').replaceFirstChar { character -> character.titlecase() }
+    return "${copy.providerName(provider)}-$modelName"
 }
 
 private fun bubbleShape(fromUser: Boolean, provider: ProviderMode) = when {
@@ -878,24 +1137,37 @@ private fun ReasoningBlock(
 }
 
 @Composable
-private fun StreamingMarkdown(text: String, provider: ProviderMode) {
+private fun StreamingMarkdown(
+    text: String,
+    provider: ProviderMode,
+    isStreaming: Boolean,
+) {
     val dark = LocalAdaptiveDark.current
+    val blocks by produceState<List<RenderedMarkdownBlock>>(
+        initialValue = emptyList(),
+        key1 = text,
+        key2 = isStreaming,
+    ) {
+        value = withContext(Dispatchers.Default) {
+            runCatching { parseStreamingMarkdown(text, isStreaming) }.getOrDefault(emptyList())
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        markdownBlocks(text).forEach { block ->
+        blocks.forEach { block ->
             when (block) {
-                is MarkdownBlock.Code -> Surface(
+                is RenderedMarkdownBlock.Code -> Surface(
                     color = if (provider.isDeepSeek && dark) Color(0xFF071018) else MaterialTheme.colorScheme.surfaceVariant,
                     shape = RoundedCornerShape(6.dp),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
-                        text = block.text,
+                        text = block.code,
                         fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(10.dp),
                     )
                 }
-                is MarkdownBlock.ListItem -> Row(
+                is RenderedMarkdownBlock.ListItem -> Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.Top,
                 ) {
@@ -905,156 +1177,23 @@ private fun StreamingMarkdown(text: String, provider: ProviderMode) {
                         style = MaterialTheme.typography.bodyLarge,
                     )
                     Text(
-                        text = markdownAnnotatedString(block.text),
+                        text = block.content,
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodyLarge,
                     )
                 }
-                is MarkdownBlock.Paragraph -> Text(
-                    text = markdownAnnotatedString(block.text),
+                is RenderedMarkdownBlock.Heading -> Text(
+                    text = block.content,
+                    style = when (block.level) {
+                        1 -> MaterialTheme.typography.titleLarge
+                        2 -> MaterialTheme.typography.titleMedium
+                        else -> MaterialTheme.typography.titleSmall
+                    },
+                )
+                is RenderedMarkdownBlock.Paragraph -> Text(
+                    text = block.content,
                     style = MaterialTheme.typography.bodyLarge,
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun AssistantActionBar(
-    isTerminalAssistant: Boolean,
-    onRedo: () -> Unit,
-    onCopy: () -> Unit,
-    onBranch: () -> Unit,
-    onListen: () -> Unit,
-) {
-    val copy = LocalAppCopy.current
-    Row(
-        modifier = Modifier.padding(top = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (isTerminalAssistant) {
-            IconButton(onClick = onRedo, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Outlined.Refresh, contentDescription = copy.redo, modifier = Modifier.size(18.dp))
-            }
-        }
-        IconButton(onClick = onCopy, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Outlined.ContentCopy, contentDescription = copy.copyMessage, modifier = Modifier.size(18.dp))
-        }
-        IconButton(onClick = onBranch, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Outlined.AccountTree, contentDescription = copy.branch, modifier = Modifier.size(18.dp))
-        }
-        IconButton(onClick = onListen, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Outlined.VolumeUp, contentDescription = copy.listen, modifier = Modifier.size(18.dp))
-        }
-    }
-}
-
-private sealed interface MarkdownBlock {
-    data class Paragraph(val text: String) : MarkdownBlock
-    data class Code(val text: String) : MarkdownBlock
-    data class ListItem(val marker: String, val text: String) : MarkdownBlock
-}
-
-private val bulletPattern = Regex("^\\s*[-*+]\\s+(.+)$")
-private val numberedPattern = Regex("^\\s*(\\d+)[.)]\\s+(.+)$")
-
-private fun markdownBlocks(markdown: String): List<MarkdownBlock> {
-    val blocks = mutableListOf<MarkdownBlock>()
-    val paragraph = StringBuilder()
-    val code = StringBuilder()
-    var inCodeBlock = false
-
-    fun flushParagraph() {
-        if (paragraph.isNotBlank()) {
-            blocks += MarkdownBlock.Paragraph(paragraph.toString().trimEnd())
-            paragraph.clear()
-        }
-    }
-
-    fun flushCode() {
-        if (code.isNotEmpty()) {
-            blocks += MarkdownBlock.Code(code.toString().trimEnd())
-            code.clear()
-        }
-    }
-
-    markdown.lines().forEach { line ->
-        if (line.trimStart().startsWith("```")) {
-            if (inCodeBlock) flushCode() else flushParagraph()
-            inCodeBlock = !inCodeBlock
-        } else if (inCodeBlock) {
-            if (code.isNotEmpty()) code.append('\n')
-            code.append(line)
-        } else {
-            val bullet = bulletPattern.matchEntire(line)
-            val numbered = numberedPattern.matchEntire(line)
-            when {
-                bullet != null -> {
-                    flushParagraph()
-                    blocks += MarkdownBlock.ListItem("•", bullet.groupValues[1])
-                }
-                numbered != null -> {
-                    flushParagraph()
-                    blocks += MarkdownBlock.ListItem("${numbered.groupValues[1]}.", numbered.groupValues[2])
-                }
-                line.isBlank() -> flushParagraph()
-                else -> {
-                    if (paragraph.isNotEmpty()) paragraph.append('\n')
-                    paragraph.append(line.removePrefix("# "))
-                }
-            }
-        }
-    }
-    if (inCodeBlock) flushCode() else flushParagraph()
-    return blocks
-}
-
-private fun markdownAnnotatedString(value: String): AnnotatedString = buildAnnotatedString {
-    var index = 0
-    while (index < value.length) {
-        when {
-            value.startsWith("**", index) || value.startsWith("__", index) -> {
-                val token = value.substring(index, index + 2)
-                val end = value.indexOf(token, index + token.length)
-                if (end > index + token.length) {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                        append(value.substring(index + token.length, end))
-                    }
-                    index = end + token.length
-                } else {
-                    append(token)
-                    index += token.length
-                }
-            }
-            value[index] == '`' -> {
-                val end = value.indexOf('`', index + 1)
-                if (end > index + 1) {
-                    withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) {
-                        append(value.substring(index + 1, end))
-                    }
-                    index = end + 1
-                } else {
-                    append(value[index])
-                    index += 1
-                }
-            }
-            value[index] == '*' || value[index] == '_' -> {
-                val token = value[index]
-                val end = value.indexOf(token, index + 1)
-                if (end > index + 1) {
-                    withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-                        append(value.substring(index + 1, end))
-                    }
-                    index = end + 1
-                } else {
-                    append(value[index])
-                    index += 1
-                }
-            }
-            else -> {
-                append(value[index])
-                index += 1
             }
         }
     }
@@ -1096,6 +1235,9 @@ private fun Composer(
     onRemoveAttachment: (ChatAttachment) -> Unit,
     onAttachFile: () -> Unit,
     onVoiceInput: () -> Unit,
+    isEditing: Boolean,
+    onCancelEdit: () -> Unit,
+    focusRequester: FocusRequester,
     modifier: Modifier = Modifier,
 ) {
     val copy = LocalAppCopy.current
@@ -1114,6 +1256,35 @@ private fun Composer(
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, top = 4.dp, bottom = 2.dp)) {
+            AnimatedVisibility(visible = isEditing) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = 10.dp, end = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Edit,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(17.dp),
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        Text(
+                            text = copy.editingMessage,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        IconButton(onClick = onCancelEdit, modifier = Modifier.size(34.dp)) {
+                            Icon(Icons.Outlined.Close, contentDescription = copy.cancel, modifier = Modifier.size(17.dp))
+                        }
+                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                    )
+                }
+            }
             if (attachments.isNotEmpty()) {
                 Column(
                     modifier = Modifier.padding(start = 8.dp, end = 4.dp, top = 4.dp),
@@ -1160,7 +1331,7 @@ private fun Composer(
                 TextField(
                     value = draft,
                     onValueChange = onDraftChange,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).focusRequester(focusRequester),
                     enabled = !isStreaming,
                     placeholder = { Text(copy.messagePlaceholder(copy.providerName(provider))) },
                     maxLines = 5,

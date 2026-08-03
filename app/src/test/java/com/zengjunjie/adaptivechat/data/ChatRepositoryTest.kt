@@ -62,6 +62,30 @@ class ChatRepositoryTest {
         assertEquals("data:image/png;base64,AA==", window.single().attachments.single().dataUrl)
     }
 
+    @Test
+    fun contextWindowExcludesAnEmptyFailedAssistantPlaceholder() {
+        val messages = listOf(
+            testMessage("prompt", "Try again"),
+            ChatMessageEntity(
+                id = "failed-assistant",
+                sessionId = "session",
+                role = "ASSISTANT",
+                content = "",
+                attachmentsJson = "[]",
+                reasoning = "",
+                createdAt = 1,
+                isStreaming = false,
+                model = "deepseek-expert",
+                errorText = "Network timeout",
+            ),
+        )
+
+        val window = buildContextWindow("", messages)
+
+        assertEquals(1, window.size)
+        assertEquals("Try again", window.single().content)
+    }
+
     private fun testMessage(id: String, content: String) = ChatMessageEntity(
         id = id,
         sessionId = "session",

@@ -1,5 +1,6 @@
 package com.zengjunjie.adaptivechat.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -37,6 +38,8 @@ data class ChatMessageEntity(
     val reasoning: String,
     val createdAt: Long,
     val isStreaming: Boolean,
+    @ColumnInfo(defaultValue = "''") val model: String = "",
+    @ColumnInfo(defaultValue = "''") val errorText: String = "",
 )
 
 @Dao
@@ -74,13 +77,24 @@ interface ChatDao {
     @Query("UPDATE chat_sessions SET updatedAt = :updatedAt WHERE id = :sessionId")
     suspend fun touchSession(sessionId: String, updatedAt: Long)
 
-    @Query("UPDATE chat_messages SET content = :content, reasoning = :reasoning, isStreaming = :isStreaming WHERE id = :messageId")
+    @Query("UPDATE chat_messages SET content = :content, reasoning = :reasoning, model = :model, errorText = :errorText, isStreaming = :isStreaming WHERE id = :messageId")
     suspend fun updateAssistantMessage(
         messageId: String,
         content: String,
         reasoning: String,
+        model: String,
+        errorText: String,
         isStreaming: Boolean,
     )
+
+    @Query("DELETE FROM chat_messages WHERE id = :messageId AND sessionId = :sessionId")
+    suspend fun deleteMessage(sessionId: String, messageId: String): Int
+
+    @Query("DELETE FROM chat_messages WHERE sessionId = :sessionId AND createdAt > :createdAt")
+    suspend fun deleteMessagesAfter(sessionId: String, createdAt: Long)
+
+    @Query("DELETE FROM chat_messages WHERE sessionId = :sessionId AND createdAt >= :createdAt")
+    suspend fun deleteMessagesAtOrAfter(sessionId: String, createdAt: Long)
 
     @Query("DELETE FROM chat_sessions WHERE id = :sessionId")
     suspend fun deleteSession(sessionId: String)
@@ -99,11 +113,55 @@ interface ChatDao {
         upsertSession(session)
         upsertMessages(messages)
     }
+
+    @Transaction
+    suspend fun deleteMessageAndTouch(sessionId: String, messageId: String, updatedAt: Long): Boolean {
+        val deleted = deleteMessage(sessionId, messageId) > 0
+        if (deleted) touchSession(sessionId, updatedAt)
+        return deleted
+    }
+
+    @Transaction
+    suspend fun replaceUserMessageAndTail(
+        userMessage: ChatMessageEntity,
+        assistantMessage: ChatMessageEntity,
+        updatedAt: Long,
+    ) {
+        deleteMessagesAfter(userMessage.sessionId, userMessage.createdAt)
+        upsertMessage(userMessage)
+        upsertMessage(assistantMessage)
+        touchSession(userMessage.sessionId, updatedAt)
+    }
+
+    @Transaction
+    suspend fun prepareAssistantRegeneration(
+        sessionId: String,
+        messageId: String,
+        createdAt: Long,
+        model: String,
+        updatedAt: Long,
+    ) {
+        deleteMessagesAfter(sessionId, createdAt)
+        updateAssistantMessage(messageId, "", "", model, "", true)
+        touchSession(sessionId, updatedAt)
+    }
+
+    @Transaction
+    suspend fun restoreMessageTail(
+        sessionId: String,
+        createdAt: Long,
+        messages: List<ChatMessageEntity>,
+        updatedAt: Long,
+    ) {
+        deleteMessagesAtOrAfter(sessionId, createdAt)
+        upsertMessages(messages)
+        touchSession(sessionId, updatedAt)
+    }
 }
 
 @Database(
     entities = [ChatSessionEntity::class, ChatMessageEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -111,9 +169,24 @@ abstract class ChatDatabase : RoomDatabase() {
 
     companion object {
         val MIGRATION_2_3 = object : Migration(2, 3) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL(
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
                     "ALTER TABLE chat_messages ADD COLUMN attachmentsJson TEXT NOT NULL DEFAULT '[]'",
+                )
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN model TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN errorText TEXT NOT NULL DEFAULT ''")
+                db.execSQL(
+                    """UPDATE chat_messages
+                       SET model = COALESCE(
+                           (SELECT model FROM chat_sessions WHERE chat_sessions.id = chat_messages.sessionId),
+                           ''
+                       )
+                       WHERE role = 'ASSISTANT'""".trimIndent(),
                 )
             }
         }

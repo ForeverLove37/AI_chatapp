@@ -233,7 +233,7 @@ class ChatViewModel(
         }
     }
 
-    fun redoTerminalAssistant(messageId: String) {
+    fun redoAssistant(messageId: String) {
         val session = uiState.value.selectedSession ?: return
         val accessToken = uiState.value.account.accessToken ?: return
         if (isStreaming.value) return
@@ -243,12 +243,51 @@ class ChatViewModel(
             isWaitingForFirstToken.value = true
             errorMessage.value = null
             runCatching {
-                repository.redoTerminalAssistant(session, messageId, accessToken) {
+                repository.redoAssistant(session, messageId, accessToken) {
                     isWaitingForFirstToken.value = false
                 }
             }.onFailure { errorMessage.value = it.message ?: "The streaming request failed." }
             isWaitingForFirstToken.value = false
             isStreaming.value = false
+        }
+    }
+
+    fun editLatestUserMessage(
+        messageId: String,
+        text: String,
+        attachments: List<ChatAttachment> = emptyList(),
+    ) {
+        val session = uiState.value.selectedSession ?: return
+        val accessToken = uiState.value.account.accessToken ?: return
+        if (isStreaming.value || (text.isBlank() && attachments.isEmpty())) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            isStreaming.value = true
+            isWaitingForFirstToken.value = true
+            errorMessage.value = null
+            runCatching {
+                repository.editLatestUserMessage(
+                    session = session,
+                    userMessageId = messageId,
+                    text = text.trim(),
+                    attachments = attachments,
+                    accessToken = accessToken,
+                ) {
+                    isWaitingForFirstToken.value = false
+                }
+            }.onFailure { errorMessage.value = it.message ?: "The streaming request failed." }
+            isWaitingForFirstToken.value = false
+            isStreaming.value = false
+        }
+    }
+
+    fun deleteAssistantMessage(messageId: String) {
+        val sessionId = uiState.value.selectedSession?.id ?: return
+        if (isStreaming.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repository.deleteAssistantMessage(sessionId, messageId) }
+                .onSuccess { errorMessage.value = null }
+                .onFailure { errorMessage.value = it.message ?: "Unable to delete the message." }
         }
     }
 

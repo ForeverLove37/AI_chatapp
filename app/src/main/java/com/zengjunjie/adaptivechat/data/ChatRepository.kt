@@ -67,6 +67,8 @@ class ChatRepository(
             reasoning = "",
             createdAt = now,
             isStreaming = false,
+            modelId = "",
+            errorText = "",
         )
         val assistantMessage = ChatMessage(
             id = newId(),
@@ -77,6 +79,8 @@ class ChatRepository(
             reasoning = "",
             createdAt = now + 1,
             isStreaming = true,
+            modelId = session.model.wireName,
+            errorText = "",
         )
         chatDao.upsertMessage(userMessage.toEntity())
         chatDao.upsertMessage(assistantMessage.toEntity())
@@ -93,7 +97,7 @@ class ChatRepository(
         )
     }
 
-    suspend fun redoTerminalAssistant(
+    suspend fun redoAssistant(
         session: ChatSession,
         assistantMessageId: String,
         accessToken: String,
@@ -101,7 +105,6 @@ class ChatRepository(
     ) {
         val persistedMessages = chatDao.getMessages(session.id)
         val assistantIndex = persistedMessages.indexOfFirst { it.id == assistantMessageId }
-        require(assistantIndex == persistedMessages.lastIndex) { "Only the latest response can be redone." }
         val assistant = persistedMessages.getOrNull(assistantIndex)
             ?: throw IllegalArgumentException("The response was not found.")
         require(assistant.role == MessageRole.ASSISTANT.name) { "Only assistant responses can be redone." }
@@ -109,11 +112,13 @@ class ChatRepository(
             "A preceding user message is required."
         }
 
-        chatDao.updateAssistantMessage(
+        val originalTail = persistedMessages.drop(assistantIndex)
+        chatDao.prepareAssistantRegeneration(
+            sessionId = session.id,
             messageId = assistant.id,
-            content = "",
-            reasoning = "",
-            isStreaming = true,
+            createdAt = assistant.createdAt,
+            model = session.model.wireName,
+            updatedAt = System.currentTimeMillis(),
         )
         try {
             streamAssistant(
@@ -124,13 +129,78 @@ class ChatRepository(
                 onFirstToken = onFirstToken,
             )
         } catch (error: Throwable) {
-            chatDao.updateAssistantMessage(
-                messageId = assistant.id,
-                content = assistant.content,
-                reasoning = assistant.reasoning,
-                isStreaming = false,
+            val restoredTail = originalTail.mapIndexed { index, message ->
+                message.copy(
+                    isStreaming = false,
+                    errorText = if (index == 0) error.persistedErrorText() else message.errorText,
+                )
+            }
+            chatDao.restoreMessageTail(
+                sessionId = session.id,
+                createdAt = assistant.createdAt,
+                messages = restoredTail,
+                updatedAt = System.currentTimeMillis(),
             )
             throw error
+        }
+    }
+
+    suspend fun editLatestUserMessage(
+        session: ChatSession,
+        userMessageId: String,
+        text: String,
+        attachments: List<ChatAttachment>,
+        accessToken: String,
+        onFirstToken: () -> Unit = {},
+    ) {
+        val persistedMessages = chatDao.getMessages(session.id)
+        val userIndex = persistedMessages.indexOfFirst { it.id == userMessageId }
+        val original = persistedMessages.getOrNull(userIndex)
+            ?: throw IllegalArgumentException("The message was not found.")
+        require(original.role == MessageRole.USER.name) { "Only user messages can be edited." }
+        require(persistedMessages.drop(userIndex + 1).none { it.role == MessageRole.USER.name }) {
+            "Only the latest user message can be edited."
+        }
+        require(text.isNotBlank() || attachments.isNotEmpty()) { "The edited message cannot be empty." }
+
+        val now = System.currentTimeMillis()
+        val editedUser = original.copy(
+            content = text,
+            attachmentsJson = attachments.toJson(),
+            isStreaming = false,
+            model = "",
+            errorText = "",
+        )
+        val assistant = ChatMessageEntity(
+            id = newId(),
+            sessionId = session.id,
+            role = MessageRole.ASSISTANT.name,
+            content = "",
+            attachmentsJson = "[]",
+            reasoning = "",
+            createdAt = maxOf(original.createdAt + 1, now),
+            isStreaming = true,
+            model = session.model.wireName,
+            errorText = "",
+        )
+        chatDao.replaceUserMessageAndTail(editedUser, assistant, now)
+        chatDao.updateTitle(session.id, text.ifBlank { attachments.firstOrNull()?.fileName ?: session.title }.take(52), now)
+        val sourceMessages = chatDao.getMessages(session.id).filterNot { it.id == assistant.id }
+        streamAssistant(
+            session = session,
+            assistantMessageId = assistant.id,
+            sourceMessages = sourceMessages,
+            accessToken = accessToken,
+            onFirstToken = onFirstToken,
+        )
+    }
+
+    suspend fun deleteAssistantMessage(sessionId: String, messageId: String) {
+        val message = chatDao.getMessages(sessionId).firstOrNull { it.id == messageId }
+            ?: throw IllegalArgumentException("The message was not found.")
+        require(message.role == MessageRole.ASSISTANT.name) { "Only assistant messages can be deleted." }
+        check(chatDao.deleteMessageAndTouch(sessionId, messageId, System.currentTimeMillis())) {
+            "The message could not be deleted."
         }
     }
 
@@ -174,6 +244,7 @@ class ChatRepository(
         var response = ""
         var reasoning = ""
         var receivedFirstToken = false
+        var streamFailure: Throwable? = null
         try {
             chatApi.stream(accessToken, session.model, history).collect { chunk ->
                 if (!receivedFirstToken && (chunk.content.isNotEmpty() || chunk.reasoning.isNotEmpty())) {
@@ -201,14 +272,21 @@ class ChatRepository(
                     messageId = assistantMessageId,
                     content = response,
                     reasoning = reasoning,
+                    model = session.model.wireName,
+                    errorText = "",
                     isStreaming = !chunk.completed,
                 )
             }
+        } catch (error: Throwable) {
+            streamFailure = error
+            throw error
         } finally {
             chatDao.updateAssistantMessage(
                 messageId = assistantMessageId,
                 content = response,
                 reasoning = reasoning,
+                model = session.model.wireName,
+                errorText = streamFailure?.persistedErrorText().orEmpty(),
                 isStreaming = false,
             )
             chatDao.touchSession(session.id, System.currentTimeMillis())
@@ -234,6 +312,9 @@ class ChatRepository(
 private const val MAX_CONTEXT_MESSAGES = 24
 private const val MAX_CONTEXT_CHARACTERS = 32_000
 
+private fun Throwable.persistedErrorText(): String =
+    (message?.trim().takeUnless { it.isNullOrBlank() } ?: "The streaming request failed.").take(1_000)
+
 internal fun buildContextWindow(
     systemPrompt: String,
     messages: List<ChatMessageEntity>,
@@ -242,6 +323,7 @@ internal fun buildContextWindow(
     var characterCount = 0
 
     for (message in messages.asReversed()) {
+        if (message.role == MessageRole.ASSISTANT.name && message.content.isBlank()) continue
         val length = message.content.length + message.attachmentsJson.length
         if (window.isNotEmpty() && (window.size >= MAX_CONTEXT_MESSAGES || characterCount + length > MAX_CONTEXT_CHARACTERS)) {
             break
@@ -289,6 +371,8 @@ private fun ChatMessageEntity.toModel() = ChatMessage(
     reasoning = reasoning,
     createdAt = createdAt,
     isStreaming = isStreaming,
+    modelId = model,
+    errorText = errorText,
 )
 
 private fun ChatMessage.toEntity() = ChatMessageEntity(
@@ -300,6 +384,8 @@ private fun ChatMessage.toEntity() = ChatMessageEntity(
     reasoning = reasoning,
     createdAt = createdAt,
     isStreaming = isStreaming,
+    model = modelId,
+    errorText = errorText,
 )
 
 private fun List<ChatAttachment>.toJson(): String = JSONArray().apply {
