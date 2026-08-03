@@ -29,7 +29,7 @@ Room state and remain consistent across recomposition and app restarts.
   new error on the selected response.
 - Replaced the blocking streaming-error dialog with an inline dismissible status,
   while persisting the same error inside the affected assistant bubble.
-- Updated the app to version `1.4.0` (version code `6`) and corrected the existing
+- Updated the app to version `1.4.0` (version code `7`) and corrected the existing
   destination animation so its target state drives rendered content.
 
 ## Verification
@@ -41,15 +41,19 @@ Room state and remain consistent across recomposition and app restarts.
 - `:app:lintDebug`: completed successfully.
 - `:app:assembleDebug`: completed successfully.
 - APK metadata: package `com.zengjunjie.adaptivechat`, version `1.4.0`, version
-  code `6`.
+  code `7`.
+- Production OTA publication: a version-code `5` check returns
+  `updateAvailable: true` with active production release `appv_73e997b1-495`.
 - APK SHA-256:
-  `9dccf03c0fb303883a85f1d6dc6e4754045a557a0cbf12a7786e9c8d7cb7fcd0`
+  `b1c6187a061da0ae97f071c5b142d2d1262932d44221adc3596355bff5ec7573`
 
 ## APK
 
 - Iteration 5 extraction path:
   `app/build/outputs/apk/iteration5/adaptive-chat-1.4.0-iteration5.apk`
 - Canonical build output: `app/build/outputs/apk/debug/app-debug.apk`
+- Production download:
+  `https://chatapi.zengjunjie.com/downloads/adaptive-chat-1.4.0-production.apk`
 
 Android visual validation remains with the Product Owner. No emulator, Xvfb,
 noVNC, Lavapipe, or other headless UI environment was used.
