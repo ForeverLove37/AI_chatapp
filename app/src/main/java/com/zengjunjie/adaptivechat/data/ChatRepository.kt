@@ -52,6 +52,7 @@ class ChatRepository(
     suspend fun sendMessage(
         session: ChatSession,
         text: String,
+        accessToken: String,
         onFirstToken: () -> Unit = {},
     ) {
         val now = System.currentTimeMillis()
@@ -88,21 +89,27 @@ class ChatRepository(
         var reasoning = ""
         var receivedFirstToken = false
         try {
-            chatApi.stream(session.model, history).collect { chunk ->
+            chatApi.stream(accessToken, session.model, history).collect { chunk ->
                 if (!receivedFirstToken && (chunk.content.isNotEmpty() || chunk.reasoning.isNotEmpty())) {
                     receivedFirstToken = true
                     onFirstToken()
                 }
                 if (chunk.reasoning.isNotEmpty()) reasoning += chunk.reasoning
                 if (chunk.content.isNotEmpty()) {
-                    val parsed = parser.consume(chunk.content)
-                    response += parsed.content
-                    reasoning += parsed.reasoning
+                    if (session.provider == ProviderMode.DEEPSEEK) {
+                        val parsed = parser.consume(chunk.content)
+                        response += parsed.content
+                        reasoning += parsed.reasoning
+                    } else {
+                        response += chunk.content
+                    }
                 }
                 if (chunk.completed) {
-                    val tail = parser.finish()
-                    response += tail.content
-                    reasoning += tail.reasoning
+                    if (session.provider == ProviderMode.DEEPSEEK) {
+                        val tail = parser.finish()
+                        response += tail.content
+                        reasoning += tail.reasoning
+                    }
                 }
                 chatDao.updateAssistantMessage(
                     messageId = assistantMessage.id,
@@ -121,6 +128,19 @@ class ChatRepository(
             chatDao.touchSession(session.id, System.currentTimeMillis())
         }
     }
+
+    suspend fun login(email: String, password: String): LoginResult = chatApi.login(email, password)
+
+    suspend fun checkForUpdate(versionCode: Int, versionName: String): UpdateCheckResult =
+        chatApi.checkForUpdate(versionCode, versionName)
+
+    suspend fun submitFeedback(
+        accessToken: String,
+        message: String,
+        category: String,
+        appVersion: String,
+        locale: String,
+    ) = chatApi.submitFeedback(accessToken, message, category, appVersion, locale)
 }
 
 private const val MAX_CONTEXT_MESSAGES = 24

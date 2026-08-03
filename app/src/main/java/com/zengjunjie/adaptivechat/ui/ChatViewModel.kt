@@ -3,11 +3,17 @@ package com.zengjunjie.adaptivechat.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.zengjunjie.adaptivechat.BuildConfig
+import com.zengjunjie.adaptivechat.data.AppPreferencesState
+import com.zengjunjie.adaptivechat.data.AppearancePreference
 import com.zengjunjie.adaptivechat.data.ChatMessage
 import com.zengjunjie.adaptivechat.data.ChatModel
 import com.zengjunjie.adaptivechat.data.ChatRepository
 import com.zengjunjie.adaptivechat.data.ChatSession
+import com.zengjunjie.adaptivechat.data.LanguagePreference
 import com.zengjunjie.adaptivechat.data.ProviderMode
+import com.zengjunjie.adaptivechat.data.RemoteAppVersion
+import com.zengjunjie.adaptivechat.data.UserPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -20,25 +26,57 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+enum class AppDestination {
+    CHAT,
+    SETTINGS,
+}
+
+sealed interface UpdateState {
+    data object Idle : UpdateState
+    data object Checking : UpdateState
+    data object UpToDate : UpdateState
+    data class Available(val version: RemoteAppVersion) : UpdateState
+    data class Failure(val message: String) : UpdateState
+}
+
+sealed interface FeedbackState {
+    data object Idle : FeedbackState
+    data object Sending : FeedbackState
+    data object Sent : FeedbackState
+    data class Failure(val message: String) : FeedbackState
+}
+
 data class ChatUiState(
     val sessions: List<ChatSession> = emptyList(),
     val selectedSession: ChatSession? = null,
     val messages: List<ChatMessage> = emptyList(),
     val provider: ProviderMode = ProviderMode.CHATGPT,
     val model: ChatModel = ChatModel.CHATGPT_LITE,
+    val account: AppPreferencesState = AppPreferencesState(),
+    val destination: AppDestination = AppDestination.CHAT,
+    val isLoggingIn: Boolean = false,
+    val loginError: String? = null,
     val isStreaming: Boolean = false,
     val isWaitingForFirstToken: Boolean = false,
     val errorMessage: String? = null,
+    val updateState: UpdateState = UpdateState.Idle,
+    val feedbackState: FeedbackState = FeedbackState.Idle,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModel(
     private val repository: ChatRepository,
+    private val preferences: UserPreferences,
 ) : ViewModel() {
     private val selectedSessionId = MutableStateFlow<String?>(null)
     private val isStreaming = MutableStateFlow(false)
     private val isWaitingForFirstToken = MutableStateFlow(false)
     private val errorMessage = MutableStateFlow<String?>(null)
+    private val destination = MutableStateFlow(AppDestination.CHAT)
+    private val isLoggingIn = MutableStateFlow(false)
+    private val loginError = MutableStateFlow<String?>(null)
+    private val updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
+    private val feedbackState = MutableStateFlow<FeedbackState>(FeedbackState.Idle)
 
     private val sessions = repository.observeSessions().stateIn(
         scope = viewModelScope,
@@ -50,10 +88,11 @@ class ChatViewModel(
         if (sessionId == null) flowOf(emptyList()) else repository.observeMessages(sessionId)
     }
 
-    val uiState: StateFlow<ChatUiState> = combine(sessions, selectedSessionId, messages) {
+    val uiState: StateFlow<ChatUiState> = combine(sessions, selectedSessionId, messages, preferences.state) {
             availableSessions,
             currentSessionId,
             currentMessages,
+            account,
             ->
         val selected = availableSessions.firstOrNull { it.id == currentSessionId }
         ChatUiState(
@@ -62,6 +101,7 @@ class ChatViewModel(
             messages = currentMessages,
             provider = selected?.provider ?: ProviderMode.CHATGPT,
             model = selected?.model ?: ChatModel.CHATGPT_LITE,
+            account = account,
         )
     }.combine(isStreaming) { state, streaming ->
         state.copy(isStreaming = streaming)
@@ -69,6 +109,16 @@ class ChatViewModel(
         state.copy(isWaitingForFirstToken = waiting)
     }.combine(errorMessage) { state, error ->
         state.copy(errorMessage = error)
+    }.combine(destination) { state, currentDestination ->
+        state.copy(destination = currentDestination)
+    }.combine(isLoggingIn) { state, pending ->
+        state.copy(isLoggingIn = pending)
+    }.combine(loginError) { state, error ->
+        state.copy(loginError = error)
+    }.combine(updateState) { state, update ->
+        state.copy(updateState = update)
+    }.combine(feedbackState) { state, feedback ->
+        state.copy(feedbackState = feedback)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -79,6 +129,32 @@ class ChatViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             selectedSessionId.value = repository.getOrCreateDefaultSession().id
         }
+    }
+
+    fun login(email: String, password: String) {
+        if (isLoggingIn.value) return
+        val normalizedEmail = email.trim()
+        if (normalizedEmail.isBlank() || password.length < 8) {
+            loginError.value = "Enter your email and an 8-character password."
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            isLoggingIn.value = true
+            loginError.value = null
+            runCatching { repository.login(normalizedEmail, password) }
+                .onSuccess { session -> preferences.saveSession(session.accessToken, session.email) }
+                .onFailure { error -> loginError.value = error.message ?: "Sign-in failed." }
+            isLoggingIn.value = false
+        }
+    }
+
+    fun logout() {
+        preferences.clearSession()
+        destination.value = AppDestination.CHAT
+        errorMessage.value = null
+        loginError.value = null
+        updateState.value = UpdateState.Idle
+        feedbackState.value = FeedbackState.Idle
     }
 
     fun selectSession(sessionId: String) {
@@ -118,6 +194,7 @@ class ChatViewModel(
 
     fun sendMessage(text: String) {
         val session = uiState.value.selectedSession ?: return
+        val accessToken = uiState.value.account.accessToken ?: return
         if (isStreaming.value || text.isBlank()) return
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -125,7 +202,7 @@ class ChatViewModel(
             isWaitingForFirstToken.value = true
             errorMessage.value = null
             runCatching {
-                repository.sendMessage(session, text.trim()) {
+                repository.sendMessage(session, text.trim(), accessToken) {
                     isWaitingForFirstToken.value = false
                 }
             }
@@ -135,16 +212,82 @@ class ChatViewModel(
         }
     }
 
+    fun openSettings() {
+        destination.value = AppDestination.SETTINGS
+        updateState.value = UpdateState.Idle
+        feedbackState.value = FeedbackState.Idle
+    }
+
+    fun closeSettings() {
+        destination.value = AppDestination.CHAT
+    }
+
+    fun setLanguage(value: LanguagePreference) = preferences.setLanguage(value)
+
+    fun setAppearance(value: AppearancePreference) = preferences.setAppearance(value)
+
+    fun setFontScale(value: Float) = preferences.setFontScale(value)
+
+    fun checkForUpdates() {
+        if (updateState.value is UpdateState.Checking) return
+        viewModelScope.launch(Dispatchers.IO) {
+            updateState.value = UpdateState.Checking
+            runCatching { repository.checkForUpdate(BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME) }
+                .onSuccess { result ->
+                    updateState.value = when {
+                        result.updateAvailable && result.latest != null -> UpdateState.Available(result.latest)
+                        else -> UpdateState.UpToDate
+                    }
+                }
+                .onFailure { error -> updateState.value = UpdateState.Failure(error.message ?: "Unable to check for updates.") }
+        }
+    }
+
+    fun submitFeedback(message: String, category: String = "general") {
+        val token = uiState.value.account.accessToken ?: return
+        if (message.trim().length < 3 || feedbackState.value is FeedbackState.Sending) return
+        viewModelScope.launch(Dispatchers.IO) {
+            feedbackState.value = FeedbackState.Sending
+            runCatching {
+                repository.submitFeedback(
+                    accessToken = token,
+                    message = message.trim(),
+                    category = category,
+                    appVersion = BuildConfig.VERSION_NAME,
+                    locale = localeTag(uiState.value.account.language),
+                )
+            }.onSuccess {
+                feedbackState.value = FeedbackState.Sent
+            }.onFailure { error ->
+                feedbackState.value = FeedbackState.Failure(error.message ?: "Unable to send feedback.")
+            }
+        }
+    }
+
     fun dismissError() {
         errorMessage.value = null
     }
 
+    fun dismissLoginError() {
+        loginError.value = null
+    }
+
+    fun dismissFeedbackState() {
+        feedbackState.value = FeedbackState.Idle
+    }
+
+    private fun localeTag(preference: LanguagePreference) = when (preference) {
+        LanguagePreference.SYSTEM -> "system"
+        LanguagePreference.ENGLISH -> "en"
+        LanguagePreference.CHINESE -> "zh-CN"
+    }
+
     companion object {
-        fun factory(repository: ChatRepository): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
+        fun factory(repository: ChatRepository, preferences: UserPreferences): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 require(modelClass.isAssignableFrom(ChatViewModel::class.java))
-                return ChatViewModel(repository) as T
+                return ChatViewModel(repository, preferences) as T
             }
         }
     }

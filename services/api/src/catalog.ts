@@ -13,16 +13,16 @@ export type ModelRoute = {
   enabled?: boolean;
 };
 
-const openAiModel = process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
-const geminiModel = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
-const deepSeekModel = process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
+const openAiModel = "gpt-4.1-mini";
+const geminiModel = "gemini-2.5-flash";
+const deepSeekModel = "deepseek-chat";
 
 /** Default mappings are persisted on first PostgreSQL startup and remain editable in the console. */
 export const modelCatalog: ModelRoute[] = [
   {
     id: "chatgpt-lite",
     provider: "openai",
-    upstreamModel: process.env.OPENAI_LITE_MODEL ?? openAiModel,
+    upstreamModel: openAiModel,
     label: "Lite",
     description: "Fast, focused ChatGPT conversations",
     uiMode: "chatgpt",
@@ -31,7 +31,7 @@ export const modelCatalog: ModelRoute[] = [
   {
     id: "chatgpt-standard",
     provider: "openai",
-    upstreamModel: process.env.OPENAI_STANDARD_MODEL ?? openAiModel,
+    upstreamModel: openAiModel,
     label: "Standard",
     description: "Balanced ChatGPT responses",
     uiMode: "chatgpt",
@@ -40,7 +40,7 @@ export const modelCatalog: ModelRoute[] = [
   {
     id: "chatgpt-pro",
     provider: "openai",
-    upstreamModel: process.env.OPENAI_PRO_MODEL ?? "gpt-4.1",
+    upstreamModel: "gpt-4.1",
     label: "Pro",
     description: "Expanded ChatGPT capability",
     uiMode: "chatgpt",
@@ -49,7 +49,7 @@ export const modelCatalog: ModelRoute[] = [
   {
     id: "gemini-flash",
     provider: "gemini",
-    upstreamModel: process.env.GEMINI_FLASH_MODEL ?? geminiModel,
+    upstreamModel: geminiModel,
     label: "Flash",
     description: "Fast Gemini responses",
     uiMode: "gemini",
@@ -58,7 +58,7 @@ export const modelCatalog: ModelRoute[] = [
   {
     id: "gemini-standard",
     provider: "gemini",
-    upstreamModel: process.env.GEMINI_STANDARD_MODEL ?? geminiModel,
+    upstreamModel: geminiModel,
     label: "Standard",
     description: "Balanced Gemini reasoning",
     uiMode: "gemini",
@@ -67,7 +67,7 @@ export const modelCatalog: ModelRoute[] = [
   {
     id: "gemini-extended",
     provider: "gemini",
-    upstreamModel: process.env.GEMINI_EXTENDED_MODEL ?? geminiModel,
+    upstreamModel: geminiModel,
     label: "Extended",
     description: "Longer Gemini responses",
     uiMode: "gemini",
@@ -76,7 +76,7 @@ export const modelCatalog: ModelRoute[] = [
   {
     id: "deepseek-flash",
     provider: "deepseek",
-    upstreamModel: process.env.DEEPSEEK_FLASH_MODEL ?? deepSeekModel,
+    upstreamModel: deepSeekModel,
     label: "Flash",
     description: "Fast DeepSeek responses",
     uiMode: "deepseek",
@@ -85,7 +85,7 @@ export const modelCatalog: ModelRoute[] = [
   {
     id: "deepseek-expert",
     provider: "deepseek",
-    upstreamModel: process.env.DEEPSEEK_EXPERT_MODEL ?? deepSeekModel,
+    upstreamModel: deepSeekModel,
     label: "Expert",
     description: "DeepSeek reasoning-focused responses",
     uiMode: "deepseek",

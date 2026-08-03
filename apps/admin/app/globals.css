@@ -30,6 +30,7 @@ body {
 }
 
 button, input { font: inherit; }
+select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.62; }
 
@@ -52,6 +53,7 @@ h1, h2, p { margin-top: 0; }
 h1 { font-size: 23px; line-height: 29px; margin-bottom: 0; }
 h2 { font-size: 16px; line-height: 22px; margin-bottom: 3px; }
 .topbar-actions { align-items: center; display: flex; gap: 10px; }
+.locale-select { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; color: var(--text); height: 34px; padding: 0 8px; }
 .icon-button { align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; color: var(--text); display: inline-flex; height: 34px; justify-content: center; width: 34px; }
 .icon-button:hover { background: #eef2ef; }
 .content { margin: 0 auto; max-width: 1320px; padding: 28px 32px 44px; }
@@ -101,6 +103,8 @@ td { border-top: 1px solid #e7ece8; font-size: 13px; padding: 13px 10px; vertica
 td strong, td span:not(.status) { display: block; }
 td span:not(.status) { color: var(--muted); font-size: 12px; margin-top: 3px; }
 td code { color: #385149; font-size: 12px; }
+td select { background: white; border: 1px solid #cbd4ce; border-radius: 5px; color: var(--text); min-height: 30px; padding: 0 7px; }
+td a { color: var(--teal); font-weight: 700; }
 .role-label { background: #eff1ee; border-radius: 4px; color: #4b5550; display: inline-block !important; font-size: 12px !important; margin-top: 0 !important; padding: 3px 6px; }
 .small-button, .primary-button { align-items: center; border-radius: 6px; display: inline-flex; font-size: 13px; font-weight: 700; gap: 6px; justify-content: center; min-height: 32px; padding: 0 10px; }
 .small-button { background: white; border: 1px solid var(--line); color: var(--text); }
@@ -138,6 +142,7 @@ td code { color: #385149; font-size: 12px; }
 .form-grid .wide-field { grid-column: span 2; }
 .form-action { min-height: 36px; width: fit-content; }
 .provider-form { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.user-form { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .provider-form .form-action { align-self: end; }
 .provider-tag { border-radius: 999px; display: inline-flex !important; font-size: 11px !important; font-weight: 700; margin: 0 !important; padding: 4px 7px; text-transform: uppercase; }
 .provider-openai { background: #d9f0e9; color: #087b68; }
@@ -156,6 +161,29 @@ td code { color: #385149; font-size: 12px; }
 .mapping-input span { color: var(--muted); font-size: 11px; font-weight: 700; }
 .mapping-input input { height: 34px; }
 .button-muted { color: var(--muted); }
+.feedback-message { max-width: 420px; }
+.feedback-message strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.release-notes { max-width: 340px; }
+.empty-table { color: var(--muted); padding: 26px 10px; text-align: center; }
+.release-form { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.checkbox-label { align-items: center; display: flex !important; gap: 7px; min-height: 36px; }
+.checkbox-label input { height: 16px; margin: 0; width: 16px; }
+.policy-grid { display: grid; gap: 14px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.model-policy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.policy-editor { border: 1px solid #e0e7e2; border-radius: 6px; min-width: 0; padding: 14px; }
+.policy-heading { align-items: baseline; display: flex; gap: 8px; justify-content: space-between; margin-bottom: 10px; }
+.policy-heading strong { font-size: 14px; }
+.policy-heading span, .policy-empty { color: var(--muted); font-size: 12px; }
+.policy-list { display: grid; gap: 6px; min-height: 42px; }
+.policy-key { align-items: center; background: #f7f9f7; border: 1px solid #e5ebe6; border-radius: 5px; display: grid; gap: 7px; grid-template-columns: 20px auto minmax(0, 1fr) auto auto; min-width: 0; padding: 6px; }
+.policy-key > strong { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.policy-index { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; }
+.policy-key .status { font-size: 10px; line-height: 19px; padding: 0 5px; }
+.policy-actions { display: inline-flex; gap: 3px; }
+.policy-actions .icon-button { height: 26px; width: 26px; }
+.policy-controls { align-items: center; display: grid; gap: 7px; grid-template-columns: minmax(0, 1fr) auto auto auto; margin-top: 10px; }
+.policy-controls select { background: white; border: 1px solid #cbd4ce; border-radius: 6px; color: var(--text); font: inherit; height: 32px; min-width: 0; padding: 0 7px; }
+.policy-controls .primary-button, .policy-controls .small-button { min-height: 32px; white-space: nowrap; }
 
 @media (max-width: 980px) {
   .shell { display: block; }
@@ -168,6 +196,7 @@ td code { color: #385149; font-size: 12px; }
   .content { padding: 20px; }
   .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .two-column { grid-template-columns: 1fr; }
+  .policy-grid, .model-policy-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 620px) {
@@ -185,17 +214,22 @@ td code { color: #385149; font-size: 12px; }
   .model-row code { display: none; }
   .secret-notice { grid-template-columns: 1fr auto; }
   .secret-notice code { grid-column: 1 / -1; grid-row: 2; }
-  .form-grid, .provider-form { grid-template-columns: 1fr 1fr; }
+  .form-grid, .provider-form, .user-form, .release-form { grid-template-columns: 1fr 1fr; }
   .form-grid .wide-field { grid-column: span 2; }
   .mapping-row { grid-template-columns: 34px minmax(0, 1fr) auto; }
   .mapping-input { grid-column: 2 / -1; }
 }
 
 @media (max-width: 440px) {
-  .form-grid, .provider-form { grid-template-columns: 1fr; }
+  .form-grid, .provider-form, .user-form, .release-form { grid-template-columns: 1fr; }
   .form-grid .wide-field { grid-column: auto; }
   .form-action { width: 100%; }
   .strategy-row { align-items: stretch; flex-direction: column; }
   .segmented { width: 100%; }
   .segmented button { flex: 1; justify-content: center; }
+  .policy-key { grid-template-columns: 20px auto minmax(0, 1fr) auto; }
+  .policy-key .status { display: none; }
+  .policy-actions { grid-column: 2 / -1; justify-content: flex-end; }
+  .policy-controls { grid-template-columns: minmax(0, 1fr) auto; }
+  .policy-controls .primary-button { grid-column: 1 / 2; }
 }

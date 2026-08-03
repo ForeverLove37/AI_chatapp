@@ -3,6 +3,8 @@ package com.zengjunjie.adaptivechat.data
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -13,6 +15,7 @@ import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 data class RemoteMessage(
@@ -26,13 +29,32 @@ data class StreamChunk(
     val completed: Boolean = false,
 )
 
+data class LoginResult(
+    val accessToken: String,
+    val email: String,
+)
+
+data class RemoteAppVersion(
+    val versionCode: Int,
+    val versionName: String,
+    val downloadUrl: String,
+    val releaseNotes: String,
+)
+
+data class UpdateCheckResult(
+    val updateAvailable: Boolean,
+    val latest: RemoteAppVersion?,
+)
+
 class ChatApi(baseUrl: String) {
-    private val endpoint = "${baseUrl.trimEnd('/')}/v1/chat/completions"
+    private val baseEndpoint = baseUrl.trimEnd('/')
+    private val endpoint = "$baseEndpoint/v1/chat/completions"
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
     fun stream(
+        accessToken: String,
         model: ChatModel,
         messages: List<RemoteMessage>,
     ): Flow<StreamChunk> = callbackFlow {
@@ -51,6 +73,7 @@ class ChatApi(baseUrl: String) {
         val request = Request.Builder()
             .url(endpoint)
             .header("Accept", "text/event-stream")
+            .header("Authorization", "Bearer $accessToken")
             .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
 
@@ -94,5 +117,74 @@ class ChatApi(baseUrl: String) {
         )
 
         awaitClose { eventSource.cancel() }
+    }
+
+    suspend fun login(email: String, password: String): LoginResult = postJson(
+        path = "/v1/auth/login",
+        payload = JSONObject().put("email", email).put("password", password),
+    ) { body ->
+        val user = body.optJSONObject("user")
+        val token = body.optString("token")
+        val userEmail = user?.optString("email").orEmpty()
+        if (token.isBlank() || userEmail.isBlank()) throw IOException("The server returned an incomplete sign-in response.")
+        LoginResult(accessToken = token, email = userEmail)
+    }
+
+    suspend fun checkForUpdate(versionCode: Int, versionName: String): UpdateCheckResult = postJson(
+        path = "/v1/app/check-update",
+        payload = JSONObject().put("versionCode", versionCode).put("versionName", versionName),
+    ) { body ->
+        val latest = body.optJSONObject("latest")?.let { item ->
+            RemoteAppVersion(
+                versionCode = item.optInt("versionCode"),
+                versionName = item.optString("versionName"),
+                downloadUrl = item.optString("downloadUrl"),
+                releaseNotes = item.optString("releaseNotes"),
+            )
+        }
+        UpdateCheckResult(updateAvailable = body.optBoolean("updateAvailable"), latest = latest)
+    }
+
+    suspend fun submitFeedback(
+        accessToken: String,
+        message: String,
+        category: String,
+        appVersion: String,
+        locale: String,
+    ) {
+        postJson(
+            path = "/v1/app/feedback",
+            payload = JSONObject()
+                .put("message", message)
+                .put("category", category)
+                .put("appVersion", appVersion)
+                .put("locale", locale),
+            accessToken = accessToken,
+        ) { Unit }
+    }
+
+    private suspend fun <T> postJson(
+        path: String,
+        payload: JSONObject,
+        accessToken: String? = null,
+        transform: (JSONObject) -> T,
+    ): T = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseEndpoint$path")
+            .header("Accept", "application/json")
+            .apply { if (accessToken != null) header("Authorization", "Bearer $accessToken") }
+            .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            val parsed = runCatching { JSONObject(body) }.getOrNull()
+            if (!response.isSuccessful) {
+                val message = parsed?.optJSONObject("error")?.optString("message")
+                    ?.takeIf(String::isNotBlank)
+                    ?: "Request failed with HTTP ${response.code}."
+                throw IOException(message)
+            }
+            transform(parsed ?: throw IOException("The server returned an invalid response."))
+        }
     }
 }

@@ -1,6 +1,5 @@
 package com.zengjunjie.adaptivechat.ui
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.LinearEasing
@@ -16,7 +15,6 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,7 +32,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -47,13 +44,12 @@ import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -67,6 +63,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.DrawerValue
@@ -86,9 +83,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.zengjunjie.adaptivechat.R
 import com.zengjunjie.adaptivechat.data.ChatMessage
 import com.zengjunjie.adaptivechat.data.ChatModel
 import com.zengjunjie.adaptivechat.data.ChatSession
@@ -102,7 +101,9 @@ import kotlinx.coroutines.launch
 fun ChatScreen(
     state: ChatUiState,
     viewModel: ChatViewModel,
+    onOpenSettings: () -> Unit,
 ) {
+    val copy = LocalAppCopy.current
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var draft by rememberSaveable { mutableStateOf("") }
@@ -120,6 +121,7 @@ fun ChatScreen(
                         scope.launch { drawerState.close() }
                     },
                     onDelete = viewModel::deleteSession,
+                    onOpenSettings = onOpenSettings,
                 )
             }
         },
@@ -129,23 +131,20 @@ fun ChatScreen(
             Scaffold(
                 containerColor = Color.Transparent,
                 topBar = {
-                    CenterAlignedTopAppBar(
-                        colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Transparent),
+                    TopAppBar(
+                        colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
                         navigationIcon = {
                             IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                                Icon(Icons.Outlined.Menu, contentDescription = "Open conversations")
+                                Icon(Icons.Outlined.Menu, contentDescription = copy.conversations)
                             }
                         },
                         title = {
-                            ChannelSelector(
-                                selected = state.provider,
-                                onSelected = viewModel::selectChannel,
+                            HeaderSelectors(
+                                provider = state.provider,
+                                model = state.model,
+                                onModelSelected = viewModel::selectModel,
+                                onProviderSelected = viewModel::selectChannel,
                             )
-                        },
-                        actions = {
-                            IconButton(onClick = viewModel::createSession) {
-                                Icon(Icons.Outlined.Add, contentDescription = "New conversation")
-                            }
                         },
                     )
                 },
@@ -158,7 +157,6 @@ fun ChatScreen(
                         viewModel.sendMessage(draft)
                         draft = ""
                     },
-                    onModelSelected = viewModel::selectModel,
                     onDismissError = viewModel::dismissError,
                     modifier = Modifier.padding(contentPadding),
                 )
@@ -174,7 +172,7 @@ private fun ChannelBackdrop(provider: ProviderMode) {
         ProviderMode.DEEPSEEK -> Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color(0xFF071018)),
+                .background(MaterialTheme.colorScheme.background),
         )
         ProviderMode.CHATGPT -> Box(
             modifier = Modifier
@@ -186,6 +184,7 @@ private fun ChannelBackdrop(provider: ProviderMode) {
 
 @Composable
 private fun GeminiGradientBackdrop() {
+    val dark = LocalAdaptiveDark.current
     val transition = rememberInfiniteTransition(label = "gemini-background")
     val shift by transition.animateFloat(
         initialValue = 0f,
@@ -201,7 +200,13 @@ private fun GeminiGradientBackdrop() {
             .fillMaxSize()
             .background(
                 Brush.linearGradient(
-                    colors = listOf(
+                    colors = if (dark) listOf(
+                        Color(0xFF101222),
+                        Color(0xFF18244A),
+                        Color(0xFF2A1945),
+                        Color(0xFF103E3A),
+                        Color(0xFF101222),
+                    ) else listOf(
                         Color(0xFFFDFBFF),
                         Color(0xFFEAF0FF),
                         Color(0xFFF7EEFF),
@@ -222,7 +227,9 @@ private fun SessionDrawer(
     onNewSession: () -> Unit,
     onSelect: (String) -> Unit,
     onDelete: (String) -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
+    val copy = LocalAppCopy.current
     Column(
         modifier = Modifier
             .fillMaxHeight()
@@ -233,9 +240,12 @@ private fun SessionDrawer(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Conversations", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+            Text(copy.conversations, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+            IconButton(onClick = onOpenSettings) {
+                Icon(Icons.Outlined.Settings, contentDescription = copy.settings)
+            }
             IconButton(onClick = onNewSession) {
-                Icon(Icons.Outlined.Add, contentDescription = "New conversation")
+                Icon(Icons.Outlined.Add, contentDescription = copy.newConversation)
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -261,11 +271,11 @@ private fun SessionDrawer(
                     )
                     Spacer(Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(session.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                        Text(session.model.displayName, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                        Text(if (session.title == "New conversation") copy.newConversation else session.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                        Text(copy.modelName(session.model), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                     }
                     IconButton(onClick = { onDelete(session.id) }, modifier = Modifier.size(36.dp)) {
-                        Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete conversation", modifier = Modifier.size(18.dp))
+                        Icon(Icons.Outlined.DeleteOutline, contentDescription = copy.delete, modifier = Modifier.size(18.dp))
                     }
                 }
             }
@@ -274,35 +284,27 @@ private fun SessionDrawer(
 }
 
 @Composable
-private fun ChannelSelector(
-    selected: ProviderMode,
-    onSelected: (ProviderMode) -> Unit,
+private fun HeaderSelectors(
+    provider: ProviderMode,
+    model: ChatModel,
+    onProviderSelected: (ProviderMode) -> Unit,
+    onModelSelected: (ChatModel) -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        Surface(
-            shape = RoundedCornerShape(if (selected == ProviderMode.GEMINI) 24.dp else 10.dp),
-            color = if (selected == ProviderMode.GEMINI) MaterialTheme.colorScheme.surface.copy(alpha = 0.84f) else Color.Transparent,
-        ) {
-            TextButton(onClick = { expanded = true }) {
-                Icon(providerIcon(selected), contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(7.dp))
-                Text(selected.displayName)
-                Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "Choose channel")
-            }
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            ProviderMode.entries.forEach { provider ->
-                DropdownMenuItem(
-                    text = { Text(provider.displayName) },
-                    leadingIcon = { Icon(providerIcon(provider), contentDescription = null) },
-                    onClick = {
-                        onSelected(provider)
-                        expanded = false
-                    },
-                )
-            }
-        }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        ChannelSelector(
+            selected = provider,
+            onSelected = onProviderSelected,
+            modifier = Modifier.weight(1f),
+        )
+        ModelSelector(
+            provider = provider,
+            selected = model,
+            onSelected = onModelSelected,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -312,10 +314,10 @@ private fun ChatContent(
     draft: String,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
-    onModelSelected: (ChatModel) -> Unit,
     onDismissError: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val copy = LocalAppCopy.current
     val listState = rememberLazyListState()
     LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.content?.length, state.messages.lastOrNull()?.reasoning?.length) {
         if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.lastIndex)
@@ -325,12 +327,11 @@ private fun ChatContent(
         state.errorMessage?.let { message ->
             AlertDialog(
                 onDismissRequest = onDismissError,
-                confirmButton = { TextButton(onClick = onDismissError) { Text("Close") } },
-                title = { Text("Streaming error") },
-                text = { Text(message) },
+                confirmButton = { TextButton(onClick = onDismissError) { Text(copy.close) } },
+                title = { Text(copy.streamingError) },
+                text = { Text(copy.localizedError(message)) },
             )
         }
-        ModelChooser(provider = state.provider, selectedModel = state.model, onModelSelected = onModelSelected)
         AnimatedVisibility(visible = state.isStreaming) {
             LinearProgressIndicator(
                 modifier = Modifier.fillMaxWidth(),
@@ -369,27 +370,40 @@ private fun ChatContent(
 }
 
 @Composable
-private fun ModelChooser(
-    provider: ProviderMode,
-    selectedModel: ChatModel,
-    onModelSelected: (ChatModel) -> Unit,
+private fun ChannelSelector(
+    selected: ProviderMode,
+    onSelected: (ProviderMode) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    AnimatedContent(targetState = provider, label = "channel-models") { channel ->
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 5.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+    val copy = LocalAppCopy.current
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier = modifier) {
+        Surface(
+            shape = selectorShape(selected),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = if (selected == ProviderMode.GEMINI) 0.86f else 0.96f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.56f)),
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            channel.models.forEach { model ->
-                FilterChip(
-                    selected = model == selectedModel,
-                    onClick = { onModelSelected(model) },
-                    label = { Text(model.displayName) },
-                    leadingIcon = if (channel == ProviderMode.DEEPSEEK) {
-                        { Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(15.dp)) }
-                    } else null,
+            TextButton(
+                onClick = { expanded = true },
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 8.dp),
+            ) {
+                Icon(painterResource(providerImage(selected)), contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.Unspecified)
+                Spacer(Modifier.width(5.dp))
+                Text(copy.providerName(selected), modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = copy.selectChannel, modifier = Modifier.size(17.dp))
+            }
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            ProviderMode.entries.forEach { provider ->
+                DropdownMenuItem(
+                    text = { Text(copy.providerName(provider)) },
+                    leadingIcon = { Icon(painterResource(providerImage(provider)), contentDescription = null, tint = Color.Unspecified) },
+                    onClick = {
+                        onSelected(provider)
+                        expanded = false
+                    },
                 )
             }
         }
@@ -397,7 +411,56 @@ private fun ModelChooser(
 }
 
 @Composable
+private fun ModelSelector(
+    provider: ProviderMode,
+    selected: ChatModel,
+    onSelected: (ChatModel) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val copy = LocalAppCopy.current
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier = modifier) {
+        Surface(
+            shape = selectorShape(provider),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = if (provider == ProviderMode.GEMINI) 0.86f else 0.96f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.56f)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            TextButton(
+                onClick = { expanded = true },
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 8.dp),
+            ) {
+                Icon(painterResource(providerImage(provider)), contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.Unspecified)
+                Spacer(Modifier.width(5.dp))
+                Text(copy.modelName(selected), modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = copy.selectModel, modifier = Modifier.size(17.dp))
+            }
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            provider.models.forEach { model ->
+                DropdownMenuItem(
+                    text = { Text(copy.modelName(model)) },
+                    leadingIcon = { Icon(painterResource(providerImage(provider)), contentDescription = null, tint = Color.Unspecified) },
+                    onClick = {
+                        onSelected(model)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+private fun selectorShape(provider: ProviderMode) = when (provider) {
+    ProviderMode.GEMINI -> RoundedCornerShape(24.dp)
+    ProviderMode.DEEPSEEK -> RoundedCornerShape(6.dp)
+    ProviderMode.CHATGPT -> RoundedCornerShape(10.dp)
+}
+
+@Composable
 private fun WelcomePanel(provider: ProviderMode, model: ChatModel, modifier: Modifier = Modifier) {
+    val copy = LocalAppCopy.current
     Column(
         modifier = modifier.fillMaxWidth().padding(horizontal = 32.dp),
         verticalArrangement = Arrangement.Center,
@@ -409,21 +472,17 @@ private fun WelcomePanel(provider: ProviderMode, model: ChatModel, modifier: Mod
             modifier = Modifier.size(58.dp),
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(providerIcon(provider), contentDescription = null, modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary)
+                Icon(painterResource(providerImage(provider)), contentDescription = null, modifier = Modifier.size(30.dp), tint = Color.Unspecified)
             }
         }
         Spacer(Modifier.height(16.dp))
         Text(
-            text = when (provider) {
-                ProviderMode.CHATGPT -> "How can I help today?"
-                ProviderMode.GEMINI -> "What's next?"
-                ProviderMode.DEEPSEEK -> "Start a precise session"
-            },
+            text = copy.welcome(provider),
             style = MaterialTheme.typography.headlineSmall,
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "${provider.displayName} ${model.displayName}",
+            text = "${copy.providerName(provider)} ${copy.modelName(model)}",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodyMedium,
         )
@@ -497,6 +556,7 @@ private fun bubbleShape(fromUser: Boolean, provider: ProviderMode) = when (provi
 
 @Composable
 private fun WaitingForResponse() {
+    val copy = LocalAppCopy.current
     val transition = rememberInfiniteTransition(label = "ttfb")
     val alpha by transition.animateFloat(
         initialValue = 0.35f,
@@ -507,7 +567,7 @@ private fun WaitingForResponse() {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = alpha))
         Spacer(Modifier.width(8.dp))
-        Text("Connecting", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha), style = MaterialTheme.typography.bodyMedium)
+        Text(copy.connecting, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha), style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -517,6 +577,7 @@ private fun ReasoningBlock(
     createdAt: Long,
     isStreaming: Boolean,
 ) {
+    val copy = LocalAppCopy.current
     var expanded by rememberSaveable { mutableStateOf(false) }
     var currentTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(isStreaming) {
@@ -526,25 +587,26 @@ private fun ReasoningBlock(
         }
     }
     val seconds = ((currentTime - createdAt) / 1_000).coerceAtLeast(0)
+    val dark = LocalAdaptiveDark.current
     Surface(
-        color = Color(0xFF0D1E28),
-        contentColor = Color(0xFFD6F4EF),
-        border = BorderStroke(1.dp, Color(0xFF2A6670)),
+        color = if (dark) Color(0xFF0D1E28) else MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = if (dark) Color(0xFFD6F4EF) else MaterialTheme.colorScheme.onSecondaryContainer,
+        border = BorderStroke(1.dp, if (dark) Color(0xFF2A6670) else MaterialTheme.colorScheme.outline.copy(alpha = 0.64f)),
         shape = RoundedCornerShape(8.dp),
         modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF45D7BD))
+                Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (dark) Color(0xFF45D7BD) else MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = if (isStreaming) "Reasoning ${seconds}s" else "Reasoning complete",
+                    text = if (isStreaming) copy.reasoning(seconds) else copy.reasoningComplete,
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelLarge,
                 )
                 Icon(
                     if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                    contentDescription = if (expanded) "Collapse reasoning" else "Expand reasoning",
+                    contentDescription = copy.reasoningComplete,
                 )
             }
             AnimatedVisibility(
@@ -555,7 +617,7 @@ private fun ReasoningBlock(
                 Text(
                     text = reasoning,
                     modifier = Modifier.padding(top = 8.dp),
-                    color = Color(0xFFA9C8D1),
+                    color = if (dark) Color(0xFFA9C8D1) else MaterialTheme.colorScheme.onSecondaryContainer,
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -567,6 +629,7 @@ private fun ReasoningBlock(
 @Composable
 private fun StreamingMarkdown(text: String, provider: ProviderMode) {
     var inCodeBlock = false
+    val dark = LocalAdaptiveDark.current
     Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
         text.split('\n').forEach { line ->
             if (line.trimStart().startsWith("```")) {
@@ -579,7 +642,7 @@ private fun StreamingMarkdown(text: String, provider: ProviderMode) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(6.dp))
-                        .background(if (provider == ProviderMode.DEEPSEEK) Color(0xFF071018) else MaterialTheme.colorScheme.surfaceVariant)
+                        .background(if (provider == ProviderMode.DEEPSEEK && dark) Color(0xFF071018) else MaterialTheme.colorScheme.surfaceVariant)
                         .padding(9.dp),
                 )
             } else if (line.isNotBlank()) {
@@ -597,6 +660,7 @@ private fun Composer(
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
 ) {
+    val copy = LocalAppCopy.current
     val shape = when (provider) {
         ProviderMode.GEMINI -> RoundedCornerShape(32.dp)
         ProviderMode.DEEPSEEK -> RoundedCornerShape(8.dp)
@@ -621,7 +685,7 @@ private fun Composer(
                 onValueChange = onDraftChange,
                 modifier = Modifier.weight(1f),
                 enabled = !isStreaming,
-                placeholder = { Text("Message ${provider.displayName}") },
+                placeholder = { Text(copy.messagePlaceholder(copy.providerName(provider))) },
                 maxLines = 5,
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = Color.Transparent,
@@ -637,7 +701,7 @@ private fun Composer(
                 enabled = draft.isNotBlank() && !isStreaming,
                 modifier = Modifier.size(48.dp),
             ) {
-                Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = "Send message")
+                Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = copy.sendFeedback)
             }
         }
     }
@@ -647,4 +711,10 @@ private fun providerIcon(provider: ProviderMode): ImageVector = when (provider) 
     ProviderMode.CHATGPT -> Icons.Outlined.ChatBubbleOutline
     ProviderMode.GEMINI -> Icons.Outlined.AutoAwesome
     ProviderMode.DEEPSEEK -> Icons.Outlined.Terminal
+}
+
+private fun providerImage(provider: ProviderMode) = when (provider) {
+    ProviderMode.CHATGPT -> R.drawable.model_gpt
+    ProviderMode.GEMINI -> R.drawable.model_gemini
+    ProviderMode.DEEPSEEK -> R.drawable.model_deepseek
 }

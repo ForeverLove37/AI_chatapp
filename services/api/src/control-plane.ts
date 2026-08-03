@@ -4,7 +4,10 @@ import {
   createHash,
   randomBytes,
   randomUUID,
+  scrypt as scryptCallback,
+  timingSafeEqual,
 } from "node:crypto";
+import { promisify } from "node:util";
 import { Pool } from "pg";
 import { createClient } from "redis";
 import {
@@ -39,6 +42,47 @@ export type UserRecord = {
   createdAt: string;
 };
 
+export type CreateUserInput = Omit<UserRecord, "id" | "monthlyTokens" | "createdAt"> & {
+  password: string;
+};
+
+export type AuthenticatedUser = Pick<UserRecord, "id" | "email" | "role" | "status">;
+
+export type RoutingScope = "channel" | "model";
+
+export type RoutingPolicy = {
+  scope: RoutingScope;
+  scopeId: string;
+  keyIds: string[];
+  updatedAt: string;
+};
+
+export type FeedbackRecord = {
+  id: string;
+  userId: string;
+  userEmail: string | null;
+  message: string;
+  category: string;
+  appVersion: string;
+  locale: string;
+  status: "new" | "reviewed" | "resolved";
+  createdAt: string;
+};
+
+export type CreateFeedbackInput = Pick<FeedbackRecord, "message" | "category" | "appVersion" | "locale">;
+
+export type AppVersion = {
+  id: string;
+  versionCode: number;
+  versionName: string;
+  downloadUrl: string;
+  releaseNotes: string;
+  isActive: boolean;
+  publishedAt: string;
+};
+
+export type CreateAppVersionInput = Omit<AppVersion, "id" | "publishedAt">;
+
 export type ProviderKeyView = {
   id: string;
   provider: Provider;
@@ -70,6 +114,7 @@ export type RequestMetric = {
   model: string;
   provider: Provider;
   clientKeyId: string | null;
+  userId?: string | null;
   status: "success" | "failure";
   promptTokens: number;
   completionTokens: number;
@@ -93,7 +138,11 @@ export type Overview = {
   keys: ClientKeyView[];
   users: UserRecord[];
   providerKeys: ProviderKeyView[];
-  routing: { strategy: LoadBalanceStrategy };
+  routing: {
+    strategy: LoadBalanceStrategy;
+    channelPolicies: RoutingPolicy[];
+    modelPolicies: RoutingPolicy[];
+  };
   activeStreams: number;
 };
 
@@ -107,20 +156,26 @@ export type ClientAuthorization =
   | { allowed: true; clientKeyId: string }
   | { allowed: false; status: 401 | 429; message: string };
 
+export type UserAuthorization =
+  | { allowed: true; userId: string }
+  | { allowed: false; status: 401 | 429; message: string };
+
 export interface ControlPlane {
   start(): Promise<void>;
   close(): Promise<void>;
   getModels(): Promise<ModelRoute[]>;
   findModelRoute(model: string): Promise<ModelRoute | undefined>;
-  hasProviderKey(provider: Provider): Promise<boolean>;
-  selectUpstreams(provider: Provider): Promise<SelectedUpstream[]>;
+  hasAvailableUpstream(route: ModelRoute): Promise<boolean>;
+  selectUpstreams(route: ModelRoute): Promise<SelectedUpstream[]>;
   authorizeClient(secret: string): Promise<ClientAuthorization>;
+  authorizeUser(userId: string): Promise<UserAuthorization>;
   recordRequest(metric: RequestMetric): Promise<void>;
   changeActiveStreams(delta: number): Promise<number>;
   getOverview(): Promise<Overview>;
   listUsers(): Promise<UserRecord[]>;
-  createUser(input: Omit<UserRecord, "id" | "monthlyTokens" | "createdAt">): Promise<UserRecord>;
+  createUser(input: CreateUserInput): Promise<UserRecord>;
   updateUser(id: string, patch: Partial<Pick<UserRecord, "status" | "role" | "rpmLimit" | "dailyLimit">>): Promise<UserRecord | undefined>;
+  authenticateUser(email: string, password: string): Promise<AuthenticatedUser | undefined>;
   listClientKeys(): Promise<ClientKeyView[]>;
   createClientKey(input: { name: string; rpmLimit: number; dailyLimit: number; userId?: string | null }): Promise<{ data: ClientKeyView; secret: string }>;
   revokeClientKey(id: string): Promise<ClientKeyView | undefined>;
@@ -132,6 +187,16 @@ export interface ControlPlane {
   updateModelRoute(id: string, patch: ModelRoutePatch): Promise<ModelRoute | undefined>;
   getRoutingStrategy(): Promise<LoadBalanceStrategy>;
   setRoutingStrategy(strategy: LoadBalanceStrategy): Promise<LoadBalanceStrategy>;
+  listRoutingPolicies(): Promise<RoutingPolicy[]>;
+  setRoutingPolicy(scope: RoutingScope, scopeId: string, keyIds: string[]): Promise<RoutingPolicy | undefined>;
+  deleteRoutingPolicy(scope: RoutingScope, scopeId: string): Promise<boolean>;
+  createFeedback(userId: string, input: CreateFeedbackInput): Promise<FeedbackRecord>;
+  listFeedbacks(): Promise<FeedbackRecord[]>;
+  updateFeedbackStatus(id: string, status: FeedbackRecord["status"]): Promise<FeedbackRecord | undefined>;
+  getLatestAppVersion(): Promise<AppVersion | undefined>;
+  listAppVersions(): Promise<AppVersion[]>;
+  createAppVersion(input: CreateAppVersionInput): Promise<AppVersion>;
+  updateAppVersion(id: string, patch: Partial<Pick<AppVersion, "versionName" | "downloadUrl" | "releaseNotes" | "isActive">>): Promise<AppVersion | undefined>;
 }
 
 type StoredClientKey = ClientKeyView & {
@@ -141,16 +206,51 @@ type StoredClientKey = ClientKeyView & {
 };
 
 type StoredProviderKey = ProviderKeyView & { secret: string };
+type StoredUser = UserRecord & { passwordHash: string };
+type UsageWindow = { minuteCalls: number[]; usageDay: string; callsToday: number };
+type StoredFeedback = FeedbackRecord;
 
 const dayKey = () => new Date().toISOString().slice(0, 10);
 const minuteBucket = () => Math.floor(Date.now() / 60_000);
 const nowIso = () => new Date().toISOString();
 const hashSecret = (value: string) => createHash("sha256").update(value).digest("hex");
+const scrypt = promisify(scryptCallback);
+
+async function hashPassword(value: string) {
+  const salt = randomBytes(16).toString("base64url");
+  const derived = await scrypt(value, salt, 64) as Buffer;
+  return `scrypt$${salt}$${derived.toString("base64url")}`;
+}
+
+async function verifyPassword(value: string, stored: string | null | undefined) {
+  if (!stored) return false;
+  const [algorithm, salt, encoded] = stored.split("$");
+  if (algorithm !== "scrypt" || !salt || !encoded) return false;
+  const expected = Buffer.from(encoded, "base64url");
+  const derived = await scrypt(value, salt, expected.length) as Buffer;
+  return expected.length === derived.length && timingSafeEqual(expected, derived);
+}
 
 function normalizeEndpoint(value: string) {
   const url = new URL(value.trim());
   if (!/^https?:$/.test(url.protocol)) throw new Error("Upstream endpoint must use HTTP or HTTPS.");
-  return url.toString().replace(/\/$/, "");
+  const normalized = url.toString().replace(/\/$/, "");
+  if (normalized.endsWith("/chat/completions")) return normalized;
+  if (normalized.endsWith("/v1")) return `${normalized}/chat/completions`;
+  return `${normalized}/v1/chat/completions`;
+}
+
+function policyKey(scope: RoutingScope, scopeId: string) {
+  return `${scope}:${scopeId}`;
+}
+
+function normalizePolicyScope(scope: RoutingScope, scopeId: string) {
+  const normalized = scopeId.trim().toLowerCase();
+  if (!normalized) throw new Error("A routing policy target is required.");
+  if (scope === "channel" && !["chatgpt", "gemini", "deepseek"].includes(normalized)) {
+    throw new Error("Channel policies must target ChatGPT, Gemini, or DeepSeek.");
+  }
+  return normalized;
 }
 
 function numberValue(value: unknown) {
@@ -200,12 +300,42 @@ function providerKeyFromRow(row: Record<string, unknown>): ProviderKeyView {
   };
 }
 
+function feedbackFromRow(row: Record<string, unknown>): FeedbackRecord {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    userEmail: row.user_email ? String(row.user_email) : null,
+    message: String(row.message),
+    category: String(row.category),
+    appVersion: String(row.app_version),
+    locale: String(row.locale),
+    status: String(row.status) as FeedbackRecord["status"],
+    createdAt: isoValue(row.created_at),
+  };
+}
+
+function appVersionFromRow(row: Record<string, unknown>): AppVersion {
+  return {
+    id: String(row.id),
+    versionCode: numberValue(row.version_code),
+    versionName: String(row.version_name),
+    downloadUrl: String(row.download_url),
+    releaseNotes: String(row.release_notes),
+    isActive: Boolean(row.is_active),
+    publishedAt: isoValue(row.published_at),
+  };
+}
+
 /** Isolated adapter used by API unit tests; runtime startup always uses PostgresControlPlane. */
 export class MemoryControlPlane implements ControlPlane {
   private readonly apiKeys = new Map<string, StoredClientKey>();
-  private readonly users = new Map<string, UserRecord>();
+  private readonly users = new Map<string, StoredUser>();
   private readonly providerKeys = new Map<string, StoredProviderKey>();
   private readonly models = new Map(modelCatalog.map((model) => [model.id, { ...model, enabled: true }]));
+  private readonly policies = new Map<string, RoutingPolicy>();
+  private readonly userUsage = new Map<string, UsageWindow>();
+  private readonly feedbacks = new Map<string, StoredFeedback>();
+  private readonly appVersions = new Map<string, AppVersion>();
   private readonly requests: RequestMetric[] = [];
   private cursors: Record<Provider, number> = { openai: 0, gemini: 0, deepseek: 0 };
   private activeStreams = 0;
@@ -222,6 +352,7 @@ export class MemoryControlPlane implements ControlPlane {
       rpmLimit: 60,
       dailyLimit: 100_000,
       createdAt,
+      passwordHash: "",
     });
     const secret = "ac_demo_local_key";
     this.apiKeys.set("key_demo", {
@@ -252,11 +383,20 @@ export class MemoryControlPlane implements ControlPlane {
     return findModelRoute(model, [...this.models.values()]);
   }
 
-  async hasProviderKey(provider: Provider) {
-    return [...this.providerKeys.values()].some((key) => key.provider === provider && key.status === "active");
+  async hasAvailableUpstream(route: ModelRoute) {
+    return (await this.selectUpstreams(route)).length > 0;
   }
 
-  async selectUpstreams(provider: Provider) {
+  async selectUpstreams(route: ModelRoute) {
+    const explicit = this.policies.get(policyKey("model", route.id))
+      ?? this.policies.get(policyKey("channel", route.uiMode));
+    if (explicit) {
+      return explicit.keyIds
+        .map((id) => this.providerKeys.get(id))
+        .filter((key): key is StoredProviderKey => Boolean(key && key.status === "active"))
+        .map((key) => ({ endpoint: key.endpoint, secret: key.secret, keyId: key.id }));
+    }
+    const provider = route.provider;
     const sorted = [...this.providerKeys.values()]
       .filter((key) => key.provider === provider && key.status === "active")
       .sort((left, right) => left.priority - right.priority || left.createdAt.localeCompare(right.createdAt));
@@ -290,14 +430,30 @@ export class MemoryControlPlane implements ControlPlane {
     return { allowed: true, clientKeyId: key.id };
   }
 
+  async authorizeUser(userId: string): Promise<UserAuthorization> {
+    const user = this.users.get(userId);
+    if (!user || user.status !== "active") return { allowed: false, status: 401, message: "Your session is no longer active." };
+    const now = Date.now();
+    const usage = this.userUsage.get(userId) ?? { minuteCalls: [], usageDay: dayKey(), callsToday: 0 };
+    usage.minuteCalls = usage.minuteCalls.filter((timestamp) => timestamp > now - 60_000);
+    if (usage.minuteCalls.length >= user.rpmLimit) return { allowed: false, status: 429, message: "Your account has reached its requests-per-minute limit." };
+    if (usage.usageDay !== dayKey()) {
+      usage.usageDay = dayKey();
+      usage.callsToday = 0;
+    }
+    if (usage.callsToday >= user.dailyLimit) return { allowed: false, status: 429, message: "Your account has reached its daily quota." };
+    usage.minuteCalls.push(now);
+    usage.callsToday += 1;
+    this.userUsage.set(userId, usage);
+    return { allowed: true, userId };
+  }
+
   async recordRequest(metric: RequestMetric) {
     this.requests.push(metric);
-    if (metric.clientKeyId) {
-      const key = this.apiKeys.get(metric.clientKeyId);
-      if (key?.userId) {
-        const user = this.users.get(key.userId);
-        if (user) user.monthlyTokens += metric.promptTokens + metric.completionTokens;
-      }
+    const keyUserId = metric.clientKeyId ? this.apiKeys.get(metric.clientKeyId)?.userId : null;
+    const user = this.users.get(metric.userId ?? keyUserId ?? "");
+    if (user) {
+      user.monthlyTokens += metric.promptTokens + metric.completionTokens;
     }
   }
 
@@ -335,27 +491,49 @@ export class MemoryControlPlane implements ControlPlane {
       keys: await this.listClientKeys(),
       users: await this.listUsers(),
       providerKeys: await this.listProviderKeys(),
-      routing: { strategy: this.strategy },
+      routing: {
+        strategy: this.strategy,
+        channelPolicies: (await this.listRoutingPolicies()).filter((policy) => policy.scope === "channel"),
+        modelPolicies: (await this.listRoutingPolicies()).filter((policy) => policy.scope === "model"),
+      },
       activeStreams: this.activeStreams,
     };
   }
 
   async listUsers() {
-    return [...this.users.values()].sort((left, right) => left.email.localeCompare(right.email));
+    return [...this.users.values()]
+      .sort((left, right) => left.email.localeCompare(right.email))
+      .map(({ passwordHash: _passwordHash, ...user }) => user);
   }
 
-  async createUser(input: Omit<UserRecord, "id" | "monthlyTokens" | "createdAt">) {
+  async createUser(input: CreateUserInput) {
     if ([...this.users.values()].some((user) => user.email === input.email.toLowerCase())) throw new Error("A user with that email already exists.");
-    const user: UserRecord = { ...input, id: `usr_${randomUUID().slice(0, 12)}`, email: input.email.toLowerCase(), monthlyTokens: 0, createdAt: nowIso() };
+    const { password, ...record } = input;
+    const user: StoredUser = {
+      ...record,
+      id: `usr_${randomUUID().slice(0, 12)}`,
+      email: input.email.toLowerCase(),
+      monthlyTokens: 0,
+      createdAt: nowIso(),
+      passwordHash: await hashPassword(password),
+    };
     this.users.set(user.id, user);
-    return user;
+    const { passwordHash: _passwordHash, ...view } = user;
+    return view;
   }
 
   async updateUser(id: string, patch: Partial<Pick<UserRecord, "status" | "role" | "rpmLimit" | "dailyLimit">>) {
     const user = this.users.get(id);
     if (!user) return undefined;
     Object.assign(user, patch);
-    return user;
+    const { passwordHash: _passwordHash, ...view } = user;
+    return view;
+  }
+
+  async authenticateUser(email: string, password: string) {
+    const user = [...this.users.values()].find((candidate) => candidate.email === email.trim().toLowerCase());
+    if (!user || user.status !== "active" || !await verifyPassword(password, user.passwordHash)) return undefined;
+    return { id: user.id, email: user.email, role: user.role, status: user.status };
   }
 
   async listClientKeys() {
@@ -454,6 +632,80 @@ export class MemoryControlPlane implements ControlPlane {
     this.strategy = strategy;
     return strategy;
   }
+
+  async listRoutingPolicies() {
+    return [...this.policies.values()].sort((left, right) => policyKey(left.scope, left.scopeId).localeCompare(policyKey(right.scope, right.scopeId)));
+  }
+
+  async setRoutingPolicy(scope: RoutingScope, scopeId: string, keyIds: string[]) {
+    const target = normalizePolicyScope(scope, scopeId);
+    if (scope === "model" && !this.models.has(target)) throw new Error("The selected model mapping was not found.");
+    const normalizedIds = [...new Set(keyIds.map((id) => id.trim()).filter(Boolean))];
+    if (!normalizedIds.length) return undefined;
+    if (normalizedIds.some((id) => !this.providerKeys.has(id))) throw new Error("One or more selected provider keys were not found.");
+    const policy: RoutingPolicy = { scope, scopeId: target, keyIds: normalizedIds, updatedAt: nowIso() };
+    this.policies.set(policyKey(scope, target), policy);
+    return policy;
+  }
+
+  async deleteRoutingPolicy(scope: RoutingScope, scopeId: string) {
+    return this.policies.delete(policyKey(scope, normalizePolicyScope(scope, scopeId)));
+  }
+
+  async createFeedback(userId: string, input: CreateFeedbackInput) {
+    const user = this.users.get(userId);
+    if (!user || user.status !== "active") throw new Error("Your account is no longer active.");
+    const feedback: StoredFeedback = {
+      id: `fb_${randomUUID().slice(0, 12)}`,
+      userId,
+      userEmail: user.email,
+      message: input.message.trim(),
+      category: input.category,
+      appVersion: input.appVersion,
+      locale: input.locale,
+      status: "new",
+      createdAt: nowIso(),
+    };
+    this.feedbacks.set(feedback.id, feedback);
+    return feedback;
+  }
+
+  async listFeedbacks() {
+    return [...this.feedbacks.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  async updateFeedbackStatus(id: string, status: FeedbackRecord["status"]) {
+    const feedback = this.feedbacks.get(id);
+    if (!feedback) return undefined;
+    feedback.status = status;
+    return feedback;
+  }
+
+  async getLatestAppVersion() {
+    return [...this.appVersions.values()]
+      .filter((version) => version.isActive)
+      .sort((left, right) => right.versionCode - left.versionCode)[0];
+  }
+
+  async listAppVersions() {
+    return [...this.appVersions.values()].sort((left, right) => right.versionCode - left.versionCode);
+  }
+
+  async createAppVersion(input: CreateAppVersionInput) {
+    if ([...this.appVersions.values()].some((version) => version.versionCode === input.versionCode)) throw new Error("An app version with that version code already exists.");
+    if (input.isActive) this.appVersions.forEach((version) => { version.isActive = false; });
+    const version: AppVersion = { id: `appv_${randomUUID().slice(0, 12)}`, ...input, publishedAt: nowIso() };
+    this.appVersions.set(version.id, version);
+    return version;
+  }
+
+  async updateAppVersion(id: string, patch: Partial<Pick<AppVersion, "versionName" | "downloadUrl" | "releaseNotes" | "isActive">>) {
+    const version = this.appVersions.get(id);
+    if (!version) return undefined;
+    if (patch.isActive) this.appVersions.forEach((candidate) => { candidate.isActive = false; });
+    Object.assign(version, patch);
+    return version;
+  }
 }
 
 export class PostgresControlPlane implements ControlPlane {
@@ -486,6 +738,7 @@ export class PostgresControlPlane implements ControlPlane {
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL UNIQUE,
+        password_hash TEXT,
         role TEXT NOT NULL CHECK (role IN ('admin', 'standard')),
         status TEXT NOT NULL CHECK (status IN ('active', 'suspended')) DEFAULT 'active',
         monthly_tokens BIGINT NOT NULL DEFAULT 0,
@@ -532,11 +785,41 @@ export class PostgresControlPlane implements ControlPlane {
         strategy TEXT NOT NULL CHECK (strategy IN ('round_robin', 'random')) DEFAULT 'round_robin',
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      CREATE TABLE IF NOT EXISTS routing_policies (
+        scope TEXT NOT NULL CHECK (scope IN ('channel', 'model')),
+        scope_id TEXT NOT NULL,
+        key_ids TEXT[] NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (scope, scope_id)
+      );
+      CREATE INDEX IF NOT EXISTS routing_policies_scope_idx ON routing_policies(scope, scope_id);
+      CREATE TABLE IF NOT EXISTS feedbacks (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        message TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'general',
+        app_version TEXT NOT NULL DEFAULT '',
+        locale TEXT NOT NULL DEFAULT 'system',
+        status TEXT NOT NULL CHECK (status IN ('new', 'reviewed', 'resolved')) DEFAULT 'new',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS feedbacks_created_idx ON feedbacks(created_at DESC);
+      CREATE TABLE IF NOT EXISTS app_versions (
+        id TEXT PRIMARY KEY,
+        version_code INTEGER NOT NULL UNIQUE,
+        version_name TEXT NOT NULL,
+        download_url TEXT NOT NULL,
+        release_notes TEXT NOT NULL DEFAULT '',
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        published_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS app_versions_active_idx ON app_versions(is_active, version_code DESC);
       CREATE TABLE IF NOT EXISTS request_logs (
         id TEXT PRIMARY KEY,
         model_id TEXT NOT NULL,
         provider TEXT NOT NULL,
         client_key_id TEXT REFERENCES client_api_keys(id) ON DELETE SET NULL,
+        user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
         status TEXT NOT NULL CHECK (status IN ('success', 'failure')),
         prompt_tokens INTEGER NOT NULL DEFAULT 0,
         completion_tokens INTEGER NOT NULL DEFAULT 0,
@@ -545,15 +828,15 @@ export class PostgresControlPlane implements ControlPlane {
       );
       CREATE INDEX IF NOT EXISTS request_logs_created_idx ON request_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS request_logs_model_idx ON request_logs(model_id, created_at DESC);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+      ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+      UPDATE provider_keys
+      SET endpoint = regexp_replace(endpoint, '/v1/?$', '/v1/chat/completions')
+      WHERE endpoint ~ '/v1/?$';
     `);
   }
 
   private async seed() {
-    await this.pool.query(
-      `INSERT INTO users (id, email, role, status, rpm_limit, daily_limit)
-       VALUES ('usr_admin', 'admin@adaptive.local', 'admin', 'active', 60, 100000)
-       ON CONFLICT (id) DO NOTHING`,
-    );
     await this.pool.query("INSERT INTO routing_settings (id, strategy) VALUES (1, 'round_robin') ON CONFLICT (id) DO NOTHING");
     for (const model of modelCatalog) {
       await this.pool.query(
@@ -599,33 +882,69 @@ export class PostgresControlPlane implements ControlPlane {
     return result.rows[0] ? modelFromRow(result.rows[0]) : undefined;
   }
 
-  async hasProviderKey(provider: Provider) {
-    const result = await this.pool.query<{ exists: boolean }>(
-      "SELECT EXISTS(SELECT 1 FROM provider_keys WHERE provider = $1 AND status = 'active') AS exists",
-      [provider],
+  private async policyForRoute(route: ModelRoute) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      `SELECT * FROM routing_policies
+       WHERE (scope = 'model' AND scope_id = $1) OR (scope = 'channel' AND scope_id = $2)
+       ORDER BY CASE scope WHEN 'model' THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [route.id, route.uiMode],
     );
+    const row = result.rows[0];
+    if (!row) return undefined;
+    return {
+      scope: String(row.scope) as RoutingScope,
+      scopeId: String(row.scope_id),
+      keyIds: Array.isArray(row.key_ids) ? row.key_ids.map(String) : [],
+      updatedAt: isoValue(row.updated_at),
+    } satisfies RoutingPolicy;
+  }
+
+  async hasAvailableUpstream(route: ModelRoute) {
+    const policy = await this.policyForRoute(route);
+    const result = policy
+      ? await this.pool.query<{ exists: boolean }>(
+        "SELECT EXISTS(SELECT 1 FROM provider_keys WHERE id = ANY($1::text[]) AND status = 'active') AS exists",
+        [policy.keyIds],
+      )
+      : await this.pool.query<{ exists: boolean }>(
+        "SELECT EXISTS(SELECT 1 FROM provider_keys WHERE provider = $1 AND status = 'active') AS exists",
+        [route.provider],
+      );
     return Boolean(result.rows[0]?.exists);
   }
 
-  async selectUpstreams(provider: Provider) {
+  async selectUpstreams(route: ModelRoute) {
+    const policy = await this.policyForRoute(route);
     const [keys, strategy] = await Promise.all([
-      this.pool.query<Record<string, unknown>>(
-        "SELECT * FROM provider_keys WHERE provider = $1 AND status = 'active' ORDER BY priority ASC, created_at ASC",
-        [provider],
-      ),
+      policy
+        ? this.pool.query<Record<string, unknown>>(
+          `SELECT * FROM provider_keys
+           WHERE id = ANY($1::text[]) AND status = 'active'
+           ORDER BY array_position($1::text[], id)`,
+          [policy.keyIds],
+        )
+        : this.pool.query<Record<string, unknown>>(
+          "SELECT * FROM provider_keys WHERE provider = $1 AND status = 'active' ORDER BY priority ASC, created_at ASC",
+          [route.provider],
+        ),
       this.getRoutingStrategy(),
     ]);
     const ordered: Record<string, unknown>[] = [];
     const rows = keys.rows;
-    for (const priority of [...new Set(rows.map((row) => numberValue(row.priority)))]) {
-      const tier = rows.filter((row) => numberValue(row.priority) === priority);
-      if (strategy === "random") tier.sort(() => Math.random() - 0.5);
-      else if (tier.length > 1) {
-        const count = await this.redis.incr(`routing:cursor:${provider}:${priority}`);
-        const offset = (count - 1) % tier.length;
-        tier.push(...tier.splice(0, offset));
+    if (policy) {
+      ordered.push(...rows);
+    } else {
+      for (const priority of [...new Set(rows.map((row) => numberValue(row.priority)))]) {
+        const tier = rows.filter((row) => numberValue(row.priority) === priority);
+        if (strategy === "random") tier.sort(() => Math.random() - 0.5);
+        else if (tier.length > 1) {
+          const count = await this.redis.incr(`routing:cursor:${route.provider}:${priority}`);
+          const offset = (count - 1) % tier.length;
+          tier.push(...tier.splice(0, offset));
+        }
+        ordered.push(...tier);
       }
-      ordered.push(...tier);
     }
     if (ordered.length) {
       await this.pool.query("UPDATE provider_keys SET last_used_at = NOW() WHERE id = ANY($1::text[])", [ordered.map((row) => String(row.id))]);
@@ -655,6 +974,20 @@ export class PostgresControlPlane implements ControlPlane {
     return { allowed: true, clientKeyId: id };
   }
 
+  async authorizeUser(userId: string): Promise<UserAuthorization> {
+    const result = await this.pool.query<Record<string, unknown>>(
+      "SELECT id, status, rpm_limit, daily_limit FROM users WHERE id = $1 LIMIT 1",
+      [userId],
+    );
+    const row = result.rows[0];
+    if (!row || row.status !== "active") return { allowed: false, status: 401, message: "Your session is no longer active." };
+    const rpm = await this.incrementWithTtl(`user:${userId}:rpm:${minuteBucket()}`, 70);
+    if (rpm > numberValue(row.rpm_limit)) return { allowed: false, status: 429, message: "Your account has reached its requests-per-minute limit." };
+    const daily = await this.incrementWithTtl(`user:${userId}:daily:${dayKey()}`, 90_000);
+    if (daily > numberValue(row.daily_limit)) return { allowed: false, status: 429, message: "Your account has reached its daily quota." };
+    return { allowed: true, userId };
+  }
+
   private async incrementWithTtl(key: string, ttlSeconds: number) {
     const count = await this.redis.incr(key);
     if (count === 1) await this.redis.expire(key, ttlSeconds);
@@ -663,15 +996,16 @@ export class PostgresControlPlane implements ControlPlane {
 
   async recordRequest(metric: RequestMetric) {
     await this.pool.query(
-      `INSERT INTO request_logs (id, model_id, provider, client_key_id, status, prompt_tokens, completion_tokens, latency_ms)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [randomUUID(), metric.model, metric.provider, metric.clientKeyId, metric.status, metric.promptTokens, metric.completionTokens, metric.latencyMs],
+      `INSERT INTO request_logs (id, model_id, provider, client_key_id, user_id, status, prompt_tokens, completion_tokens, latency_ms)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [randomUUID(), metric.model, metric.provider, metric.clientKeyId, metric.userId ?? null, metric.status, metric.promptTokens, metric.completionTokens, metric.latencyMs],
     );
-    if (metric.clientKeyId) {
+    const userId = metric.userId ?? (metric.clientKeyId ? (await this.pool.query<{ user_id: string | null }>("SELECT user_id FROM client_api_keys WHERE id = $1", [metric.clientKeyId])).rows[0]?.user_id : null);
+    if (userId) {
       await this.pool.query(
         `UPDATE users SET monthly_tokens = monthly_tokens + $1
-         WHERE id = (SELECT user_id FROM client_api_keys WHERE id = $2)`,
-        [metric.promptTokens + metric.completionTokens, metric.clientKeyId],
+         WHERE id = $2`,
+        [metric.promptTokens + metric.completionTokens, userId],
       );
     }
   }
@@ -722,12 +1056,13 @@ export class PostgresControlPlane implements ControlPlane {
     return result.rows.map(userFromRow);
   }
 
-  async createUser(input: Omit<UserRecord, "id" | "monthlyTokens" | "createdAt">) {
+  async createUser(input: CreateUserInput) {
     const id = `usr_${randomUUID().slice(0, 12)}`;
+    const passwordHash = await hashPassword(input.password);
     const result = await this.pool.query<Record<string, unknown>>(
-      `INSERT INTO users (id, email, role, status, rpm_limit, daily_limit)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [id, input.email.toLowerCase(), input.role, input.status, input.rpmLimit, input.dailyLimit],
+      `INSERT INTO users (id, email, password_hash, role, status, rpm_limit, daily_limit)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [id, input.email.toLowerCase(), passwordHash, input.role, input.status, input.rpmLimit, input.dailyLimit],
     );
     return userFromRow(result.rows[0]);
   }
@@ -746,6 +1081,17 @@ export class PostgresControlPlane implements ControlPlane {
     values.push(id);
     const result = await this.pool.query<Record<string, unknown>>(`UPDATE users SET ${fields.join(", ")} WHERE id = $${values.length} RETURNING *`, values);
     return result.rows[0] ? userFromRow(result.rows[0]) : undefined;
+  }
+
+  async authenticateUser(email: string, password: string) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      "SELECT * FROM users WHERE email = $1 AND status = 'active' LIMIT 1",
+      [email.trim().toLowerCase()],
+    );
+    const row = result.rows[0];
+    if (!row || !await verifyPassword(password, row.password_hash ? String(row.password_hash) : null)) return undefined;
+    const user = userFromRow(row);
+    return { id: user.id, email: user.email, role: user.role, status: user.status };
   }
 
   async createClientKey(input: { name: string; rpmLimit: number; dailyLimit: number; userId?: string | null }) {
@@ -840,8 +1186,164 @@ export class PostgresControlPlane implements ControlPlane {
     return strategy;
   }
 
+  async listRoutingPolicies() {
+    const result = await this.pool.query<Record<string, unknown>>(
+      "SELECT * FROM routing_policies ORDER BY scope, scope_id",
+    );
+    return result.rows.map((row) => ({
+      scope: String(row.scope) as RoutingScope,
+      scopeId: String(row.scope_id),
+      keyIds: Array.isArray(row.key_ids) ? row.key_ids.map(String) : [],
+      updatedAt: isoValue(row.updated_at),
+    }));
+  }
+
+  async setRoutingPolicy(scope: RoutingScope, scopeId: string, keyIds: string[]) {
+    const target = normalizePolicyScope(scope, scopeId);
+    if (scope === "model") {
+      const model = await this.pool.query("SELECT 1 FROM model_routes WHERE id = $1", [target]);
+      if (!model.rowCount) throw new Error("The selected model mapping was not found.");
+    }
+    const normalizedIds = [...new Set(keyIds.map((id) => id.trim()).filter(Boolean))];
+    if (!normalizedIds.length) return undefined;
+    const keys = await this.pool.query("SELECT id FROM provider_keys WHERE id = ANY($1::text[])", [normalizedIds]);
+    if (keys.rowCount !== normalizedIds.length) throw new Error("One or more selected provider keys were not found.");
+    const result = await this.pool.query<Record<string, unknown>>(
+      `INSERT INTO routing_policies (scope, scope_id, key_ids, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (scope, scope_id)
+       DO UPDATE SET key_ids = EXCLUDED.key_ids, updated_at = NOW()
+       RETURNING *`,
+      [scope, target, normalizedIds],
+    );
+    const row = result.rows[0];
+    return {
+      scope: String(row.scope) as RoutingScope,
+      scopeId: String(row.scope_id),
+      keyIds: Array.isArray(row.key_ids) ? row.key_ids.map(String) : [],
+      updatedAt: isoValue(row.updated_at),
+    } satisfies RoutingPolicy;
+  }
+
+  async deleteRoutingPolicy(scope: RoutingScope, scopeId: string) {
+    const result = await this.pool.query(
+      "DELETE FROM routing_policies WHERE scope = $1 AND scope_id = $2",
+      [scope, normalizePolicyScope(scope, scopeId)],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async createFeedback(userId: string, input: CreateFeedbackInput) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      `INSERT INTO feedbacks (id, user_id, message, category, app_version, locale)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *, (SELECT email FROM users WHERE id = feedbacks.user_id) AS user_email`,
+      [
+        `fb_${randomUUID().slice(0, 12)}`,
+        userId,
+        input.message.trim(),
+        input.category,
+        input.appVersion,
+        input.locale,
+      ],
+    );
+    return feedbackFromRow(result.rows[0]);
+  }
+
+  async listFeedbacks() {
+    const result = await this.pool.query<Record<string, unknown>>(
+      `SELECT feedbacks.*, users.email AS user_email
+       FROM feedbacks
+       LEFT JOIN users ON users.id = feedbacks.user_id
+       ORDER BY feedbacks.created_at DESC`,
+    );
+    return result.rows.map(feedbackFromRow);
+  }
+
+  async updateFeedbackStatus(id: string, status: FeedbackRecord["status"]) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      `UPDATE feedbacks SET status = $1
+       WHERE id = $2
+       RETURNING *, (SELECT email FROM users WHERE id = feedbacks.user_id) AS user_email`,
+      [status, id],
+    );
+    return result.rows[0] ? feedbackFromRow(result.rows[0]) : undefined;
+  }
+
+  async getLatestAppVersion() {
+    const result = await this.pool.query<Record<string, unknown>>(
+      "SELECT * FROM app_versions WHERE is_active = TRUE ORDER BY version_code DESC LIMIT 1",
+    );
+    return result.rows[0] ? appVersionFromRow(result.rows[0]) : undefined;
+  }
+
+  async listAppVersions() {
+    const result = await this.pool.query<Record<string, unknown>>(
+      "SELECT * FROM app_versions ORDER BY version_code DESC",
+    );
+    return result.rows.map(appVersionFromRow);
+  }
+
+  async createAppVersion(input: CreateAppVersionInput) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (input.isActive) await client.query("UPDATE app_versions SET is_active = FALSE WHERE is_active = TRUE");
+      const result = await client.query<Record<string, unknown>>(
+        `INSERT INTO app_versions (id, version_code, version_name, download_url, release_notes, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [
+          `appv_${randomUUID().slice(0, 12)}`,
+          input.versionCode,
+          input.versionName,
+          input.downloadUrl,
+          input.releaseNotes,
+          input.isActive,
+        ],
+      );
+      await client.query("COMMIT");
+      return appVersionFromRow(result.rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async updateAppVersion(id: string, patch: Partial<Pick<AppVersion, "versionName" | "downloadUrl" | "releaseNotes" | "isActive">>) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (patch.isActive) await client.query("UPDATE app_versions SET is_active = FALSE WHERE is_active = TRUE");
+      const fields: string[] = [];
+      const values: unknown[] = [];
+      if (patch.versionName !== undefined) { values.push(patch.versionName); fields.push(`version_name = $${values.length}`); }
+      if (patch.downloadUrl !== undefined) { values.push(patch.downloadUrl); fields.push(`download_url = $${values.length}`); }
+      if (patch.releaseNotes !== undefined) { values.push(patch.releaseNotes); fields.push(`release_notes = $${values.length}`); }
+      if (patch.isActive !== undefined) { values.push(patch.isActive); fields.push(`is_active = $${values.length}`); }
+      if (!fields.length) {
+        const existing = await client.query<Record<string, unknown>>("SELECT * FROM app_versions WHERE id = $1", [id]);
+        await client.query("COMMIT");
+        return existing.rows[0] ? appVersionFromRow(existing.rows[0]) : undefined;
+      }
+      values.push(id);
+      const result = await client.query<Record<string, unknown>>(
+        `UPDATE app_versions SET ${fields.join(", ")} WHERE id = $${values.length} RETURNING *`,
+        values,
+      );
+      await client.query("COMMIT");
+      return result.rows[0] ? appVersionFromRow(result.rows[0]) : undefined;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async getOverview(): Promise<Overview> {
-    const [summaryResult, modelResult, models, keys, users, providerKeys, strategy, activeStreams] = await Promise.all([
+    const [summaryResult, modelResult, models, keys, users, providerKeys, strategy, policies, activeStreams] = await Promise.all([
       this.pool.query<Record<string, unknown>>(
         `SELECT COUNT(*)::int AS total_requests,
           COUNT(*) FILTER (WHERE status = 'success')::int AS successful_requests,
@@ -856,6 +1358,7 @@ export class PostgresControlPlane implements ControlPlane {
       this.listUsers(),
       this.listProviderKeys(),
       this.getRoutingStrategy(),
+      this.listRoutingPolicies(),
       this.redis.get("service:active_streams"),
     ]);
     const summary = summaryResult.rows[0] ?? {};
@@ -878,7 +1381,11 @@ export class PostgresControlPlane implements ControlPlane {
       keys,
       users,
       providerKeys,
-      routing: { strategy },
+      routing: {
+        strategy,
+        channelPolicies: policies.filter((policy) => policy.scope === "channel"),
+        modelPolicies: policies.filter((policy) => policy.scope === "model"),
+      },
       activeStreams: numberValue(activeStreams),
     };
   }

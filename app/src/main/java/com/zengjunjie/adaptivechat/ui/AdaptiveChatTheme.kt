@@ -6,8 +6,15 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Density
+import com.zengjunjie.adaptivechat.data.AppearancePreference
 import com.zengjunjie.adaptivechat.data.ProviderMode
+
+val LocalAdaptiveDark = staticCompositionLocalOf { false }
 
 private val ChatGptLight = lightColorScheme(
     primary = Color(0xFF1A1A1A),
@@ -63,20 +70,45 @@ private val DeepSeekDark = darkColorScheme(
     error = Color(0xFFFFB4AB),
 )
 
+private val DeepSeekLight = lightColorScheme(
+    primary = Color(0xFF00695C),
+    onPrimary = Color.White,
+    secondary = Color(0xFF2467A8),
+    tertiary = Color(0xFF5A5E90),
+    surface = Color(0xFFF8FCFC),
+    surfaceVariant = Color(0xFFE2F0EE),
+    background = Color(0xFFF4FAF9),
+    outline = Color(0xFFB4CBC7),
+)
+
 @Composable
 fun AdaptiveChatTheme(
     provider: ProviderMode,
+    appearance: AppearancePreference,
+    fontScale: Float,
     content: @Composable () -> Unit,
 ) {
-    val colors = when (provider) {
-        ProviderMode.CHATGPT -> if (isSystemInDarkTheme()) ChatGptDark else ChatGptLight
-        ProviderMode.GEMINI -> if (isSystemInDarkTheme()) GeminiDark else GeminiLight
-        ProviderMode.DEEPSEEK -> DeepSeekDark
+    val systemDark = isSystemInDarkTheme()
+    val dark = when (appearance) {
+        AppearancePreference.SYSTEM -> systemDark
+        AppearancePreference.LIGHT -> false
+        AppearancePreference.DARK -> true
     }
+    val colors = when (provider) {
+        ProviderMode.CHATGPT -> if (dark) ChatGptDark else ChatGptLight
+        ProviderMode.GEMINI -> if (dark) GeminiDark else GeminiLight
+        ProviderMode.DEEPSEEK -> if (dark) DeepSeekDark else DeepSeekLight
+    }
+    val density = LocalDensity.current
 
-    MaterialTheme(
-        colorScheme = colors,
-        typography = Typography(),
-        content = content,
-    )
+    CompositionLocalProvider(
+        LocalAdaptiveDark provides dark,
+        LocalDensity provides Density(density.density, fontScale.coerceIn(0.85f, 1.35f)),
+    ) {
+        MaterialTheme(
+            colorScheme = colors,
+            typography = Typography(),
+            content = content,
+        )
+    }
 }

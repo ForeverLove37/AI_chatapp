@@ -10,9 +10,11 @@ import {
   MemoryControlPlane,
   type ControlPlane,
   type RequestMetric,
+  type RoutingScope,
   type SelectedUpstream,
 } from "./control-plane.js";
-import { publicRemoteConfig, type LoadBalanceStrategy, type ModelRoute, type Provider } from "./catalog.js";
+import { issueSessionToken, verifySessionToken } from "./auth.js";
+import { publicRemoteConfig, type LoadBalanceStrategy, type ModelRoute } from "./catalog.js";
 
 const contentSchema = z.union([z.string(), z.array(z.unknown()), z.null()]).optional();
 const chatRequestSchema = z.object({
@@ -42,6 +44,7 @@ const keyCreateSchema = z.object({
 
 const userCreateSchema = z.object({
   email: z.email().max(320),
+  password: z.string().min(8).max(200),
   role: z.enum(["admin", "standard"]).default("standard"),
   status: z.enum(["active", "suspended"]).default("active"),
   rpmLimit: z.number().int().min(1).max(10_000).default(60),
@@ -87,12 +90,39 @@ const modelRoutePatchSchema = modelRouteCreateSchema.omit({ id: true, uiMode: tr
 }).refine((value) => Object.keys(value).length > 0);
 
 const routingSchema = z.object({ strategy: z.enum(["round_robin", "random"]) });
+const routingPolicySchema = z.object({
+  keyIds: z.array(z.string().trim().min(1).max(120)).min(1).max(32),
+});
+const loginSchema = z.object({
+  email: z.email().max(320),
+  password: z.string().min(1).max(200),
+});
+const updateCheckSchema = z.object({
+  versionCode: z.number().int().min(1).max(10_000_000),
+  versionName: z.string().trim().max(80).optional(),
+});
+const feedbackSchema = z.object({
+  message: z.string().trim().min(3).max(4_000),
+  category: z.enum(["general", "bug", "feature", "account"]).default("general"),
+  appVersion: z.string().trim().max(80).default(""),
+  locale: z.string().trim().min(2).max(40).default("system"),
+});
+const feedbackPatchSchema = z.object({ status: z.enum(["new", "reviewed", "resolved"]) });
+const appVersionCreateSchema = z.object({
+  versionCode: z.number().int().min(1).max(10_000_000),
+  versionName: z.string().trim().min(1).max(80),
+  downloadUrl: z.url().max(1_000),
+  releaseNotes: z.string().max(8_000).default(""),
+  isActive: z.boolean().default(true),
+});
+const appVersionPatchSchema = appVersionCreateSchema.omit({ versionCode: true }).partial().refine((value) => Object.keys(value).length > 0);
 
 type ChatRequest = z.infer<typeof chatRequestSchema>;
 
 export type CreateAppOptions = {
   controlPlane?: ControlPlane;
   demoMode?: boolean;
+  requireClientAuth?: boolean;
 };
 
 const flag = (value: string | undefined, fallback: boolean) =>
@@ -146,22 +176,6 @@ function demoAnswer(request: ChatRequest, route: ModelRoute): { reasoning?: stri
   return {
     content: `${route.provider === "gemini" ? "Gemini-style" : "ChatGPT-style"} response to: ${concisePrompt}\n\nThe API relay is streaming this response locally.`,
   };
-}
-
-function environmentUpstreams(route: ModelRoute): SelectedUpstream[] {
-  const prefix = route.provider.toUpperCase();
-  const baseUrl = (process.env[`${prefix}_BASE_URL`] ?? process.env.URL)?.trim().replace(/\/$/, "");
-  const keys = (process.env[`${prefix}_API_KEYS`] ?? process.env[`${prefix}_API_KEY`] ?? process.env.KEY ?? "")
-    .split(",")
-    .map((key) => key.trim())
-    .filter(Boolean);
-  if (!baseUrl || !keys.length) return [];
-  const endpoint = baseUrl.endsWith("/chat/completions")
-    ? baseUrl
-    : baseUrl.endsWith("/v1")
-      ? `${baseUrl}/chat/completions`
-      : `${baseUrl}/v1/chat/completions`;
-  return keys.map((secret, index) => ({ endpoint, secret, keyId: `environment-${route.provider}-${index}` }));
 }
 
 async function fetchUpstream(upstreams: SelectedUpstream[], body: Record<string, unknown>): Promise<Response> {
@@ -222,13 +236,12 @@ export function createApp(options: CreateAppOptions = {}) {
     return supplied === adminKey();
   }
 
-  async function canUseProvider(provider: Provider) {
-    return (await controlPlane.hasProviderKey(provider)) || environmentUpstreams({ provider } as ModelRoute).length > 0;
+  async function canUseRoute(route: ModelRoute) {
+    return controlPlane.hasAvailableUpstream(route);
   }
 
   async function resolveUpstreams(route: ModelRoute) {
-    const pooled = await controlPlane.selectUpstreams(route.provider);
-    return [...pooled, ...environmentUpstreams(route)];
+    return controlPlane.selectUpstreams(route);
   }
 
   async function record(metric: RequestMetric) {
@@ -236,18 +249,32 @@ export function createApp(options: CreateAppOptions = {}) {
   }
 
   async function enforceClientPolicy(context: Context) {
-    if (!flag(process.env.REQUIRE_CLIENT_AUTH, false)) return { clientKeyId: null };
+    if (!(options.requireClientAuth ?? flag(process.env.REQUIRE_CLIENT_AUTH, false))) return { clientKeyId: null, userId: null };
     const token = requestBearer(context.req.header("authorization"));
-    if (!token) return { response: context.json({ error: { message: "A valid client API key is required." } }, 401) };
+    if (!token) return { response: context.json({ error: { message: "Sign in is required to use chat." } }, 401) };
+    const session = verifySessionToken(token);
+    if (session) {
+      const authorization = await controlPlane.authorizeUser(session.sub);
+      if (!authorization.allowed) return { response: context.json({ error: { message: authorization.message } }, authorization.status) };
+      return { clientKeyId: null, userId: authorization.userId };
+    }
     const authorization = await controlPlane.authorizeClient(token);
     if (!authorization.allowed) return { response: context.json({ error: { message: authorization.message } }, authorization.status) };
-    return { clientKeyId: authorization.clientKeyId };
+    return { clientKeyId: authorization.clientKeyId, userId: null };
+  }
+
+  async function requireSessionUser(context: Context) {
+    const token = requestBearer(context.req.header("authorization"));
+    const session = token ? verifySessionToken(token) : undefined;
+    if (!session) return { response: context.json({ error: { message: "Sign in is required for this action." } }, 401) };
+    const authorization = await controlPlane.authorizeUser(session.sub);
+    if (!authorization.allowed) return { response: context.json({ error: { message: authorization.message } }, authorization.status) };
+    return { userId: authorization.userId };
   }
 
   app.get("/health", async (context) => {
     const models = await controlPlane.getModels();
-    const providers = [...new Set(models.map((model) => model.provider))];
-    const configured = await Promise.all(providers.map(async (provider) => (await canUseProvider(provider) ? provider : undefined)));
+    const configured = await Promise.all(models.map(async (model) => (await canUseRoute(model) ? model.provider : undefined)));
     const overview = await controlPlane.getOverview();
     return context.json({
       status: "ok",
@@ -255,7 +282,7 @@ export function createApp(options: CreateAppOptions = {}) {
       storage: overview.storage,
       uptimeSeconds: Math.floor((Date.now() - startedAt) / 1_000),
       activeStreams: overview.activeStreams,
-      configuredProviders: configured.filter(Boolean),
+      configuredProviders: [...new Set(configured.filter(Boolean))],
     });
   });
 
@@ -268,6 +295,43 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.get("/v1/config", async (context) => context.json(publicRemoteConfig(await controlPlane.getModels())));
+
+  app.post("/v1/auth/login", async (context) => {
+    const parsed = loginSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Email and password are required." } }, 400);
+    const user = await controlPlane.authenticateUser(parsed.data.email, parsed.data.password);
+    if (!user) return context.json({ error: { message: "Invalid email or password." } }, 401);
+    const token = issueSessionToken(user);
+    const session = verifySessionToken(token);
+    return context.json({
+      token,
+      tokenType: "Bearer",
+      expiresAt: session ? new Date(session.exp * 1_000).toISOString() : undefined,
+      user,
+    });
+  });
+
+  app.post("/v1/app/check-update", async (context) => {
+    const parsed = updateCheckSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid app version." } }, 400);
+    const latest = await controlPlane.getLatestAppVersion();
+    return context.json({
+      updateAvailable: Boolean(latest && latest.versionCode > parsed.data.versionCode),
+      latest: latest ?? null,
+    });
+  });
+
+  app.post("/v1/app/feedback", async (context) => {
+    const session = await requireSessionUser(context);
+    if ("response" in session) return session.response;
+    const parsed = feedbackSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid feedback." } }, 400);
+    try {
+      return context.json({ data: await controlPlane.createFeedback(session.userId, parsed.data) }, 201);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to save feedback." } }, 400);
+    }
+  });
 
   app.post("/v1/chat/completions", async (context) => {
     const policy = await enforceClientPolicy(context);
@@ -286,6 +350,7 @@ export function createApp(options: CreateAppOptions = {}) {
       model: route.id,
       provider: route.provider,
       clientKeyId: policy.clientKeyId,
+      userId: policy.userId,
       status,
       promptTokens,
       completionTokens,
@@ -341,7 +406,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const upstreams = await resolveUpstreams(route);
     if (!upstreams.length) {
       await record(makeMetric("failure"));
-      return context.json({ error: { message: `No ${route.provider} upstream is configured. Add a provider key in the admin console or configure the provider environment variables.` } }, 503);
+      return context.json({ error: { message: `No ${route.provider} upstream is configured. Add an active provider key and routing policy in the admin console.` } }, 503);
     }
 
     try {
@@ -389,7 +454,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const overview = await controlPlane.getOverview();
     const models = await Promise.all(overview.models.map(async (model) => ({
       ...model,
-      upstreamConfigured: await canUseProvider(model.provider),
+      upstreamConfigured: await canUseRoute(model),
     })));
     return context.json({
       generatedAt: nowIso(),
@@ -451,6 +516,47 @@ export function createApp(options: CreateAppOptions = {}) {
     return user ? context.json({ data: user }) : context.json({ error: { message: "User was not found." } }, 404);
   });
 
+  app.get("/admin/feedbacks", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await controlPlane.listFeedbacks() });
+  });
+
+  app.patch("/admin/feedbacks/:id", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = feedbackPatchSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid feedback update." } }, 400);
+    const feedback = await controlPlane.updateFeedbackStatus(context.req.param("id"), parsed.data.status);
+    return feedback ? context.json({ data: feedback }) : context.json({ error: { message: "Feedback was not found." } }, 404);
+  });
+
+  app.get("/admin/app-versions", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await controlPlane.listAppVersions() });
+  });
+
+  app.post("/admin/app-versions", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = appVersionCreateSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid app version." } }, 400);
+    try {
+      return context.json({ data: await controlPlane.createAppVersion(parsed.data) }, 201);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to publish app version." } }, 400);
+    }
+  });
+
+  app.patch("/admin/app-versions/:id", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = appVersionPatchSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid app version update." } }, 400);
+    try {
+      const version = await controlPlane.updateAppVersion(context.req.param("id"), parsed.data);
+      return version ? context.json({ data: version }) : context.json({ error: { message: "App version was not found." } }, 404);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to update app version." } }, 400);
+    }
+  });
+
   app.get("/admin/provider-keys", async (context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
     return context.json({ data: await controlPlane.listProviderKeys() });
@@ -505,7 +611,14 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/admin/routing", async (context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
-    return context.json({ data: { strategy: await controlPlane.getRoutingStrategy() } });
+    const [strategy, policies] = await Promise.all([controlPlane.getRoutingStrategy(), controlPlane.listRoutingPolicies()]);
+    return context.json({
+      data: {
+        strategy,
+        channelPolicies: policies.filter((policy) => policy.scope === "channel"),
+        modelPolicies: policies.filter((policy) => policy.scope === "model"),
+      },
+    });
   });
 
   app.patch("/admin/routing", async (context) => {
@@ -514,6 +627,27 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!parsed.success) return context.json({ error: { message: "Invalid routing strategy." } }, 400);
     const strategy: LoadBalanceStrategy = await controlPlane.setRoutingStrategy(parsed.data.strategy);
     return context.json({ data: { strategy } });
+  });
+
+  app.patch("/admin/routing/:scope/:scopeId", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const scope = z.enum(["channel", "model"]).safeParse(context.req.param("scope"));
+    const parsed = routingPolicySchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!scope.success || !parsed.success) return context.json({ error: { message: "Invalid routing policy." } }, 400);
+    try {
+      const policy = await controlPlane.setRoutingPolicy(scope.data as RoutingScope, context.req.param("scopeId"), parsed.data.keyIds);
+      return policy ? context.json({ data: policy }) : context.json({ error: { message: "A routing policy requires at least one provider key." } }, 400);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to save routing policy." } }, 400);
+    }
+  });
+
+  app.delete("/admin/routing/:scope/:scopeId", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const scope = z.enum(["channel", "model"]).safeParse(context.req.param("scope"));
+    if (!scope.success) return context.json({ error: { message: "Invalid routing policy." } }, 400);
+    const deleted = await controlPlane.deleteRoutingPolicy(scope.data as RoutingScope, context.req.param("scopeId"));
+    return deleted ? context.body(null, 204) : context.json({ error: { message: "Routing policy was not found." } }, 404);
   });
 
   app.get("/admin/config", async (context) => {
