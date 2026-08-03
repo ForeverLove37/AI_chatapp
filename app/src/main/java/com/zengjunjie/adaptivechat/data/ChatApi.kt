@@ -50,6 +50,7 @@ data class UpdateCheckResult(
 data class RemoteConfig(
     val version: Int,
     val channels: List<ProviderMode>,
+    val webSearchEnabled: Boolean,
 )
 
 class ChatApi(baseUrl: String) {
@@ -63,6 +64,7 @@ class ChatApi(baseUrl: String) {
         accessToken: String,
         model: ChatModel,
         messages: List<RemoteMessage>,
+        webSearchEnabled: Boolean = false,
     ): Flow<StreamChunk> = callbackFlow {
         val payload = JSONObject()
             .put("model", model.wireName)
@@ -80,12 +82,13 @@ class ChatApi(baseUrl: String) {
                 },
             )
 
-        val request = Request.Builder()
+        val requestBuilder = Request.Builder()
             .url(endpoint)
             .header("Accept", "text/event-stream")
             .header("Authorization", "Bearer $accessToken")
             .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .build()
+        if (webSearchEnabled) requestBuilder.header("X-Web-Search", "true")
+        val request = requestBuilder.build()
 
         val eventSource = EventSources.createFactory(client).newEventSource(
             request,
@@ -121,7 +124,10 @@ class ChatApi(baseUrl: String) {
                 }
 
                 override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-                    close(t ?: IllegalStateException("Streaming request failed with HTTP ${response?.code}"))
+                    val serverMessage = response?.body?.string()?.let { body ->
+                        runCatching { JSONObject(body).optJSONObject("error")?.optString("message") }.getOrNull()
+                    }?.takeIf(String::isNotBlank)
+                    close(t ?: IllegalStateException(serverMessage ?: "Streaming request failed with HTTP ${response?.code}"))
                 }
             },
         )
@@ -160,28 +166,41 @@ class ChatApi(baseUrl: String) {
                     if (models.isEmpty()) continue
                     val style = item.optJSONObject("style") ?: JSONObject()
                     val icon = item.optJSONObject("icon")
+                    val baseStyle = ChannelStyle(
+                        backgroundStart = style.optString("backgroundStart", "#F7F9F8"),
+                        backgroundEnd = style.optString("backgroundEnd", "#EEF3F1"),
+                        accentColor = style.optString("accentColor", "#087F73"),
+                        textColor = style.optString("textColor", "#172126"),
+                        surfaceColor = style.optString("surfaceColor", "#FFFFFF"),
+                        typography = style.optString("typography", "sans"),
+                        animatedGradient = style.optBoolean("animatedGradient"),
+                    )
                     add(
                         ProviderMode(
                             wireName = id,
                             displayName = displayName,
                             description = item.optString("description"),
                             iconDataUrl = icon?.takeIf { it.optString("type") == "data_url" }?.optString("value").orEmpty(),
-                            style = ChannelStyle(
-                                backgroundStart = style.optString("backgroundStart", "#F7F9F8"),
-                                backgroundEnd = style.optString("backgroundEnd", "#EEF3F1"),
-                                accentColor = style.optString("accentColor", "#087F73"),
-                                textColor = style.optString("textColor", "#172126"),
-                                surfaceColor = style.optString("surfaceColor", "#FFFFFF"),
-                                typography = style.optString("typography", "sans"),
-                                animatedGradient = style.optBoolean("animatedGradient"),
-                            ),
+                            style = NativeChannelCssParser.apply(baseStyle, style.optString("customCss")),
                             models = models,
+                            appIconUrl = resolvePublicUrl(item.optString("appIconUrl")),
                         ),
                     )
                 }
             }
-            RemoteConfig(payload.optInt("version", 1), channels.ifEmpty { ProviderMode.entries })
+            RemoteConfig(
+                version = payload.optInt("version", 1),
+                channels = channels.ifEmpty { ProviderMode.entries },
+                webSearchEnabled = payload.optJSONObject("featureFlags")?.optBoolean("webSearch") == true,
+            )
         }
+    }
+
+    private fun resolvePublicUrl(value: String): String = when {
+        value.isBlank() -> ""
+        value.startsWith("https://") || value.startsWith("http://") -> value
+        value.startsWith("/") -> "$baseEndpoint$value"
+        else -> "$baseEndpoint/$value"
     }
 
     suspend fun login(email: String, password: String): LoginResult = postJson(

@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { CronExpressionParser } from "cron-parser";
 import nodemailer from "nodemailer";
+import { installBuildAppIcon } from "./app-icon.js";
 import {
   createPostgresEnterpriseStore,
   renderEmailTemplate,
@@ -212,16 +213,25 @@ async function executeBuild(store: EnterpriseStore, job: BackgroundJob) {
   if (!Number.isInteger(versionCode) || !versionName) throw new Error("Build job version is invalid.");
   const projectRoot = resolve(process.env.ANDROID_PROJECT_ROOT ?? "/workspace");
   await store.appendJobLog(job.id, `Compiling Android ${versionName} for the ${ring} ring`);
-  await runCommand("./gradlew", [
-    ":app:assembleDebug",
-    `-PadaptiveVersionCode=${versionCode}`,
-    `-PadaptiveVersionName=${versionName}`,
-    `-PadaptiveReleaseRing=${ring}`,
-    "--no-daemon",
-    "--max-workers=1",
-    "-Pkotlin.compiler.execution.strategy=in-process",
-    "--console=plain",
-  ], { cwd: projectRoot }, (line) => store.appendJobLog(job.id, line));
+  const iconChannel = (await store.listDynamicChannels()).find((channel) => Boolean(channel.appIconDataUrl));
+  const restoreIcon = iconChannel
+    ? await installBuildAppIcon(projectRoot, iconChannel.appIconDataUrl)
+    : undefined;
+  if (iconChannel) await store.appendJobLog(job.id, `Bundled the launcher icon assigned by ${iconChannel.displayName}`);
+  try {
+    await runCommand("./gradlew", [
+      ":app:assembleDebug",
+      `-PadaptiveVersionCode=${versionCode}`,
+      `-PadaptiveVersionName=${versionName}`,
+      `-PadaptiveReleaseRing=${ring}`,
+      "--no-daemon",
+      "--max-workers=1",
+      "-Pkotlin.compiler.execution.strategy=in-process",
+      "--console=plain",
+    ], { cwd: projectRoot }, (line) => store.appendJobLog(job.id, line));
+  } finally {
+    await restoreIcon?.();
+  }
 
   const source = join(projectRoot, "app/build/outputs/apk/debug/app-debug.apk");
   const outputRoot = resolve(process.env.APK_OUTPUT_DIR ?? "/artifacts");

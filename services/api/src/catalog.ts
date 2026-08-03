@@ -105,6 +105,7 @@ export type RemoteChannel = {
   displayName: string;
   description: string;
   icon: { type: "builtin" | "data_url"; value: string };
+  appIconUrl: string;
   style: {
     backgroundStart: string;
     backgroundEnd: string;
@@ -113,6 +114,7 @@ export type RemoteChannel = {
     surfaceColor: string;
     typography: "sans" | "serif" | "mono";
     animatedGradient: boolean;
+    customCss: string;
   };
   models: Array<{ id: string; label: string; description: string }>;
 };
@@ -121,17 +123,20 @@ const builtInChannels: Array<Omit<RemoteChannel, "models">> = [
   {
     id: "chatgpt", displayName: "ChatGPT", description: "Minimal and focused",
     icon: { type: "builtin", value: "chatgpt" },
-    style: { backgroundStart: "#FFFFFF", backgroundEnd: "#F7F7F8", accentColor: "#0D7C66", textColor: "#202123", surfaceColor: "#FFFFFF", typography: "sans", animatedGradient: false },
+    appIconUrl: "",
+    style: { backgroundStart: "#FFFFFF", backgroundEnd: "#F7F7F8", accentColor: "#0D7C66", textColor: "#202123", surfaceColor: "#FFFFFF", typography: "sans", animatedGradient: false, customCss: "" },
   },
   {
     id: "gemini", displayName: "Gemini", description: "Colorful Material intelligence",
     icon: { type: "builtin", value: "gemini" },
-    style: { backgroundStart: "#E8F0FE", backgroundEnd: "#FCE8F3", accentColor: "#1A73E8", textColor: "#202124", surfaceColor: "#FFFFFF", typography: "sans", animatedGradient: true },
+    appIconUrl: "",
+    style: { backgroundStart: "#E8F0FE", backgroundEnd: "#FCE8F3", accentColor: "#1A73E8", textColor: "#202124", surfaceColor: "#FFFFFF", typography: "sans", animatedGradient: true, customCss: "" },
   },
   {
     id: "deepseek", displayName: "DeepSeek", description: "Technical reasoning workspace",
     icon: { type: "builtin", value: "deepseek" },
-    style: { backgroundStart: "#F2F7FF", backgroundEnd: "#E8F0FF", accentColor: "#3B6EF5", textColor: "#17213A", surfaceColor: "#FFFFFF", typography: "mono", animatedGradient: false },
+    appIconUrl: "",
+    style: { backgroundStart: "#F2F7FF", backgroundEnd: "#E8F0FF", accentColor: "#3B6EF5", textColor: "#17213A", surfaceColor: "#FFFFFF", typography: "mono", animatedGradient: false, customCss: "" },
   },
 ];
 
@@ -147,12 +152,13 @@ export function publicRemoteConfig(routes: ModelRoute[] = modelCatalog, dynamicC
     ...dynamicChannels,
   ].filter((channel) => channel.models.length > 0);
   return {
-    version: 4,
+    version: 5,
     defaultSystemPrompt: "You are a helpful AI assistant.",
     featureFlags: {
       attachments: false,
       reasoningBlocks: true,
       remoteModelConfig: true,
+      webSearch: true,
     },
     channels,
     models: enabledRoutes

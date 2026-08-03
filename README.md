@@ -12,9 +12,9 @@ The Kotlin/Compose client persists conversations in Room and keeps the selected 
 
 The client keeps a bounded local context window and exposes an animated time-to-first-token waiting state. It never receives upstream provider credentials.
 
-The distributable debug APK is `app/build/outputs/apk/debug/app-debug.apk`. It is version `1.4.0`, uses the application identity `com.zengjunjie.adaptivechat`, and packages adaptive plus `mdpi` through `xxxhdpi` launcher icons generated from `icons/logo.png`.
+The distributable debug APK is `app/build/outputs/apk/debug/app-debug.apk`. It is version `1.5.0`, uses the application identity `com.zengjunjie.adaptivechat`, and packages adaptive plus `mdpi` through `xxxhdpi` launcher icons generated from `icons/logo.png` or from the first enabled dynamic channel assigned to a queued build.
 
-It supports image attachments using OpenAI Chat Completions `content` arrays, native speech-to-text, Edge TTS with an Android `TextToSpeech` fallback, Markdown response rendering, response copy/redo/listen actions, and persisted conversation branches.
+It supports image attachments using OpenAI Chat Completions `content` arrays, native speech-to-text, Edge TTS with an Android `TextToSpeech` fallback, Markdown response rendering, response copy/redo/listen actions, persisted conversation branches, and a per-query Web Search control. Destructive conversation, branch, and assistant-message operations require explicit confirmation.
 
 Build the Android client without launching an emulator:
 
@@ -34,7 +34,9 @@ The Node/Hono gateway exposes OpenAI-compatible endpoints:
 
 The production control plane uses PostgreSQL for users, hashed client keys, encrypted provider key pools, model mappings, routing settings, and request metrics. Redis provides quota counters, active-stream state, and round-robin routing cursors.
 
-The Next.js admin console supports manual user creation, client-key issuance/revocation, write-only provider-key pools, model-to-upstream mapping, priority tiers, and round-robin or randomized balancing for equal-priority keys. There is no public registration route.
+The Next.js admin console supports manual user creation, client-key issuance/revocation, write-only provider-key pools, model-to-upstream mapping, priority tiers, and round-robin or randomized balancing for equal-priority keys. Search-provider management supports DuckDuckGo, Tavily, and SerpApi with encrypted credentials and priority fallback. The dynamic channel builder publishes native CSS styling and can assign an uploaded launcher icon to Beta or Production builds. There is no public registration route, and destructive operations require confirmation.
+
+Android enables Web Search with the `X-Web-Search: true` request header while preserving an OpenAI-standard `/v1/chat/completions` JSON body. The gateway retrieves and sanitizes sources, inserts an untrusted-evidence system context, and then relays the request to the mapped upstream model.
 
 Run local development services:
 
@@ -64,6 +66,7 @@ Production endpoints:
 
 - Admin console: `https://console.zengjunjie.com`
 - API gateway: `https://chatapi.zengjunjie.com`
+- Production APK: `https://chatapi.zengjunjie.com/downloads/adaptive-chat-1.5.0-production.apk`
 
 The console is protected by HTTP Basic Auth with username `admin` and the `ADMIN_API_KEY` value in the server `.env`. Certbot uses `CERTBOT_EMAIL` when supplied; otherwise it runs in explicit no-email mode and retains its scheduled renewal task.
 

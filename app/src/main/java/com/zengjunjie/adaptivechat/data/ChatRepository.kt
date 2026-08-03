@@ -55,6 +55,7 @@ class ChatRepository(
         text: String,
         accessToken: String,
         attachments: List<ChatAttachment> = emptyList(),
+        webSearchEnabled: Boolean = false,
         onFirstToken: () -> Unit = {},
     ) {
         val now = System.currentTimeMillis()
@@ -93,6 +94,7 @@ class ChatRepository(
             assistantMessageId = assistantMessage.id,
             sourceMessages = persistedMessages.filterNot { it.id == assistantMessage.id },
             accessToken = accessToken,
+            webSearchEnabled = webSearchEnabled,
             onFirstToken = onFirstToken,
         )
     }
@@ -151,6 +153,7 @@ class ChatRepository(
         text: String,
         attachments: List<ChatAttachment>,
         accessToken: String,
+        webSearchEnabled: Boolean = false,
         onFirstToken: () -> Unit = {},
     ) {
         val persistedMessages = chatDao.getMessages(session.id)
@@ -191,6 +194,7 @@ class ChatRepository(
             assistantMessageId = assistant.id,
             sourceMessages = sourceMessages,
             accessToken = accessToken,
+            webSearchEnabled = webSearchEnabled,
             onFirstToken = onFirstToken,
         )
     }
@@ -233,6 +237,7 @@ class ChatRepository(
         assistantMessageId: String,
         sourceMessages: List<ChatMessageEntity>,
         accessToken: String,
+        webSearchEnabled: Boolean = false,
         onFirstToken: () -> Unit,
     ) {
         val history = buildContextWindow(
@@ -246,7 +251,7 @@ class ChatRepository(
         var receivedFirstToken = false
         var streamFailure: Throwable? = null
         try {
-            chatApi.stream(accessToken, session.model, history).collect { chunk ->
+            chatApi.stream(accessToken, session.model, history, webSearchEnabled).collect { chunk ->
                 if (!receivedFirstToken && (chunk.content.isNotEmpty() || chunk.reasoning.isNotEmpty())) {
                     receivedFirstToken = true
                     onFirstToken()

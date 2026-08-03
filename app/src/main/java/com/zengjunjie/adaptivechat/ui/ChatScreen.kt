@@ -72,6 +72,7 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
@@ -142,6 +143,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import kotlin.math.cos
+import kotlin.math.sin
+
+private enum class ConfirmedMessageAction { DELETE, BRANCH }
+private data class PendingMessageConfirmation(val action: ConfirmedMessageAction, val messageId: String)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -164,11 +170,14 @@ fun ChatScreen(
     var sessionPendingDeletion by remember { mutableStateOf<ChatSession?>(null) }
     var attachmentError by remember { mutableStateOf<String?>(null) }
     var editingMessageId by rememberSaveable { mutableStateOf<String?>(null) }
+    var webSearchEnabled by rememberSaveable { mutableStateOf(false) }
+    var pendingMessageConfirmation by remember { mutableStateOf<PendingMessageConfirmation?>(null) }
 
     LaunchedEffect(state.selectedSession?.id) {
         editingMessageId = null
         draft = ""
         attachments = emptyList()
+        webSearchEnabled = false
     }
     LaunchedEffect(editingMessageId) {
         if (editingMessageId != null) {
@@ -280,18 +289,19 @@ fun ChatScreen(
                     onSend = {
                         val messageId = editingMessageId
                         if (messageId == null) {
-                            viewModel.sendMessage(draft, attachments)
+                            viewModel.sendMessage(draft, attachments, webSearchEnabled)
                         } else {
-                            viewModel.editLatestUserMessage(messageId, draft, attachments)
+                            viewModel.editLatestUserMessage(messageId, draft, attachments, webSearchEnabled)
                         }
                         editingMessageId = null
                         draft = ""
                         attachments = emptyList()
+                        webSearchEnabled = false
                     },
                     onRedo = viewModel::redoAssistant,
-                    onBranch = viewModel::branchConversation,
+                    onBranch = { messageId -> pendingMessageConfirmation = PendingMessageConfirmation(ConfirmedMessageAction.BRANCH, messageId) },
                     onListen = { markdown -> viewModel.listenToMessage(markdown, speechPlayer) },
-                    onDelete = viewModel::deleteAssistantMessage,
+                    onDelete = { messageId -> pendingMessageConfirmation = PendingMessageConfirmation(ConfirmedMessageAction.DELETE, messageId) },
                     onEdit = { message ->
                         editingMessageId = message.id
                         draft = message.content
@@ -307,6 +317,9 @@ fun ChatScreen(
                             recordAudioPermission.launch(Manifest.permission.RECORD_AUDIO)
                         }
                     },
+                    webSearchAvailable = state.webSearchAvailable,
+                    webSearchEnabled = webSearchEnabled,
+                    onWebSearchChange = { webSearchEnabled = it },
                     onDismissError = viewModel::dismissError,
                     editingMessageId = editingMessageId,
                     onCancelEdit = {
@@ -326,7 +339,7 @@ fun ChatScreen(
                     text = {
                         Text(
                             copy.deleteConversationPrompt(
-                                if (session.title == "New conversation") copy.newConversation else session.title,
+                                copy.sessionTitle(session.title),
                             ),
                         )
                     },
@@ -344,6 +357,27 @@ fun ChatScreen(
                         ) {
                             Text(copy.delete)
                         }
+                    },
+                )
+            }
+
+            pendingMessageConfirmation?.let { pending ->
+                val deleting = pending.action == ConfirmedMessageAction.DELETE
+                AlertDialog(
+                    onDismissRequest = { pendingMessageConfirmation = null },
+                    title = { Text(if (deleting) copy.deleteMessageTitle else copy.branchConversationTitle) },
+                    text = { Text(if (deleting) copy.deleteMessagePrompt else copy.branchConversationPrompt) },
+                    dismissButton = {
+                        TextButton(onClick = { pendingMessageConfirmation = null }) { Text(copy.cancel) }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                if (deleting) viewModel.deleteAssistantMessage(pending.messageId)
+                                else viewModel.branchConversation(pending.messageId)
+                                pendingMessageConfirmation = null
+                            },
+                        ) { Text(copy.confirm) }
                     },
                 )
             }
@@ -368,7 +402,7 @@ fun ChatScreen(
 private fun ChannelBackdrop(provider: ProviderMode) {
     when {
         provider.isGemini -> GeminiGradientBackdrop()
-        provider.style.animatedGradient -> DynamicGradientBackdrop(provider)
+        provider.style.animatedGradient || provider.style.customCss.isNotBlank() -> DynamicGradientBackdrop(provider)
         else -> Box(
             modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
         )
@@ -381,17 +415,25 @@ private fun DynamicGradientBackdrop(provider: ProviderMode) {
     val shift by transition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(8_000, easing = LinearEasing), RepeatMode.Reverse),
+        animationSpec = infiniteRepeatable(tween(provider.style.animationDurationMillis, easing = LinearEasing), RepeatMode.Reverse),
         label = "${provider.wireName}-gradient-shift",
     )
-    val start = channelColor(provider.style.backgroundStart, MaterialTheme.colorScheme.background)
-    val end = channelColor(provider.style.backgroundEnd, MaterialTheme.colorScheme.surfaceVariant)
+    val colors = provider.style.gradientColors.mapIndexed { index, value ->
+        channelColor(
+            value,
+            if (index == 0) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.surfaceVariant,
+        )
+    }.ifEmpty { listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surfaceVariant) }
+    val angle = Math.toRadians(provider.style.gradientAngleDegrees.toDouble())
+    val animatedShift = if (provider.style.animatedGradient) shift else 0f
+    val directionX = cos(angle).toFloat() * 1_600f
+    val directionY = sin(angle).toFloat() * 2_400f
     Box(
         modifier = Modifier.fillMaxSize().background(
             Brush.linearGradient(
-                colors = listOf(start, end, start),
-                start = Offset(-300f + shift * 800f, 0f),
-                end = Offset(1_200f + shift * 800f, 2_200f),
+                colors = if (provider.style.animatedGradient) colors + colors.first() else colors,
+                start = Offset(-400f + animatedShift * 700f, -200f),
+                end = Offset(directionX + animatedShift * 700f, directionY),
             ),
         ),
     )
@@ -486,7 +528,7 @@ private fun SessionDrawer(
                     )
                     Spacer(Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(if (session.title == "New conversation") copy.newConversation else session.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                        Text(copy.sessionTitle(session.title), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                         Text(copy.modelName(session.model), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                     }
                     IconButton(onClick = { onDelete(session) }, modifier = Modifier.size(36.dp)) {
@@ -542,6 +584,9 @@ private fun ChatContent(
     onRemoveAttachment: (ChatAttachment) -> Unit,
     onAttachFile: () -> Unit,
     onVoiceInput: () -> Unit,
+    webSearchAvailable: Boolean,
+    webSearchEnabled: Boolean,
+    onWebSearchChange: (Boolean) -> Unit,
     onDismissError: () -> Unit,
     editingMessageId: String?,
     onCancelEdit: () -> Unit,
@@ -633,6 +678,9 @@ private fun ChatContent(
             onRemoveAttachment = onRemoveAttachment,
             onAttachFile = onAttachFile,
             onVoiceInput = onVoiceInput,
+            webSearchAvailable = webSearchAvailable,
+            webSearchEnabled = webSearchEnabled,
+            onWebSearchChange = onWebSearchChange,
             isEditing = editingMessageId != null,
             onCancelEdit = onCancelEdit,
             focusRequester = composerFocusRequester,
@@ -1235,6 +1283,9 @@ private fun Composer(
     onRemoveAttachment: (ChatAttachment) -> Unit,
     onAttachFile: () -> Unit,
     onVoiceInput: () -> Unit,
+    webSearchAvailable: Boolean,
+    webSearchEnabled: Boolean,
+    onWebSearchChange: (Boolean) -> Unit,
     isEditing: Boolean,
     onCancelEdit: () -> Unit,
     focusRequester: FocusRequester,
@@ -1327,6 +1378,23 @@ private fun Composer(
                 }
                 IconButton(onClick = onVoiceInput, enabled = !isStreaming, modifier = Modifier.size(42.dp)) {
                     Icon(Icons.Outlined.Mic, contentDescription = copy.voiceInput, modifier = Modifier.size(20.dp))
+                }
+                if (webSearchAvailable) {
+                    IconButton(
+                        onClick = { onWebSearchChange(!webSearchEnabled) },
+                        enabled = !isStreaming,
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(if (webSearchEnabled) MaterialTheme.colorScheme.primaryContainer else Color.Transparent),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Public,
+                            contentDescription = if (webSearchEnabled) copy.webSearchEnabled else copy.webSearch,
+                            tint = if (webSearchEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                 }
                 TextField(
                     value = draft,

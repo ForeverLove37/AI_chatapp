@@ -22,9 +22,18 @@ import {
   type BackupDestinationInput,
   type EmailTemplateTrigger,
   type EnterpriseStore,
+  type SearchProviderExecutionConfig,
 } from "./enterprise.js";
 import { issueSessionToken, verifySessionToken } from "./auth.js";
 import { publicRemoteConfig, type LoadBalanceStrategy, type ModelRoute, type RemoteChannel } from "./catalog.js";
+import {
+  buildSearchGroundingMessage,
+  executeWebSearch,
+  extractLatestUserQuery,
+  injectSearchGrounding,
+  SearchUnavailableError,
+  type WebSearchResponse,
+} from "./search.js";
 
 const contentSchema = z.union([z.string(), z.array(z.unknown()), z.null()]).optional();
 const chatRequestSchema = z.object({
@@ -175,6 +184,11 @@ const dynamicChannelSchema = z.object({
   secret: z.string().trim().min(1).max(8_000).optional(),
   priority: z.number().int().min(0).max(100_000).default(100),
   iconDataUrl: z.union([z.literal(""), z.string().startsWith("data:image/").max(1_500_000)]).default(""),
+  appIconDataUrl: z.union([
+    z.literal(""),
+    z.string().regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/).max(4_000_000),
+  ]).default(""),
+  customCss: z.string().max(50_000).default(""),
   backgroundStart: colorSchema,
   backgroundEnd: colorSchema,
   accentColor: colorSchema,
@@ -188,6 +202,17 @@ const dynamicChannelSchema = z.object({
   sortOrder: z.number().int().min(0).max(10_000).default(100),
 });
 const dynamicChannelPatchSchema = dynamicChannelSchema.partial().refine((value) => Object.keys(value).length > 0);
+const searchProviderSchema = z.object({
+  slug: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9-]*$/),
+  displayName: z.string().trim().min(1).max(120),
+  kind: z.enum(["duckduckgo", "tavily", "serpapi"]),
+  endpoint: z.url().max(2_000),
+  apiKey: z.string().trim().max(8_000).optional(),
+  priority: z.number().int().min(0).max(100_000).default(100),
+  maxResults: z.number().int().min(1).max(10).default(5),
+  enabled: z.boolean().default(false),
+});
+const searchProviderPatchSchema = searchProviderSchema.partial().refine((value) => Object.keys(value).length > 0);
 const userGroupSchema = z.object({
   slug: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9-]*$/),
   name: z.string().trim().min(1).max(120),
@@ -242,6 +267,7 @@ export type CreateAppOptions = {
   demoMode?: boolean;
   requireClientAuth?: boolean;
   synthesizeSpeech?: (input: string, voice: string) => Promise<Uint8Array>;
+  executeSearch?: (providers: SearchProviderExecutionConfig[], query: string) => Promise<WebSearchResponse>;
 };
 
 const flag = (value: string | undefined, fallback: boolean) =>
@@ -383,6 +409,13 @@ function usageFromBody(body: string) {
   };
 }
 
+function decodeRasterDataUrl(value: string) {
+  const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(value);
+  if (!match) return undefined;
+  const body = Buffer.from(match[2], "base64");
+  return body.length ? { contentType: match[1], body } : undefined;
+}
+
 export function createApp(options: CreateAppOptions = {}) {
   const app = new Hono();
   const controlPlane = options.controlPlane ?? new MemoryControlPlane();
@@ -397,7 +430,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.use("*", cors({
     origin: (origin) => !origin || allowedOrigins.includes(origin) ? origin || allowedOrigins[0] : "",
-    allowHeaders: ["Authorization", "Content-Type", "X-Admin-Key"],
+    allowHeaders: ["Authorization", "Content-Type", "X-Admin-Key", "X-Web-Search"],
     allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
   }));
   app.use("*", async (context, next) => {
@@ -463,6 +496,7 @@ export function createApp(options: CreateAppOptions = {}) {
       displayName: channel.displayName,
       description: channel.description,
       icon: { type: channel.iconDataUrl ? "data_url" : "builtin", value: channel.iconDataUrl || channel.slug },
+      appIconUrl: channel.appIconDataUrl ? `/v1/config/app-icons/${encodeURIComponent(channel.slug)}` : "",
       style: {
         backgroundStart: channel.backgroundStart,
         backgroundEnd: channel.backgroundEnd,
@@ -471,6 +505,7 @@ export function createApp(options: CreateAppOptions = {}) {
         surfaceColor: channel.surfaceColor,
         typography: channel.typography,
         animatedGradient: channel.animatedGradient,
+        customCss: channel.customCss,
       },
       models: channel.models.map(({ id, label, description }) => ({ id, label, description })),
     }));
@@ -485,6 +520,65 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!userId) return context.json({ error: { message: "A user id is required." } }, 400);
     const user = await controlPlane.updateUser(userId, parsed.data);
     return user ? context.json({ data: user }) : context.json({ error: { message: "User was not found." } }, 404);
+  };
+
+  const deleteUser = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    try {
+      const deleted = await controlPlane.deleteUser(context.req.param("id") ?? "");
+      return deleted
+        ? context.body(null, 204)
+        : context.json({ error: { code: "user_not_found", message: "User was not found." } }, 404);
+    } catch (error) {
+      return context.json({ error: { code: "user_delete_blocked", message: error instanceof Error ? error.message : "Unable to delete user." } }, 409);
+    }
+  };
+
+  const listSearchProviders = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await enterprise.listSearchProviders() });
+  };
+
+  const createSearchProvider = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = searchProviderSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { code: "invalid_search_provider", message: "Invalid search provider.", details: parsed.error.issues } }, 400);
+    if (parsed.data.enabled && parsed.data.kind !== "duckduckgo" && !parsed.data.apiKey) {
+      return context.json({ error: { code: "search_api_key_required", message: "An API key is required before this search provider can be enabled." } }, 400);
+    }
+    try {
+      return context.json({ data: await enterprise.createSearchProvider(parsed.data) }, 201);
+    } catch (error) {
+      return context.json({ error: { code: "search_provider_create_failed", message: error instanceof Error ? error.message : "Unable to create search provider." } }, 400);
+    }
+  };
+
+  const updateSearchProvider = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = searchProviderPatchSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { code: "invalid_search_provider", message: "Invalid search provider update.", details: parsed.error.issues } }, 400);
+    const existing = (await enterprise.listSearchProviders()).find((item) => item.id === context.req.param("id"));
+    if (!existing) return context.json({ error: { code: "search_provider_not_found", message: "Search provider was not found." } }, 404);
+    const enabled = parsed.data.enabled ?? existing.enabled;
+    const kind = parsed.data.kind ?? existing.kind;
+    const keyConfigured = parsed.data.apiKey !== undefined ? Boolean(parsed.data.apiKey) : existing.apiKeyConfigured;
+    if (enabled && kind !== "duckduckgo" && !keyConfigured) {
+      return context.json({ error: { code: "search_api_key_required", message: "An API key is required before this search provider can be enabled." } }, 400);
+    }
+    try {
+      const provider = await enterprise.updateSearchProvider(existing.id, parsed.data);
+      return context.json({ data: provider });
+    } catch (error) {
+      return context.json({ error: { code: "search_provider_update_failed", message: error instanceof Error ? error.message : "Unable to update search provider." } }, 400);
+    }
+  };
+
+  const deleteSearchProvider = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const deleted = await enterprise.deleteSearchProvider(context.req.param("id") ?? "");
+    return deleted
+      ? context.body(null, 204)
+      : context.json({ error: { code: "search_provider_not_found", message: "Search provider was not found." } }, 404);
   };
 
   app.get("/health", async (context) => {
@@ -510,6 +604,19 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.get("/v1/config", async (context) => context.json(await remoteConfig()));
+
+  app.get("/v1/config/app-icons/:slug", async (context) => {
+    const channel = (await enterprise.listDynamicChannels()).find((item) => item.slug === context.req.param("slug"));
+    const image = channel ? decodeRasterDataUrl(channel.appIconDataUrl) : undefined;
+    if (!image) return context.json({ error: { code: "app_icon_not_found", message: "App icon was not found." } }, 404);
+    return new Response(image.body, {
+      headers: {
+        "Content-Type": image.contentType,
+        "Content-Length": String(image.body.byteLength),
+        "Cache-Control": "public, max-age=300",
+      },
+    });
+  });
 
   app.post("/v1/auth/login", async (context) => {
     const parsed = loginSchema.safeParse(await context.req.json().catch(() => undefined));
@@ -601,7 +708,26 @@ export function createApp(options: CreateAppOptions = {}) {
     const parsed = chatRequestSchema.safeParse(payload);
     if (!parsed.success) return context.json({ error: { message: "Invalid chat completion request.", details: parsed.error.issues } }, 400);
 
-    const request = parsed.data;
+    let request = parsed.data;
+    const webSearchEnabled = flag(context.req.header("x-web-search"), false);
+    if (webSearchEnabled) {
+      try {
+        const query = extractLatestUserQuery(request.messages);
+        const search = await (options.executeSearch ?? executeWebSearch)(
+          await enterprise.listSearchExecutionConfigs(),
+          query,
+        );
+        request = {
+          ...request,
+          messages: injectSearchGrounding(request.messages, buildSearchGroundingMessage(search)) as ChatRequest["messages"],
+        };
+      } catch (error) {
+        const message = error instanceof SearchUnavailableError
+          ? error.message
+          : error instanceof Error ? error.message : "Web search failed.";
+        return context.json({ error: { code: "web_search_unavailable", message } }, 502);
+      }
+    }
     const route = await controlPlane.findModelRoute(request.model);
     if (!route) return context.json({ error: { message: `Unknown or disabled model: ${request.model}` } }, 404);
     const requestStartedAt = Date.now();
@@ -729,6 +855,15 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
+  app.get("/admin/search-providers", listSearchProviders);
+  app.get("/v1/admin/search-providers", listSearchProviders);
+  app.post("/admin/search-providers", createSearchProvider);
+  app.post("/v1/admin/search-providers", createSearchProvider);
+  app.patch("/admin/search-providers/:id", updateSearchProvider);
+  app.patch("/v1/admin/search-providers/:id", updateSearchProvider);
+  app.delete("/admin/search-providers/:id", deleteSearchProvider);
+  app.delete("/v1/admin/search-providers/:id", deleteSearchProvider);
+
   app.get("/admin/api-keys", async (context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
     return context.json({ data: await controlPlane.listClientKeys() });
@@ -773,6 +908,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.patch("/admin/users/:id", updateUser);
   app.patch("/v1/users/:id", updateUser);
   app.put("/v1/users/:id", updateUser);
+  app.delete("/admin/users/:id", deleteUser);
+  app.delete("/v1/users/:id", deleteUser);
 
   app.get("/admin/feedbacks", async (context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);

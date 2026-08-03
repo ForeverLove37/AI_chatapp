@@ -13,6 +13,7 @@ export type JobType = "email" | "backup" | "build";
 export type JobStatus = "queued" | "running" | "retrying" | "succeeded" | "failed";
 export type ReleaseRing = "beta" | "production";
 export type BackupProtocol = "local" | "webdav" | "s3";
+export type SearchProviderKind = "duckduckgo" | "tavily" | "serpapi";
 
 export type EmailSettings = {
   host: string;
@@ -55,6 +56,8 @@ export type DynamicChannel = {
   provider: string;
   providerKeyId: string | null;
   iconDataUrl: string;
+  appIconDataUrl: string;
+  customCss: string;
   backgroundStart: string;
   backgroundEnd: string;
   accentColor: string;
@@ -67,6 +70,26 @@ export type DynamicChannel = {
   sortOrder: number;
   updatedAt: string;
 };
+
+export type SearchProvider = {
+  id: string;
+  slug: string;
+  displayName: string;
+  kind: SearchProviderKind;
+  endpoint: string;
+  priority: number;
+  maxResults: number;
+  enabled: boolean;
+  apiKeyConfigured: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SearchProviderInput = Omit<SearchProvider, "id" | "apiKeyConfigured" | "createdAt" | "updatedAt"> & {
+  apiKey?: string;
+};
+
+export type SearchProviderExecutionConfig = SearchProvider & { apiKey: string };
 
 export type UserGroup = {
   id: string;
@@ -163,6 +186,11 @@ export interface EnterpriseStore {
   createDynamicChannel(input: Omit<DynamicChannel, "id" | "updatedAt">): Promise<DynamicChannel>;
   updateDynamicChannel(id: string, patch: Partial<Omit<DynamicChannel, "id" | "updatedAt">>): Promise<DynamicChannel | undefined>;
   deleteDynamicChannel(id: string): Promise<boolean>;
+  listSearchProviders(): Promise<SearchProvider[]>;
+  createSearchProvider(input: SearchProviderInput): Promise<SearchProvider>;
+  updateSearchProvider(id: string, patch: Partial<SearchProviderInput>): Promise<SearchProvider | undefined>;
+  deleteSearchProvider(id: string): Promise<boolean>;
+  listSearchExecutionConfigs(): Promise<SearchProviderExecutionConfig[]>;
   listUserGroups(): Promise<UserGroup[]>;
   createUserGroup(input: Pick<UserGroup, "slug" | "name" | "description" | "releaseRing">): Promise<UserGroup>;
   updateUserGroup(id: string, patch: Partial<Pick<UserGroup, "name" | "description" | "releaseRing">>): Promise<UserGroup | undefined>;
@@ -296,6 +324,8 @@ function dynamicChannelFromRow(row: Record<string, unknown>): DynamicChannel {
     provider: String(row.provider),
     providerKeyId: row.provider_key_id ? String(row.provider_key_id) : null,
     iconDataUrl: String(row.icon_data_url ?? ""),
+    appIconDataUrl: String(row.app_icon_data_url ?? ""),
+    customCss: String(row.custom_css ?? ""),
     backgroundStart: String(row.background_start),
     backgroundEnd: String(row.background_end),
     accentColor: String(row.accent_color),
@@ -306,6 +336,22 @@ function dynamicChannelFromRow(row: Record<string, unknown>): DynamicChannel {
     models: models as DynamicModel[],
     enabled: Boolean(row.enabled),
     sortOrder: numberValue(row.sort_order),
+    updatedAt: isoValue(row.updated_at),
+  };
+}
+
+function searchProviderFromRow(row: Record<string, unknown>): SearchProvider {
+  return {
+    id: String(row.id),
+    slug: String(row.slug),
+    displayName: String(row.display_name),
+    kind: String(row.kind) as SearchProviderKind,
+    endpoint: String(row.endpoint),
+    priority: numberValue(row.priority),
+    maxResults: numberValue(row.max_results),
+    enabled: Boolean(row.enabled),
+    apiKeyConfigured: Boolean(row.encrypted_api_key),
+    createdAt: isoValue(row.created_at),
     updatedAt: isoValue(row.updated_at),
   };
 }
@@ -450,7 +496,23 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
         sort_order INTEGER NOT NULL DEFAULT 100,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE dynamic_channels ADD COLUMN IF NOT EXISTS app_icon_data_url TEXT NOT NULL DEFAULT '';
+      ALTER TABLE dynamic_channels ADD COLUMN IF NOT EXISTS custom_css TEXT NOT NULL DEFAULT '';
       CREATE INDEX IF NOT EXISTS dynamic_channels_order_idx ON dynamic_channels(enabled, sort_order, slug);
+      CREATE TABLE IF NOT EXISTS search_providers (
+        id TEXT PRIMARY KEY,
+        slug TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('duckduckgo', 'tavily', 'serpapi')),
+        endpoint TEXT NOT NULL,
+        encrypted_api_key TEXT NOT NULL DEFAULT '',
+        priority INTEGER NOT NULL DEFAULT 100 CHECK (priority >= 0 AND priority <= 100000),
+        max_results INTEGER NOT NULL DEFAULT 5 CHECK (max_results >= 1 AND max_results <= 10),
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS search_providers_routing_idx ON search_providers(enabled, priority, created_at);
       CREATE TABLE IF NOT EXISTS user_groups (
         id TEXT PRIMARY KEY,
         slug TEXT NOT NULL UNIQUE,
@@ -536,7 +598,14 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
     await this.pool.query(
       `INSERT INTO user_group_members (user_id, group_id)
        SELECT users.id, 'grp_standard' FROM users
-       ON CONFLICT (user_id, group_id) DO NOTHING`,
+      ON CONFLICT (user_id, group_id) DO NOTHING`,
+    );
+    await this.pool.query(
+      `INSERT INTO search_providers (id, slug, display_name, kind, endpoint, priority, max_results, enabled) VALUES
+       ('search_duckduckgo', 'duckduckgo', 'DuckDuckGo Instant Answers', 'duckduckgo', 'https://api.duckduckgo.com/', 10, 5, TRUE),
+       ('search_tavily', 'tavily', 'Tavily Search', 'tavily', 'https://api.tavily.com/search', 20, 5, FALSE),
+       ('search_serpapi', 'serpapi', 'SerpApi Google Search', 'serpapi', 'https://serpapi.com/search.json', 30, 5, FALSE)
+       ON CONFLICT (slug) DO NOTHING`,
     );
   }
 
@@ -627,11 +696,12 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
   async createDynamicChannel(input: Omit<DynamicChannel, "id" | "updatedAt">) {
     const result = await this.pool.query<Record<string, unknown>>(
       `INSERT INTO dynamic_channels (id, slug, display_name, description, provider, provider_key_id, icon_data_url,
-       background_start, background_end, accent_color, text_color, surface_color, typography, animated_gradient, models, enabled, sort_order)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17) RETURNING *`,
+       app_icon_data_url, custom_css, background_start, background_end, accent_color, text_color, surface_color, typography,
+       animated_gradient, models, enabled, sort_order)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18,$19) RETURNING *`,
       [`chn_${randomUUID().slice(0, 12)}`, input.slug, input.displayName, input.description, input.provider, input.providerKeyId,
-        input.iconDataUrl, input.backgroundStart, input.backgroundEnd, input.accentColor, input.textColor, input.surfaceColor,
-        input.typography, input.animatedGradient, JSON.stringify(input.models), input.enabled, input.sortOrder],
+        input.iconDataUrl, input.appIconDataUrl, input.customCss, input.backgroundStart, input.backgroundEnd, input.accentColor,
+        input.textColor, input.surfaceColor, input.typography, input.animatedGradient, JSON.stringify(input.models), input.enabled, input.sortOrder],
     );
     return dynamicChannelFromRow(result.rows[0]);
   }
@@ -639,7 +709,8 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
   async updateDynamicChannel(id: string, patch: Partial<Omit<DynamicChannel, "id" | "updatedAt">>) {
     const columns: Record<string, string> = {
       slug: "slug", displayName: "display_name", description: "description", provider: "provider", providerKeyId: "provider_key_id",
-      iconDataUrl: "icon_data_url", backgroundStart: "background_start", backgroundEnd: "background_end", accentColor: "accent_color",
+      iconDataUrl: "icon_data_url", appIconDataUrl: "app_icon_data_url", customCss: "custom_css",
+      backgroundStart: "background_start", backgroundEnd: "background_end", accentColor: "accent_color",
       textColor: "text_color", surfaceColor: "surface_color", typography: "typography", animatedGradient: "animated_gradient",
       models: "models", enabled: "enabled", sortOrder: "sort_order",
     };
@@ -664,6 +735,61 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
 
   async deleteDynamicChannel(id: string) {
     return (await this.pool.query("DELETE FROM dynamic_channels WHERE id = $1", [id])).rowCount === 1;
+  }
+
+  async listSearchProviders() {
+    const result = await this.pool.query<Record<string, unknown>>(
+      "SELECT * FROM search_providers ORDER BY priority, created_at, slug",
+    );
+    return result.rows.map(searchProviderFromRow);
+  }
+
+  async createSearchProvider(input: SearchProviderInput) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      `INSERT INTO search_providers (id, slug, display_name, kind, endpoint, encrypted_api_key, priority, max_results, enabled)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [`search_${randomUUID().slice(0, 12)}`, input.slug, input.displayName, input.kind, input.endpoint,
+        input.apiKey ? this.secrets.encrypt(input.apiKey) : "", input.priority, input.maxResults, input.enabled],
+    );
+    return searchProviderFromRow(result.rows[0]);
+  }
+
+  async updateSearchProvider(id: string, patch: Partial<SearchProviderInput>) {
+    const columns: Record<string, string> = {
+      slug: "slug", displayName: "display_name", kind: "kind", endpoint: "endpoint", priority: "priority",
+      maxResults: "max_results", enabled: "enabled", apiKey: "encrypted_api_key",
+    };
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, column] of Object.entries(columns)) {
+      if (!(key in patch)) continue;
+      const value = patch[key as keyof typeof patch];
+      values.push(key === "apiKey" ? (value ? this.secrets.encrypt(String(value)) : "") : value);
+      fields.push(`${column} = $${values.length}`);
+    }
+    if (!fields.length) {
+      const existing = await this.pool.query<Record<string, unknown>>("SELECT * FROM search_providers WHERE id = $1", [id]);
+      return existing.rows[0] ? searchProviderFromRow(existing.rows[0]) : undefined;
+    }
+    values.push(id);
+    const result = await this.pool.query<Record<string, unknown>>(
+      `UPDATE search_providers SET ${fields.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`, values,
+    );
+    return result.rows[0] ? searchProviderFromRow(result.rows[0]) : undefined;
+  }
+
+  async deleteSearchProvider(id: string) {
+    return (await this.pool.query("DELETE FROM search_providers WHERE id = $1", [id])).rowCount === 1;
+  }
+
+  async listSearchExecutionConfigs() {
+    const result = await this.pool.query<Record<string, unknown>>(
+      "SELECT * FROM search_providers WHERE enabled = TRUE ORDER BY priority, created_at, slug",
+    );
+    return result.rows.map((row) => ({
+      ...searchProviderFromRow(row),
+      apiKey: row.encrypted_api_key ? this.secrets.decrypt(String(row.encrypted_api_key)) : "",
+    }));
   }
 
   async listUserGroups() {
@@ -898,6 +1024,23 @@ export class MemoryEnterpriseStore implements EnterpriseStore {
   private password = "";
   private templates = new Map(defaultTemplates.map((template) => [template.trigger, { ...template, updatedAt: nowIso() }]));
   private channels = new Map<string, DynamicChannel>();
+  private searchProviders = new Map<string, SearchProviderExecutionConfig>([
+    ["search_duckduckgo", {
+      id: "search_duckduckgo", slug: "duckduckgo", displayName: "DuckDuckGo Instant Answers", kind: "duckduckgo",
+      endpoint: "https://api.duckduckgo.com/", priority: 10, maxResults: 5, enabled: true, apiKeyConfigured: false,
+      apiKey: "", createdAt: nowIso(), updatedAt: nowIso(),
+    }],
+    ["search_tavily", {
+      id: "search_tavily", slug: "tavily", displayName: "Tavily Search", kind: "tavily",
+      endpoint: "https://api.tavily.com/search", priority: 20, maxResults: 5, enabled: false, apiKeyConfigured: false,
+      apiKey: "", createdAt: nowIso(), updatedAt: nowIso(),
+    }],
+    ["search_serpapi", {
+      id: "search_serpapi", slug: "serpapi", displayName: "SerpApi Google Search", kind: "serpapi",
+      endpoint: "https://serpapi.com/search.json", priority: 30, maxResults: 5, enabled: false, apiKeyConfigured: false,
+      apiKey: "", createdAt: nowIso(), updatedAt: nowIso(),
+    }],
+  ]);
   private groups = new Map<string, UserGroup>([
     ["grp_standard", { id: "grp_standard", slug: "standard", name: "Standard", description: "Production release audience", releaseRing: "production", memberCount: 0, createdAt: nowIso(), updatedAt: nowIso() }],
     ["grp_beta", { id: "grp_beta", slug: "beta-testers", name: "Beta Testers", description: "Early-access testing audience", releaseRing: "beta", memberCount: 0, createdAt: nowIso(), updatedAt: nowIso() }],
@@ -930,10 +1073,47 @@ export class MemoryEnterpriseStore implements EnterpriseStore {
     const values = this.loginIps.get(userId) ?? new Set<string>(); const isFirst = values.size === 0; const isNew = !values.has(ip);
     values.add(ip); this.loginIps.set(userId, values); return { isNew, isFirst };
   }
-  async listDynamicChannels(includeDisabled = false) { return [...this.channels.values()].filter((item) => includeDisabled || item.enabled); }
+  async listDynamicChannels(includeDisabled = false) {
+    return [...this.channels.values()]
+      .filter((item) => includeDisabled || item.enabled)
+      .sort((left, right) => left.sortOrder - right.sortOrder || left.slug.localeCompare(right.slug));
+  }
   async createDynamicChannel(input: Omit<DynamicChannel, "id" | "updatedAt">) { const item = { id: `chn_${randomUUID().slice(0, 12)}`, ...input, updatedAt: nowIso() }; this.channels.set(item.id, item); return item; }
   async updateDynamicChannel(id: string, patch: Partial<Omit<DynamicChannel, "id" | "updatedAt">>) { const item = this.channels.get(id); if (!item) return undefined; const updated = { ...item, ...patch, updatedAt: nowIso() }; this.channels.set(id, updated); return updated; }
   async deleteDynamicChannel(id: string) { return this.channels.delete(id); }
+  async listSearchProviders() {
+    return [...this.searchProviders.values()]
+      .sort((left, right) => left.priority - right.priority || left.createdAt.localeCompare(right.createdAt))
+      .map(({ apiKey: _apiKey, ...item }) => ({ ...item }));
+  }
+  async createSearchProvider(input: SearchProviderInput) {
+    if ([...this.searchProviders.values()].some((item) => item.slug === input.slug)) throw new Error("A search provider with that identifier already exists.");
+    const item: SearchProviderExecutionConfig = {
+      id: `search_${randomUUID().slice(0, 12)}`, ...input, apiKey: input.apiKey ?? "",
+      apiKeyConfigured: Boolean(input.apiKey), createdAt: nowIso(), updatedAt: nowIso(),
+    };
+    this.searchProviders.set(item.id, item);
+    const { apiKey: _apiKey, ...view } = item;
+    return view;
+  }
+  async updateSearchProvider(id: string, patch: Partial<SearchProviderInput>) {
+    const item = this.searchProviders.get(id);
+    if (!item) return undefined;
+    const apiKey = patch.apiKey !== undefined ? patch.apiKey : item.apiKey;
+    const updated: SearchProviderExecutionConfig = {
+      ...item, ...patch, apiKey, apiKeyConfigured: Boolean(apiKey), updatedAt: nowIso(),
+    };
+    this.searchProviders.set(id, updated);
+    const { apiKey: _apiKey, ...view } = updated;
+    return view;
+  }
+  async deleteSearchProvider(id: string) { return this.searchProviders.delete(id); }
+  async listSearchExecutionConfigs() {
+    return [...this.searchProviders.values()]
+      .filter((item) => item.enabled)
+      .sort((left, right) => left.priority - right.priority || left.createdAt.localeCompare(right.createdAt))
+      .map((item) => ({ ...item }));
+  }
   async listUserGroups() { return [...this.groups.values()]; }
   async createUserGroup(input: Pick<UserGroup, "slug" | "name" | "description" | "releaseRing">) { const item = { id: `grp_${randomUUID().slice(0, 12)}`, ...input, memberCount: 0, createdAt: nowIso(), updatedAt: nowIso() }; this.groups.set(item.id, item); return item; }
   async updateUserGroup(id: string, patch: Partial<Pick<UserGroup, "name" | "description" | "releaseRing">>) { const item = this.groups.get(id); if (!item) return undefined; const updated = { ...item, ...patch, updatedAt: nowIso() }; this.groups.set(id, updated); return updated; }

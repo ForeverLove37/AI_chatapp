@@ -45,6 +45,11 @@ data class AppCopy(
     val cancel: String,
     val deleteConversation: String,
     val deleteConversationPrompt: (String) -> String,
+    val confirm: String,
+    val deleteMessageTitle: String,
+    val deleteMessagePrompt: String,
+    val branchConversationTitle: String,
+    val branchConversationPrompt: String,
     val redo: String,
     val copyMessage: String,
     val editMessage: String,
@@ -54,6 +59,8 @@ data class AppCopy(
     val listen: String,
     val attachFile: String,
     val voiceInput: String,
+    val webSearch: String,
+    val webSearchEnabled: String,
     val removeAttachment: String,
     val attachmentError: String,
     val speechInputUnavailable: String,
@@ -88,6 +95,17 @@ data class AppCopy(
         else -> model.displayName
     }
 
+    fun sessionTitle(title: String): String {
+        val branched = title.endsWith(" (branch)")
+        val base = if (branched) title.removeSuffix(" (branch)") else title
+        val localizedBase = if (base == "New conversation") newConversation else base
+        return if (branched) {
+            "$localizedBase (${if (this === ChineseCopy) "分支" else "branch"})"
+        } else {
+            localizedBase
+        }
+    }
+
     fun localizedError(message: String) = if (this === ChineseCopy) {
         when {
             message == "Enter your email and an 8-character password." -> "请输入邮箱和至少 8 个字符的密码。"
@@ -100,13 +118,41 @@ data class AppCopy(
             message == "Invalid email or password." -> "邮箱或密码无效。"
             message == "Sign in is required to use chat." -> "需要登录后才能使用聊天。"
             message == "Sign in is required for this action." -> "需要登录后才能执行此操作。"
+            message == "Your session is no longer active." -> "当前登录会话已失效。"
+            message == "Your account has reached its requests-per-minute limit." -> "账户已达到每分钟请求上限。"
+            message == "Your account has reached its daily quota." -> "账户已达到每日配额。"
+            message == "Invalid chat completion request." -> "聊天请求无效。"
+            message == "The upstream request failed." -> "上游请求失败。"
             message == "You can attach up to 3 images at once." -> "一次最多可添加 3 张图片。"
             message == "The selected file has no supported image type." -> "所选文件没有受支持的图片类型。"
             message == "Choose a JPEG, PNG, WEBP, or GIF image." -> "请选择 JPEG、PNG、WEBP 或 GIF 图片。"
             message == "Images must be 4 MB or smaller." -> "图片大小不能超过 4 MB。"
             message == "The selected image could not be read." -> "无法读取所选图片。"
+            message == "The response was not found." -> "未找到该回复。"
+            message == "Only assistant responses can be redone." -> "只能重新生成助手回复。"
+            message == "A preceding user message is required." -> "需要一条在前的用户消息。"
+            message == "The message was not found." -> "未找到该消息。"
+            message == "Only user messages can be edited." -> "只能编辑用户消息。"
+            message == "Only the latest user message can be edited." -> "只能编辑最新一条用户消息。"
+            message == "The edited message cannot be empty." -> "编辑后的消息不能为空。"
+            message == "Only assistant messages can be deleted." -> "只能删除助手消息。"
+            message == "The message could not be deleted." -> "无法删除该消息。"
+            message == "The selected message was not found." -> "未找到所选消息。"
+            message == "Unable to delete the message." -> "无法删除消息。"
+            message == "Unable to create a conversation branch." -> "无法创建会话分支。"
+            message == "The server returned invalid configuration." -> "服务器返回了无效配置。"
+            message == "The speech service returned no audio." -> "语音服务没有返回音频。"
+            message.startsWith("Configuration request failed with HTTP") ->
+                "配置请求失败：${message.removePrefix("Configuration request failed with HTTP ")}"
+            message.startsWith("Speech request failed with HTTP") ->
+                "语音请求失败：${message.removePrefix("Speech request failed with HTTP ")}"
             message.startsWith("Request failed with HTTP") -> "请求失败：${message.removePrefix("Request failed with HTTP ")}"
             message.startsWith("Streaming request failed with HTTP") -> "流式请求失败：${message.removePrefix("Streaming request failed with HTTP ")}"
+            message.startsWith("Web search failed:") -> "网页搜索失败，请检查搜索提供商配置。"
+            message == "No enabled web search provider is available." -> "没有可用的网页搜索提供商。"
+            message.startsWith("Unknown or disabled model:") -> "所选模型不存在或已禁用。"
+            message.startsWith("No ") && message.contains(" upstream is configured") -> "所选频道尚未配置可用上游。"
+            message.startsWith("Upstream returned HTTP") -> "上游服务请求失败：${message.removePrefix("Upstream returned HTTP ")}"
             else -> message
         }
     } else {
@@ -151,6 +197,11 @@ private val EnglishCopy = AppCopy(
     cancel = "Cancel",
     deleteConversation = "Delete conversation?",
     deleteConversationPrompt = { title -> "\"$title\" and its messages will be permanently removed." },
+    confirm = "Confirm",
+    deleteMessageTitle = "Delete response?",
+    deleteMessagePrompt = "This response will be permanently removed from the conversation.",
+    branchConversationTitle = "Create conversation branch?",
+    branchConversationPrompt = "A new conversation will be created from this point in the history.",
     redo = "Redo response",
     copyMessage = "Copy raw Markdown",
     editMessage = "Edit message",
@@ -160,6 +211,8 @@ private val EnglishCopy = AppCopy(
     listen = "Listen",
     attachFile = "Attach image",
     voiceInput = "Voice input",
+    webSearch = "Web Search",
+    webSearchEnabled = "Web Search enabled for this query",
     removeAttachment = "Remove attachment",
     attachmentError = "Attachment unavailable",
     speechInputUnavailable = "Speech recognition is unavailable on this device.",
@@ -218,6 +271,11 @@ private val ChineseCopy = AppCopy(
     cancel = "取消",
     deleteConversation = "删除会话？",
     deleteConversationPrompt = { title -> "\"$title\" 及其所有消息将被永久删除。" },
+    confirm = "确认",
+    deleteMessageTitle = "删除回复？",
+    deleteMessagePrompt = "该回复将从会话中永久删除。",
+    branchConversationTitle = "创建会话分支？",
+    branchConversationPrompt = "将从当前历史位置创建一个新会话。",
     redo = "重新生成",
     copyMessage = "复制 Markdown 原文",
     editMessage = "编辑消息",
@@ -227,6 +285,8 @@ private val ChineseCopy = AppCopy(
     listen = "朗读",
     attachFile = "添加图片",
     voiceInput = "语音输入",
+    webSearch = "网页搜索",
+    webSearchEnabled = "本次提问已启用网页搜索",
     removeAttachment = "移除附件",
     attachmentError = "附件不可用",
     speechInputUnavailable = "此设备无法使用语音识别。",

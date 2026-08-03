@@ -38,6 +38,10 @@ data class ChannelStyle(
     val surfaceColor: String,
     val typography: String = "sans",
     val animatedGradient: Boolean = false,
+    val gradientColors: List<String> = listOf(backgroundStart, backgroundEnd),
+    val gradientAngleDegrees: Float = 135f,
+    val animationDurationMillis: Int = 8_000,
+    val customCss: String = "",
 )
 
 data class ProviderMode(
@@ -47,6 +51,7 @@ data class ProviderMode(
     val iconDataUrl: String,
     val style: ChannelStyle,
     val models: List<ChatModel>,
+    val appIconUrl: String = "",
 ) {
     val defaultModel: ChatModel get() = models.first()
     val isChatGpt: Boolean get() = wireName == "chatgpt"

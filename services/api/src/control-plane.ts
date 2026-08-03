@@ -179,6 +179,7 @@ export interface ControlPlane {
   listUsers(): Promise<UserRecord[]>;
   createUser(input: CreateUserInput): Promise<UserRecord>;
   updateUser(id: string, patch: UpdateUserInput): Promise<UserRecord | undefined>;
+  deleteUser(id: string): Promise<boolean>;
   authenticateUser(email: string, password: string): Promise<AuthenticatedUser | undefined>;
   listClientKeys(): Promise<ClientKeyView[]>;
   createClientKey(input: { name: string; rpmLimit: number; dailyLimit: number; userId?: string | null }): Promise<{ data: ClientKeyView; secret: string }>;
@@ -533,6 +534,20 @@ export class MemoryControlPlane implements ControlPlane {
     Object.assign(user, recordPatch);
     const { passwordHash: _passwordHash, ...view } = user;
     return view;
+  }
+
+  async deleteUser(id: string) {
+    const user = this.users.get(id);
+    if (!user) return false;
+    if (user.role === "admin" && user.status === "active") {
+      const activeAdmins = [...this.users.values()].filter((candidate) => candidate.role === "admin" && candidate.status === "active");
+      if (activeAdmins.length <= 1) throw new Error("The last active administrator cannot be deleted.");
+    }
+    this.users.delete(id);
+    this.userUsage.delete(id);
+    for (const key of this.apiKeys.values()) if (key.userId === id) key.userId = null;
+    for (const [feedbackId, feedback] of this.feedbacks) if (feedback.userId === id) this.feedbacks.delete(feedbackId);
+    return true;
   }
 
   async authenticateUser(email: string, password: string) {
@@ -1093,6 +1108,37 @@ export class PostgresControlPlane implements ControlPlane {
     values.push(id);
     const result = await this.pool.query<Record<string, unknown>>(`UPDATE users SET ${fields.join(", ")} WHERE id = $${values.length} RETURNING *`, values);
     return result.rows[0] ? userFromRow(result.rows[0]) : undefined;
+  }
+
+  async deleteUser(id: string) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('adaptive-chat:user-delete'))");
+      const existing = await client.query<{ role: UserRecord["role"]; status: UserRecord["status"] }>(
+        "SELECT role, status FROM users WHERE id = $1 FOR UPDATE",
+        [id],
+      );
+      const user = existing.rows[0];
+      if (!user) {
+        await client.query("ROLLBACK");
+        return false;
+      }
+      if (user.role === "admin" && user.status === "active") {
+        const admins = await client.query<{ count: string }>(
+          "SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin' AND status = 'active'",
+        );
+        if (numberValue(admins.rows[0]?.count) <= 1) throw new Error("The last active administrator cannot be deleted.");
+      }
+      await client.query("DELETE FROM users WHERE id = $1", [id]);
+      await client.query("COMMIT");
+      return true;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async authenticateUser(email: string, password: string) {

@@ -1,59 +1,75 @@
-# Iteration 5 Conclusion
+# Iteration 6 Conclusion
 
 ## Outcome
 
-Iteration 5 is implemented and verified for the Android client. Message rendering,
-interaction controls, error persistence, and message mutation now share persisted
-Room state and remain consistent across recomposition and app restarts.
+Iteration 6 is implemented, tested, deployed, and published as Android version
+`1.5.0` (version code `8`). The production gateway, worker, Admin Console,
+PostgreSQL, and Redis services are running, and the production OTA endpoint now
+offers 1.5.0 to 1.4.0 clients.
 
 ## Delivered
 
-- Replaced the legacy in-composition Markdown parser with an asynchronous Compose
-  renderer for headings, paragraphs, bold, italics, inline code, fenced code,
-  ordered/unordered lists, links, and strikethrough. Fragmented streaming markers
-  and partial control tags are suppressed until safe to render.
-- Added a Room v3-to-v4 migration that persists the originating model and a
-  separate error field on every assistant message. Errors are visible without
-  being inserted into the upstream context window.
-- Added the permanent AI action set: Redo, Copy, Branch, Listen, and Delete. The
-  bar remains present on empty, partial, successful, and failed responses.
-- Added Copy and conditional Edit actions to user messages. Edit is available only
-  on the latest user prompt, restores its text and attachments to the composer,
-  replaces it transactionally, removes its old tail, and generates a new response.
-- Added native long-press bottom sheets to all message bubbles. Each sheet is
-  generated from the same action list as its visible action bar.
-- Added per-response model labels such as `DeepSeek-Expert`, including migrated
-  history and dynamically configured channel models.
-- Added transactional assistant deletion and safe non-terminal regeneration.
-  Failed regeneration restores the original conversation tail and records the
-  new error on the selected response.
-- Replaced the blocking streaming-error dialog with an inline dismissible status,
-  while persisting the same error inside the affected assistant bubble.
-- Updated the app to version `1.4.0` (version code `7`) and corrected the existing
-  destination animation so its target state drives rendered content.
+- Added persistent, encrypted search-provider configuration with seeded
+  DuckDuckGo Instant Answers, Tavily, and SerpApi integrations. Administrators
+  can create, edit, prioritize, enable, disable, and delete providers without
+  exposing API keys in responses.
+- Added priority-ordered search execution and fallback. The gateway accepts the
+  Android-only `X-Web-Search` control header, keeps the OpenAI request JSON
+  standard, sanitizes retrieved text and URLs, and injects guarded source context
+  ahead of the conversation before calling the mapped upstream model.
+- Added the per-query Globe control to the Android composer. Search availability
+  is delivered through `/v1/config`, and the selection resets after each send.
+- Added blocking confirmations for Admin user/key/channel/search-provider/route/
+  backup deletion and Android conversation, assistant-message, and branch
+  operations. The backend prevents deletion of the last active administrator.
+- Extended the channel builder with launcher-icon uploads, native CSS input, and
+  a matching live preview. The Android client safely parses supported colors,
+  gradients, typography, and animation duration into Compose styling.
+- Added build-time launcher-icon generation for all five Android density buckets,
+  including legacy, round, and adaptive foreground assets. Source resources are
+  restored after every build, including failure paths.
+- Completed the English and Simplified Chinese dictionaries for the new Admin and
+  Android flows, including validation and error states.
+
+DuckDuckGo is the no-key instant-answer source and retries directive-heavy prompts
+with their first question. General current-events search is provided by Tavily or
+SerpApi once an administrator supplies a key and enables that integration.
 
 ## Verification
 
-- `:app:testDebugUnitTest`: 10 tests passed, 0 failures. Coverage includes
-  fragmented bold input, partial HTML/control tags, unfinished fenced code,
-  standard Markdown blocks/styles, DeepSeek reasoning fragments, context-window
-  behavior, image attachments, and failed assistant placeholders.
-- `:app:lintDebug`: completed successfully.
-- `:app:assembleDebug`: completed successfully.
-- APK metadata: package `com.zengjunjie.adaptivechat`, version `1.4.0`, version
-  code `7`.
-- Production OTA publication: a version-code `5` check returns
-  `updateAvailable: true` with active production release `appv_73e997b1-495`.
-- APK SHA-256:
-  `b1c6187a061da0ae97f071c5b142d2d1262932d44221adc3596355bff5ec7573`
+- API: 4 test files and 21 tests passed; TypeScript build passed.
+- Admin Console: Next.js production compilation, type checking, and static page
+  generation passed.
+- Android: 12 unit tests passed, including native CSS parsing; `assembleDebug`
+  passed.
+- Real end to end: temporary user creation returned 201, login returned 200,
+  web-search-enhanced completion returned 200 from mapped model `gpt-5.6-luna`,
+  and temporary-user cleanup returned 204.
+- Production search: DuckDuckGo returned five normalized sources for the live
+  query, beginning with `https://en.wikipedia.org/wiki/OpenAI`.
+- Infrastructure: API/PostgreSQL/Redis are healthy; Admin and Worker are running.
+  The public Console returns an immediate HTTP Basic Auth challenge, and its
+  internal Next.js origin returns 200.
+- TLS: both production ECDSA certificates are valid through 2026-10-31.
+- OTA: checking from version code 7 returns `updateAvailable: true` and active
+  production release `appv_bc66616d-619`.
 
-## APK
+`npm audit --omit=dev` reports three high-severity advisories in the latest
+available Next.js 16.2.12 bundled copies of PostCSS and Sharp. The Admin Console
+does not process user CSS through PostCSS or use Next image optimization; uploaded
+launcher images are processed by the API's fixed `sharp@0.35.3`. No newer Next.js
+release is currently available, so the upstream advisories remain documented.
 
-- Iteration 5 extraction path:
-  `app/build/outputs/apk/iteration5/adaptive-chat-1.4.0-iteration5.apk`
-- Canonical build output: `app/build/outputs/apk/debug/app-debug.apk`
-- Production download:
-  `https://chatapi.zengjunjie.com/downloads/adaptive-chat-1.4.0-production.apk`
+## Access And APK
+
+- Admin Console: `https://console.zengjunjie.com`
+- API Gateway: `https://chatapi.zengjunjie.com`
+- Local APK: `app/build/outputs/apk/debug/app-debug.apk`
+- Production APK:
+  `https://chatapi.zengjunjie.com/downloads/adaptive-chat-1.5.0-production.apk`
+- Package: `com.zengjunjie.adaptivechat`
+- SHA-256:
+  `92ab2267143ea2d7b2332f4010e914beb21cfded82b47729957df2420fcf8316`
 
 Android visual validation remains with the Product Owner. No emulator, Xvfb,
 noVNC, Lavapipe, or other headless UI environment was used.

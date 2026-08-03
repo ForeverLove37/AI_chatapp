@@ -55,6 +55,7 @@ data class ChatUiState(
     val provider: ProviderMode = ProviderMode.CHATGPT,
     val model: ChatModel = ChatModel.CHATGPT_LITE,
     val channels: List<ProviderMode> = ProviderMode.entries,
+    val webSearchAvailable: Boolean = false,
     val account: AppPreferencesState = AppPreferencesState(),
     val destination: AppDestination = AppDestination.CHAT,
     val isLoggingIn: Boolean = false,
@@ -81,6 +82,7 @@ class ChatViewModel(
     private val updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
     private val feedbackState = MutableStateFlow<FeedbackState>(FeedbackState.Idle)
     private val channelCatalog = MutableStateFlow(ProviderMode.entries)
+    private val webSearchAvailable = MutableStateFlow(false)
 
     private val sessions = repository.observeSessions().stateIn(
         scope = viewModelScope,
@@ -131,6 +133,8 @@ class ChatViewModel(
         state.copy(updateState = update)
     }.combine(feedbackState) { state, feedback ->
         state.copy(feedbackState = feedback)
+    }.combine(webSearchAvailable) { state, available ->
+        state.copy(webSearchAvailable = available)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -143,7 +147,10 @@ class ChatViewModel(
         }
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { repository.fetchRemoteConfig() }
-                .onSuccess { config -> channelCatalog.value = config.channels }
+                .onSuccess { config ->
+                    channelCatalog.value = config.channels
+                    webSearchAvailable.value = config.webSearchEnabled
+                }
         }
     }
 
@@ -208,7 +215,11 @@ class ChatViewModel(
         }
     }
 
-    fun sendMessage(text: String, attachments: List<ChatAttachment> = emptyList()) {
+    fun sendMessage(
+        text: String,
+        attachments: List<ChatAttachment> = emptyList(),
+        webSearchEnabled: Boolean = false,
+    ) {
         val session = uiState.value.selectedSession ?: return
         val accessToken = uiState.value.account.accessToken ?: return
         if (isStreaming.value || (text.isBlank() && attachments.isEmpty())) return
@@ -223,6 +234,7 @@ class ChatViewModel(
                     text = text.trim(),
                     accessToken = accessToken,
                     attachments = attachments,
+                    webSearchEnabled = webSearchEnabled,
                 ) {
                     isWaitingForFirstToken.value = false
                 }
@@ -256,6 +268,7 @@ class ChatViewModel(
         messageId: String,
         text: String,
         attachments: List<ChatAttachment> = emptyList(),
+        webSearchEnabled: Boolean = false,
     ) {
         val session = uiState.value.selectedSession ?: return
         val accessToken = uiState.value.account.accessToken ?: return
@@ -272,6 +285,7 @@ class ChatViewModel(
                     text = text.trim(),
                     attachments = attachments,
                     accessToken = accessToken,
+                    webSearchEnabled = webSearchEnabled,
                 ) {
                     isWaitingForFirstToken.value = false
                 }

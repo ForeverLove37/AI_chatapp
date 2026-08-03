@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./index.js";
 import { MemoryEnterpriseStore } from "./enterprise.js";
 
 describe("Adaptive Chat API", () => {
+  afterEach(() => vi.unstubAllGlobals());
   it("serves the advertised models and remote configuration", async () => {
     const app = createApp();
     const models = await app.request("/v1/models");
@@ -58,7 +59,7 @@ describe("Adaptive Chat API", () => {
 
     const config = await app.request("/v1/config");
     const payload = await config.json();
-    expect(payload.version).toBe(4);
+    expect(payload.version).toBe(5);
     expect(payload.channels.find((channel: { id: string }) => channel.id === "qwen")).toMatchObject({
       displayName: "Qwen",
       style: { backgroundStart: "#FFF3A6", animatedGradient: true },
@@ -87,6 +88,84 @@ describe("Adaptive Chat API", () => {
     const updatedConfig = await app.request("/v1/config");
     expect((await updatedConfig.json()).channels.find((channel: { id: string }) => channel.id === "qwen").models)
       .toEqual([{ id: "qwen-expert", label: "Expert", description: "Deep analysis" }]);
+  });
+
+  it("manages prioritized search providers without exposing API keys", async () => {
+    const app = createApp();
+    const headers = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    const seeded = await app.request("/v1/admin/search-providers", { headers });
+    expect(seeded.status).toBe(200);
+    expect((await seeded.json()).data.map((item: { kind: string }) => item.kind))
+      .toEqual(expect.arrayContaining(["duckduckgo", "tavily", "serpapi"]));
+
+    const created = await app.request("/v1/admin/search-providers", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        slug: "tavily-backup",
+        displayName: "Tavily Backup",
+        kind: "tavily",
+        endpoint: "https://api.tavily.com/search",
+        apiKey: "private-search-key",
+        priority: 50,
+        maxResults: 4,
+        enabled: true,
+      }),
+    });
+    expect(created.status).toBe(201);
+    const responseText = await created.text();
+    expect(responseText).not.toContain("private-search-key");
+    expect(JSON.parse(responseText).data.apiKeyConfigured).toBe(true);
+  });
+
+  it("injects web results into an otherwise standard OpenAI request", async () => {
+    const upstream = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+      expect(body.messages.map((message) => message.role)).toEqual(["system", "user"]);
+      expect(body.messages[0].content).toContain("untrusted external evidence");
+      expect(body.messages[0].content).toContain("https://news.example.test/current");
+      expect(body).not.toHaveProperty("web_search");
+      return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "Grounded answer" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", upstream);
+    const app = createApp({
+      demoMode: false,
+      executeSearch: async (_providers, query) => ({
+        providerId: "search_test",
+        providerName: "Test Search",
+        query,
+        results: [{ title: "Current report", url: "https://news.example.test/current", snippet: "Current verified report" }],
+      }),
+    });
+    const adminHeaders = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    await app.request("/admin/provider-keys", {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ provider: "openai", label: "Test upstream", endpoint: "https://llm.example.test/chat", secret: "llm-key", priority: 1 }),
+    });
+    const response = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Web-Search": "true" },
+      body: JSON.stringify({ model: "chatgpt-lite", messages: [{ role: "user", content: "What happened today?" }] }),
+    });
+    expect(response.status).toBe(200);
+    expect(upstream).toHaveBeenCalledOnce();
+  });
+
+  it("requires explicit API confirmation flow support and protects the final administrator", async () => {
+    const app = createApp();
+    const headers = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    const created = await app.request("/admin/users", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ email: "delete-me@example.test", password: "delete-me-password", role: "standard", rpmLimit: 60, dailyLimit: 1000 }),
+    });
+    const userId = (await created.json()).data.id;
+    expect((await app.request(`/admin/users/${userId}`, { method: "DELETE", headers })).status).toBe(204);
+    expect((await app.request("/admin/users/usr_admin", { method: "DELETE", headers })).status).toBe(409);
   });
 
   it("queues the exact rendered security alert after a successful login from a new IP", async () => {
