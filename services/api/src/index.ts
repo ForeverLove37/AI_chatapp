@@ -206,10 +206,6 @@ const dynamicChannelSchema = z.object({
   secret: z.string().trim().min(1).max(8_000).optional(),
   priority: z.number().int().min(0).max(100_000).default(100),
   iconDataUrl: z.union([z.literal(""), z.string().startsWith("data:image/").max(1_500_000)]).default(""),
-  appIconDataUrl: z.union([
-    z.literal(""),
-    z.string().regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/).max(4_000_000),
-  ]).default(""),
   customCss: z.string().max(50_000).default(""),
   backgroundStart: colorSchema,
   backgroundEnd: colorSchema,
@@ -224,6 +220,12 @@ const dynamicChannelSchema = z.object({
   sortOrder: z.number().int().min(0).max(10_000).default(100),
 });
 const dynamicChannelPatchSchema = dynamicChannelSchema.partial().refine((value) => Object.keys(value).length > 0);
+const launcherIconSchema = z.object({
+  dataUrl: z.union([
+    z.literal(""),
+    z.string().regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/).max(4_100_000),
+  ]),
+});
 const searchProviderSchema = z.object({
   slug: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9-]*$/),
   displayName: z.string().trim().min(1).max(120),
@@ -753,7 +755,7 @@ export function createApp(options: CreateAppOptions = {}) {
       displayName: channel.displayName,
       description: channel.description,
       icon: { type: channel.iconDataUrl ? "data_url" : "builtin", value: channel.iconDataUrl || channel.slug },
-      appIconUrl: channel.appIconDataUrl ? `/v1/config/app-icons/${encodeURIComponent(channel.slug)}` : "",
+      appIconUrl: "",
       style: {
         backgroundStart: channel.backgroundStart,
         backgroundEnd: channel.backgroundEnd,
@@ -862,9 +864,8 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/v1/config", async (context) => context.json(await remoteConfig()));
 
-  app.get("/v1/config/app-icons/:slug", async (context) => {
-    const channel = (await enterprise.listDynamicChannels()).find((item) => item.slug === context.req.param("slug"));
-    const image = channel ? decodeRasterDataUrl(channel.appIconDataUrl) : undefined;
+  app.get("/v1/config/launcher-icon", async (context) => {
+    const image = decodeRasterDataUrl((await enterprise.getLauncherIcon()).dataUrl);
     if (!image) return context.json({ error: { code: "app_icon_not_found", message: "App icon was not found." } }, 404);
     return new Response(image.body, {
       headers: {
@@ -1559,6 +1560,28 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/admin/dynamic-channels", async (context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
     return context.json({ data: await enterprise.listDynamicChannels(true) });
+  });
+
+  app.get("/admin/launcher-icon", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await enterprise.getLauncherIcon() });
+  });
+
+  app.put("/admin/launcher-icon", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = launcherIconSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "A valid PNG, JPEG, or WebP launcher icon is required." } }, 400);
+    if (parsed.data.dataUrl) {
+      const image = decodeRasterDataUrl(parsed.data.dataUrl);
+      try {
+        if (!image) throw new Error("invalid_image");
+        const metadata = await sharp(image.body, { limitInputPixels: 16_000_000 }).metadata();
+        if (!metadata.width || !metadata.height || !["png", "jpeg", "webp"].includes(metadata.format ?? "")) throw new Error("invalid_image");
+      } catch {
+        return context.json({ error: { message: "A valid PNG, JPEG, or WebP launcher icon is required." } }, 400);
+      }
+    }
+    return context.json({ data: await enterprise.updateLauncherIcon(parsed.data.dataUrl) });
   });
 
   app.post("/admin/dynamic-channels", async (context) => {

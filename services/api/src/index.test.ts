@@ -95,6 +95,28 @@ describe("Adaptive Chat API", () => {
       .toEqual([{ id: "qwen-expert", label: "Expert", description: "Deep analysis" }]);
   });
 
+  it("manages one global launcher icon independently from dynamic channels", async () => {
+    const enterprise = new MemoryEnterpriseStore();
+    const app = createApp({ enterpriseStore: enterprise });
+    const headers = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    const dataUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+    expect((await app.request("/admin/launcher-icon")).status).toBe(401);
+    const saved = await app.request("/admin/launcher-icon", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ dataUrl }),
+    });
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).data).toMatchObject({ dataUrl });
+    expect(await enterprise.listDynamicChannels(true)).toEqual([]);
+
+    const image = await app.request("/v1/config/launcher-icon");
+    expect(image.status).toBe(200);
+    expect(image.headers.get("content-type")).toBe("image/png");
+    expect((await image.arrayBuffer()).byteLength).toBeGreaterThan(0);
+  });
+
   it("manages prioritized search providers without exposing API keys", async () => {
     const app = createApp();
     const headers = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };

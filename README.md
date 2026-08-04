@@ -12,7 +12,7 @@ The Kotlin/Compose client persists conversations in Room and keeps the selected 
 
 The client keeps a bounded local context window, synchronizes user-owned sessions through the Gateway, and exposes an animated time-to-first-token waiting state. It never receives upstream provider credentials.
 
-The distributable debug APK is `app/build/outputs/apk/debug/app-debug.apk`. It is version `1.6.0`, uses the application identity `com.zengjunjie.adaptivechat`, and packages adaptive plus `mdpi` through `xxxhdpi` launcher icons generated from `icons/logo.png` or from the first enabled dynamic channel assigned to a queued build.
+The distributable debug APK is `app/build/outputs/apk/debug/app-debug.apk`. It is version `1.7.0`, uses the application identity `com.zengjunjie.adaptivechat`, and packages adaptive plus `mdpi` through `xxxhdpi` launcher icons generated from `icons/logo.png` or from the global launcher asset configured in the Admin Console.
 
 It supports image attachments using OpenAI Chat Completions `content` arrays, native speech-to-text, Edge TTS with an Android `TextToSpeech` fallback, Markdown response rendering, response copy/redo/listen actions, persisted conversation branches, and a per-query Web Search control. Destructive conversation and message operations require explicit confirmation; deleting a user message atomically deletes its paired AI response.
 

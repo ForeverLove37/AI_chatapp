@@ -56,7 +56,6 @@ export type DynamicChannel = {
   provider: string;
   providerKeyId: string | null;
   iconDataUrl: string;
-  appIconDataUrl: string;
   customCss: string;
   backgroundStart: string;
   backgroundEnd: string;
@@ -68,6 +67,11 @@ export type DynamicChannel = {
   models: DynamicModel[];
   enabled: boolean;
   sortOrder: number;
+  updatedAt: string;
+};
+
+export type LauncherIconAsset = {
+  dataUrl: string;
   updatedAt: string;
 };
 
@@ -186,6 +190,8 @@ export interface EnterpriseStore {
   createDynamicChannel(input: Omit<DynamicChannel, "id" | "updatedAt">): Promise<DynamicChannel>;
   updateDynamicChannel(id: string, patch: Partial<Omit<DynamicChannel, "id" | "updatedAt">>): Promise<DynamicChannel | undefined>;
   deleteDynamicChannel(id: string): Promise<boolean>;
+  getLauncherIcon(): Promise<LauncherIconAsset>;
+  updateLauncherIcon(dataUrl: string): Promise<LauncherIconAsset>;
   listSearchProviders(): Promise<SearchProvider[]>;
   createSearchProvider(input: SearchProviderInput): Promise<SearchProvider>;
   updateSearchProvider(id: string, patch: Partial<SearchProviderInput>): Promise<SearchProvider | undefined>;
@@ -324,7 +330,6 @@ function dynamicChannelFromRow(row: Record<string, unknown>): DynamicChannel {
     provider: String(row.provider),
     providerKeyId: row.provider_key_id ? String(row.provider_key_id) : null,
     iconDataUrl: String(row.icon_data_url ?? ""),
-    appIconDataUrl: String(row.app_icon_data_url ?? ""),
     customCss: String(row.custom_css ?? ""),
     backgroundStart: String(row.background_start),
     backgroundEnd: String(row.background_end),
@@ -499,6 +504,11 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
       ALTER TABLE dynamic_channels ADD COLUMN IF NOT EXISTS app_icon_data_url TEXT NOT NULL DEFAULT '';
       ALTER TABLE dynamic_channels ADD COLUMN IF NOT EXISTS custom_css TEXT NOT NULL DEFAULT '';
       CREATE INDEX IF NOT EXISTS dynamic_channels_order_idx ON dynamic_channels(enabled, sort_order, slug);
+      CREATE TABLE IF NOT EXISTS app_branding (
+        id SMALLINT PRIMARY KEY CHECK (id = 1),
+        launcher_icon_data_url TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
       CREATE TABLE IF NOT EXISTS search_providers (
         id TEXT PRIMARY KEY,
         slug TEXT NOT NULL UNIQUE,
@@ -594,6 +604,13 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
 
   private async seed() {
     await this.pool.query("INSERT INTO smtp_configs (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
+    await this.pool.query(
+      `INSERT INTO app_branding (id, launcher_icon_data_url, updated_at)
+       SELECT 1, app_icon_data_url, updated_at FROM dynamic_channels
+       WHERE app_icon_data_url <> '' ORDER BY updated_at DESC LIMIT 1
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await this.pool.query("INSERT INTO app_branding (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
     for (const template of defaultTemplates) {
       await this.pool.query(
         `INSERT INTO email_templates (id, trigger, name, subject, html_body, enabled)
@@ -709,11 +726,11 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
   async createDynamicChannel(input: Omit<DynamicChannel, "id" | "updatedAt">) {
     const result = await this.pool.query<Record<string, unknown>>(
       `INSERT INTO dynamic_channels (id, slug, display_name, description, provider, provider_key_id, icon_data_url,
-       app_icon_data_url, custom_css, background_start, background_end, accent_color, text_color, surface_color, typography,
+       custom_css, background_start, background_end, accent_color, text_color, surface_color, typography,
        animated_gradient, models, enabled, sort_order)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18,$19) RETURNING *`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18) RETURNING *`,
       [`chn_${randomUUID().slice(0, 12)}`, input.slug, input.displayName, input.description, input.provider, input.providerKeyId,
-        input.iconDataUrl, input.appIconDataUrl, input.customCss, input.backgroundStart, input.backgroundEnd, input.accentColor,
+        input.iconDataUrl, input.customCss, input.backgroundStart, input.backgroundEnd, input.accentColor,
         input.textColor, input.surfaceColor, input.typography, input.animatedGradient, JSON.stringify(input.models), input.enabled, input.sortOrder],
     );
     return dynamicChannelFromRow(result.rows[0]);
@@ -722,7 +739,7 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
   async updateDynamicChannel(id: string, patch: Partial<Omit<DynamicChannel, "id" | "updatedAt">>) {
     const columns: Record<string, string> = {
       slug: "slug", displayName: "display_name", description: "description", provider: "provider", providerKeyId: "provider_key_id",
-      iconDataUrl: "icon_data_url", appIconDataUrl: "app_icon_data_url", customCss: "custom_css",
+      iconDataUrl: "icon_data_url", customCss: "custom_css",
       backgroundStart: "background_start", backgroundEnd: "background_end", accentColor: "accent_color",
       textColor: "text_color", surfaceColor: "surface_color", typography: "typography", animatedGradient: "animated_gradient",
       models: "models", enabled: "enabled", sortOrder: "sort_order",
@@ -748,6 +765,26 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
 
   async deleteDynamicChannel(id: string) {
     return (await this.pool.query("DELETE FROM dynamic_channels WHERE id = $1", [id])).rowCount === 1;
+  }
+
+  async getLauncherIcon() {
+    const result = await this.pool.query<{ launcher_icon_data_url: string; updated_at: Date | string }>(
+      "SELECT launcher_icon_data_url, updated_at FROM app_branding WHERE id = 1",
+    );
+    return {
+      dataUrl: result.rows[0]?.launcher_icon_data_url ?? "",
+      updatedAt: isoValue(result.rows[0]?.updated_at ?? new Date()),
+    };
+  }
+
+  async updateLauncherIcon(dataUrl: string) {
+    const result = await this.pool.query<{ launcher_icon_data_url: string; updated_at: Date | string }>(
+      `INSERT INTO app_branding (id, launcher_icon_data_url, updated_at) VALUES (1, $1, NOW())
+       ON CONFLICT (id) DO UPDATE SET launcher_icon_data_url = EXCLUDED.launcher_icon_data_url, updated_at = NOW()
+       RETURNING launcher_icon_data_url, updated_at`,
+      [dataUrl],
+    );
+    return { dataUrl: result.rows[0].launcher_icon_data_url, updatedAt: isoValue(result.rows[0].updated_at) };
   }
 
   async listSearchProviders() {
@@ -1037,6 +1074,7 @@ export class MemoryEnterpriseStore implements EnterpriseStore {
   private password = "";
   private templates = new Map(defaultTemplates.map((template) => [template.trigger, { ...template, updatedAt: nowIso() }]));
   private channels = new Map<string, DynamicChannel>();
+  private launcherIcon: LauncherIconAsset = { dataUrl: "", updatedAt: nowIso() };
   private searchProviders = new Map<string, SearchProviderExecutionConfig>([
     ["search_duckduckgo", {
       id: "search_duckduckgo", slug: "duckduckgo", displayName: "DuckDuckGo Instant Answers", kind: "duckduckgo",
@@ -1099,6 +1137,8 @@ export class MemoryEnterpriseStore implements EnterpriseStore {
   async createDynamicChannel(input: Omit<DynamicChannel, "id" | "updatedAt">) { const item = { id: `chn_${randomUUID().slice(0, 12)}`, ...input, updatedAt: nowIso() }; this.channels.set(item.id, item); return item; }
   async updateDynamicChannel(id: string, patch: Partial<Omit<DynamicChannel, "id" | "updatedAt">>) { const item = this.channels.get(id); if (!item) return undefined; const updated = { ...item, ...patch, updatedAt: nowIso() }; this.channels.set(id, updated); return updated; }
   async deleteDynamicChannel(id: string) { return this.channels.delete(id); }
+  async getLauncherIcon() { return { ...this.launcherIcon }; }
+  async updateLauncherIcon(dataUrl: string) { this.launcherIcon = { dataUrl, updatedAt: nowIso() }; return { ...this.launcherIcon }; }
   async listSearchProviders() {
     return [...this.searchProviders.values()]
       .sort((left, right) => left.priority - right.priority || left.createdAt.localeCompare(right.createdAt))

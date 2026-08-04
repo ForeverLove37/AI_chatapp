@@ -42,7 +42,7 @@ import { createContext, type CSSProperties, type FormEvent, type ReactNode, useC
 type Provider = string;
 type Strategy = "round_robin" | "random";
 type Locale = "en" | "zh-CN";
-type Section = "Overview" | "Users" | "Client keys" | "Provider keys" | "Search providers" | "Routing" | "Email" | "Channels" | "Groups & builds" | "Backups & recovery" | "Jobs" | "Feedback" | "App releases" | "Connections";
+type Section = "Overview" | "Users" | "Client keys" | "Provider keys" | "Search providers" | "Routing" | "Email" | "Channels" | "User groups" | "App builds" | "Release guide" | "Backups & recovery" | "Jobs" | "Feedback" | "App releases" | "Connections";
 
 type ApiKey = {
   id: string;
@@ -175,7 +175,9 @@ const sections: { name: Section; label: string; icon: typeof Activity }[] = [
   { name: "Routing", label: "navRouting", icon: Layers3 },
   { name: "Email", label: "navEmail", icon: Mail },
   { name: "Channels", label: "navChannels", icon: Workflow },
-  { name: "Groups & builds", label: "navGroupsBuilds", icon: Hammer },
+  { name: "User groups", label: "navGroups", icon: Users },
+  { name: "App builds", label: "navAppBuilds", icon: ImageUp },
+  { name: "Release guide", label: "navReleaseGuide", icon: BookOpen },
   { name: "Backups & recovery", label: "navBackups", icon: HardDrive },
   { name: "Jobs", label: "navJobs", icon: Activity },
   { name: "Feedback", label: "navFeedback", icon: MessageSquare },
@@ -188,7 +190,7 @@ type AdminCopy = Record<string, string>;
 const englishCopy: AdminCopy = {
   formatLocale: "en-US", adminSections: "Admin sections", operationFailed: "The operation failed.", requestTimedOut: "The console request timed out. Check the gateway connection and try again.", unableLoadOperations: "Unable to load operational data.", unableLoadFeedback: "Unable to load feedback.", unableLoadReleases: "Unable to load app releases.", seconds: "s", minutes: "m", hours: "h", moveUp: "Move up", moveDown: "Move down", remove: "Remove",
   appName: "Adaptive Chat", controlRoom: "Control room", operations: "Operations", apiOnline: "API online", connecting: "Connecting", refresh: "Refresh operational data", retry: "Retry", loading: "Loading operations data",
-  navOverview: "Overview", navUsers: "Users", navClientKeys: "Client keys", navProviderKeys: "Provider keys", navRouting: "Routing", navEmail: "Email", navChannels: "Channel builder", navGroupsBuilds: "Groups & builds", navBackups: "Backup & recovery", navJobs: "Worker jobs", navFeedback: "Feedback", navReleases: "App releases", navConnections: "Connections",
+  navOverview: "Overview", navUsers: "Users", navClientKeys: "Client keys", navProviderKeys: "Provider keys", navRouting: "Routing", navEmail: "Email", navChannels: "Channel builder", navGroups: "User groups", navAppBuilds: "App builds", navReleaseGuide: "Release guide", navBackups: "Backup & recovery", navJobs: "Worker jobs", navFeedback: "Feedback", navReleases: "App releases", navConnections: "Connections",
   requests: "Requests", persistentRequestLog: "Persistent request log", successRate: "Success rate", completed: "completed", tokenVolume: "Token volume", promptAndCompletion: "Prompt and completion", activeStreams: "Active streams", uptime: "Uptime",
   modelTraffic: "Model traffic", requestVolume: "Request volume by internal model name", routingState: "Routing state", upstreamAvailability: "Configured upstream availability", ready: "Ready", unconfigured: "Unconfigured", serviceState: "Service state", lastSampled: "Last sampled", providerKeys: "Provider keys", clientKeys: "Client keys", activeUsers: "Active users", failures: "Failures",
   createUser: "Create user", accountsAdminOnly: "Accounts are created only by an administrator", email: "Email", password: "Password", role: "Role", standard: "Standard", admin: "Admin", rpm: "RPM", dailyQuota: "Daily quota", userAccess: "User access", statusRoleQuota: "Status, role, and quotas", identity: "Identity", limits: "Limits", monthlyTokens: "Monthly tokens", status: "Status", suspend: "Suspend", restore: "Restore", edit: "Edit", editUser: "Edit user", resetPassword: "Reset password", leavePasswordBlank: "Leave blank to keep the current password", saveChanges: "Save changes", cancel: "Cancel",
@@ -201,10 +203,11 @@ const englishCopy: AdminCopy = {
   smtpTitle: "SMTP email", smtpDetail: "Security alerts and announcements are delivered asynchronously", templates: "HTML templates", preview: "Sandboxed preview", sendTest: "Send test", channelBuilder: "No-code channel builder", channelBuilderDetail: "Publish native channel styling and upstream mappings without an Android release", livePreview: "Native live preview", groupsTitle: "User groups", groupsDetail: "Control beta and production OTA audiences", buildPipeline: "Android deployment pipeline", buildBeta: "Build Beta", publishProduction: "Publish Production", backupDestinations: "Backup destinations", backupDetail: "Encrypted PostgreSQL snapshots to local, WebDAV, or S3 storage", recoveryGuide: "Restoration guide", workerJobs: "Background jobs", workerDetail: "Redis-backed execution history and logs", trigger: "Run now", save: "Save", delete: "Delete", enabled: "Enabled", disabled: "Disabled",
   language: "Language", navSearchProviders: "Search providers", confirm: "Confirm", confirmationTitle: "Confirm destructive action", confirmationDetail: "This operation cannot be undone.", deleteUserTitle: "Delete user?", deleteUserPrompt: "The account and its persisted account data will be permanently removed.", deleteChannelTitle: "Delete channel?", deleteChannelPrompt: "The channel will be removed and its model routes will be disabled.", deleteBackupTitle: "Delete backup destination?", deleteBackupPrompt: "The destination configuration will be permanently removed.", revokeKeyTitle: "Revoke client key?", revokeKeyPrompt: "The client key will stop working immediately.", clearRouteTitle: "Clear routing policy?", clearRoutePrompt: "The explicit fallback chain will be removed.",
   searchProvidersTitle: "Web search providers", searchProvidersDetail: "Prioritized grounding sources used when a client enables Web Search", addSearchProvider: "Add search provider", editSearchProvider: "Edit search provider", providerKind: "Integration", providerId: "Provider ID", maxResults: "Maximum results", apiKey: "API key", configured: "Configured", notConfigured: "Not configured", searchPriorityDetail: "Lower priorities run first; an empty result or provider failure advances to the next enabled integration.", updateProvider: "Update provider", createProvider: "Create provider", deleteSearchTitle: "Delete search provider?", deleteSearchPrompt: "This grounding integration and its encrypted key will be permanently removed.", leaveApiKeyBlank: "Leave blank to keep the current key", apiKeyRequired: "A key is required for Tavily and SerpApi", noSearchProviders: "No search providers are configured.",
-  appIcon: "App launcher icon", appIconDetail: "Bundled into the next Beta or Production APK", customCss: "Native background CSS", customCssDetail: "Supported colors, linear gradients, animation duration, and font family are parsed into native Compose styling.", iconTooLarge: "Images must be PNG, JPEG, or WebP and smaller than 3 MB.", channelIcon: "Channel icon", animatedGradient: "Animated gradient", models: "Models", internalModelId: "Internal model ID", modelLabel: "Model label", removeModel: "Remove model", addModel: "Add model", updateChannel: "Update channel", publishChannel: "Publish channel", previewStyleDetail: "The Android client consumes these exact native style tokens", newChannel: "New channel", model: "Model", previewGreeting: "How can I help?", messageChannel: "Message channel", publishedChannels: "Published dynamic channels", publishedChannelsDetail: "Changes appear after the Android app refreshes configuration", assignedForBuild: "Assigned to APK builds",
-  channelId: "Channel ID", displayName: "Display name", providerIdLabel: "Provider ID", sortOrder: "Sort order", openAiEndpoint: "OpenAI-compatible endpoint", keepEndpoint: "Leave blank to keep the current endpoint", keepSecret: "Leave blank to keep the current key", serverOnlySecret: "Server-only secret", typography: "Typography", sans: "Sans", serif: "Serif", mono: "Mono", backgroundStart: "Background start", backgroundEnd: "Background end", accentColor: "Accent", textColor: "Text", surfaceColor: "Surface", removeImage: "Remove image", appIconPriorityDetail: "The first enabled channel by sort order supplies the launcher icon for a queued build.", enabledChannel: "Channel enabled",
+  appIcon: "App launcher icon", appIconDetail: "One global brand asset is bundled into the next Beta or Production APK.", appIconManagement: "Launcher icon management", appIconManagementDetail: "Update build branding independently from channels and model routing.", currentAppIcon: "Current launcher icon", noAppIcon: "Default project icon", saveAppIcon: "Save launcher icon", removeAppIcon: "Use default icon", appIconSaved: "Launcher icon saved.", customCss: "Native background CSS", customCssDetail: "Supported colors, linear gradients, animation duration, and font family are parsed into native Compose styling.", iconTooLarge: "Images must be PNG, JPEG, or WebP and smaller than 3 MB.", channelIcon: "Channel icon", animatedGradient: "Animated gradient", models: "Models", internalModelId: "Internal model ID", modelLabel: "Model label", removeModel: "Remove model", addModel: "Add model", updateChannel: "Update channel", publishChannel: "Publish channel", previewStyleDetail: "The Android client consumes these exact native style tokens", newChannel: "New channel", model: "Model", previewGreeting: "How can I help?", messageChannel: "Message channel", publishedChannels: "Published dynamic channels", publishedChannelsDetail: "Android and Web clients display these channel presentation settings after configuration refresh.",
+  channelId: "Channel ID", displayName: "Display name", providerIdLabel: "Provider ID", sortOrder: "Sort order", openAiEndpoint: "OpenAI-compatible endpoint", keepEndpoint: "Leave blank to keep the current endpoint", keepSecret: "Leave blank to keep the current key", serverOnlySecret: "Server-only secret", typography: "Typography", sans: "Sans", serif: "Serif", mono: "Mono", backgroundStart: "Background start", backgroundEnd: "Background end", accentColor: "Accent", textColor: "Text", surfaceColor: "Surface", removeImage: "Remove image", enabledChannel: "Channel enabled",
   smtpHost: "SMTP host", port: "Port", username: "Username", smtpPassword: "SMTP password", configuredKeep: "Configured - leave blank to keep", senderEmail: "Sender email", senderName: "Sender name", implicitTls: "Implicit TLS", testRecipient: "Test recipient", templateVariablesDetail: "Template variables are escaped before insertion", subject: "Subject", html: "HTML", previewSecurityDetail: "Scripts, forms, and top navigation are disabled", announcementDispatch: "Announcement dispatch", announcementDetail: "Queue a rendered message for every active account", title: "Title", sendAnnouncement: "Send announcement",
   groupId: "Group ID", releaseRing: "Release ring", production: "Production", beta: "Beta", createGroup: "Create group", members: "members", buildPipelineDetail: "Builds run outside the API process and publish ring-scoped OTA metadata",
+  releaseGuideTitle: "CI/CD and release management", releaseGuideDetail: "Read-only operating procedure for branded Android releases", releaseGuidePrinciples: "Release contract", releaseGuidePrinciplesDetail: "A build snapshots the global launcher icon, application source, version metadata, and target audience ring.", releaseGuideBeta: "Beta release", releaseGuideBetaDetail: "Use Beta for validation before a public rollout.", releaseGuideProduction: "Production release", releaseGuideProductionDetail: "Publish a validated artifact to all eligible active users.", releaseGuideObserve: "Verification and recovery", releaseGuideObserveDetail: "Treat the worker job and release record as the deployment audit trail.", releaseStepIcon: "Save the desired launcher icon in App builds. Channel edits are not required.", releaseStepVersion: "Choose a monotonically increasing version code and a human-readable version name.", releaseStepQueue: "Queue the target ring and follow its worker job until it succeeds.", releaseStepBetaAudience: "Beta metadata is visible only to users assigned to a Beta release group.", releaseStepBetaVerify: "Install the generated APK, verify branding and core flows, then retain its checksum for promotion review.", releaseStepProductionAudience: "Production publishes active OTA metadata for every eligible active account.", releaseStepProductionVerify: "Verify the download URL and SHA-256 result before announcing the release.", releaseStepFailure: "A failed build does not create an active release; inspect Worker jobs, correct the cause, and queue a new build.", releaseStepRollback: "Rollback is performed by activating a previously published compatible version in App releases; never reuse a version code.", releaseImmutable: "The guide is static by design. Operational state and logs remain in App builds, Worker jobs, and App releases.",
   protocol: "Protocol", localVolume: "Local volume", s3Compatible: "S3 compatible", scheduleUtc: "Schedule (UTC cron)", directory: "Directory", webdavUrl: "WebDAV URL", s3Endpoint: "S3 endpoint", region: "Region", bucket: "Bucket", accessKey: "Access key", secretKey: "Secret key", backupPassphrase: "Backup encryption passphrase", addDestination: "Add destination",
   recoveryDetail: "Restore a verified, transactionally consistent Adaptive Chat snapshot", stopWriters: "Stop stateful writers", stopWritersDetail: "Stop the application services with the command below. Keep PostgreSQL and Redis available.", decryptAuthenticate: "Decrypt and authenticate", decryptDetail: "Run the command below and enter the original destination passphrase when prompted. Authentication failure aborts without producing a dump.", restorePostgres: "Restore PostgreSQL", restorePostgresDetail: "Restore the authenticated dump with the command below.", verifyRelations: "Verify relational data", verifyRelationsDetail: "Confirm every foreign key is validated and compare users, sessions, messages, channels, and feedback row counts with the job table manifest.", restartValidate: "Restart and validate", restartValidateDetail: "Restart all application services, then verify health, Web Client sign-in, synchronized history, and a new test backup.", recoveryNote: "Every successful backup uses one exported PostgreSQL snapshot, verifies every active table in the archive, and validates S3 size and SHA-256 metadata after upload.",
   job: "Job", type: "Type", attempts: "Attempts", created: "Created", resultError: "Result / error", queued: "Queued", jobEmail: "Email delivery", jobBackup: "Backup", jobBuild: "Android build", jobQueued: "Queued", jobRunning: "Running", jobRetrying: "Retrying", jobSucceeded: "Succeeded", jobFailed: "Failed",
@@ -214,7 +217,7 @@ const englishCopy: AdminCopy = {
 const chineseCopy: AdminCopy = {
   formatLocale: "zh-CN", adminSections: "管理控制台栏目", operationFailed: "操作失败。", requestTimedOut: "控制台请求超时。请检查网关连接后重试。", unableLoadOperations: "无法加载运行数据。", unableLoadFeedback: "无法加载反馈。", unableLoadReleases: "无法加载应用发布信息。", seconds: "秒", minutes: "分", hours: "时", moveUp: "上移", moveDown: "下移", remove: "移除",
   appName: "Adaptive Chat", controlRoom: "控制台", operations: "运维", apiOnline: "API 在线", connecting: "正在连接", refresh: "刷新运行数据", retry: "重试", loading: "正在加载运行数据",
-  navOverview: "概览", navUsers: "用户", navClientKeys: "客户端密钥", navProviderKeys: "上游密钥", navRouting: "路由", navEmail: "邮件", navChannels: "频道构建器", navGroupsBuilds: "用户组与构建", navBackups: "备份与恢复", navJobs: "后台任务", navFeedback: "反馈", navReleases: "应用发布", navConnections: "连接",
+  navOverview: "概览", navUsers: "用户", navClientKeys: "客户端密钥", navProviderKeys: "上游密钥", navRouting: "路由", navEmail: "邮件", navChannels: "频道构建器", navGroups: "用户组", navAppBuilds: "应用构建", navReleaseGuide: "发布指南", navBackups: "备份与恢复", navJobs: "后台任务", navFeedback: "反馈", navReleases: "应用发布", navConnections: "连接",
   requests: "请求数", persistentRequestLog: "持久化请求日志", successRate: "成功率", completed: "已完成", tokenVolume: "令牌总量", promptAndCompletion: "提示词和补全", activeStreams: "活跃流", uptime: "运行时间",
   modelTraffic: "模型流量", requestVolume: "按内部模型名称统计的请求量", routingState: "路由状态", upstreamAvailability: "已配置上游可用性", ready: "就绪", unconfigured: "未配置", serviceState: "服务状态", lastSampled: "最近采样", providerKeys: "上游密钥", clientKeys: "客户端密钥", activeUsers: "活跃用户", failures: "失败数",
   createUser: "创建用户", accountsAdminOnly: "账户只能由管理员创建", email: "邮箱", password: "密码", role: "角色", standard: "普通用户", admin: "管理员", rpm: "每分钟请求", dailyQuota: "每日配额", userAccess: "用户权限", statusRoleQuota: "状态、角色与配额", identity: "身份", limits: "限制", monthlyTokens: "月度令牌", status: "状态", suspend: "停用", restore: "恢复", edit: "编辑", editUser: "编辑用户", resetPassword: "重置密码", leavePasswordBlank: "留空则保留当前密码", saveChanges: "保存更改", cancel: "取消",
@@ -227,10 +230,11 @@ const chineseCopy: AdminCopy = {
   smtpTitle: "SMTP 邮件", smtpDetail: "安全提醒和公告通过异步队列发送", templates: "HTML 模板", preview: "沙箱预览", sendTest: "发送测试", channelBuilder: "无代码频道构建器", channelBuilderDetail: "无需发布 Android 版本即可配置原生样式与上游映射", livePreview: "原生实时预览", groupsTitle: "用户组", groupsDetail: "控制 Beta 与生产 OTA 受众", buildPipeline: "Android 部署流水线", buildBeta: "构建 Beta", publishProduction: "发布生产版", backupDestinations: "备份目标", backupDetail: "将加密 PostgreSQL 快照保存到本地、WebDAV 或 S3", recoveryGuide: "恢复指南", workerJobs: "后台任务", workerDetail: "Redis 队列执行历史与日志", trigger: "立即运行", save: "保存", delete: "删除", enabled: "启用", disabled: "禁用",
   language: "语言", navSearchProviders: "搜索提供商", confirm: "确认", confirmationTitle: "确认危险操作", confirmationDetail: "此操作无法撤销。", deleteUserTitle: "删除用户？", deleteUserPrompt: "该账户及其持久化账户数据将被永久删除。", deleteChannelTitle: "删除频道？", deleteChannelPrompt: "该频道将被删除，其模型路由将被禁用。", deleteBackupTitle: "删除备份目标？", deleteBackupPrompt: "该目标配置将被永久删除。", revokeKeyTitle: "撤销客户端密钥？", revokeKeyPrompt: "该客户端密钥将立即失效。", clearRouteTitle: "清除路由策略？", clearRoutePrompt: "明确配置的回退链将被删除。",
   searchProvidersTitle: "网页搜索提供商", searchProvidersDetail: "客户端启用网页搜索时使用的优先级事实来源", addSearchProvider: "添加搜索提供商", editSearchProvider: "编辑搜索提供商", providerKind: "集成类型", providerId: "提供商 ID", maxResults: "最大结果数", apiKey: "API 密钥", configured: "已配置", notConfigured: "未配置", searchPriorityDetail: "优先级数值越小越先执行；结果为空或请求失败时会继续使用下一个已启用集成。", updateProvider: "更新提供商", createProvider: "创建提供商", deleteSearchTitle: "删除搜索提供商？", deleteSearchPrompt: "该事实检索集成及其加密密钥将被永久删除。", leaveApiKeyBlank: "留空则保留当前密钥", apiKeyRequired: "Tavily 和 SerpApi 必须配置密钥", noSearchProviders: "尚未配置搜索提供商。",
-  appIcon: "应用启动图标", appIconDetail: "将打包进下一次 Beta 或生产 APK", customCss: "原生背景 CSS", customCssDetail: "支持的颜色、线性渐变、动画时长和字体系列会转换为原生 Compose 样式。", iconTooLarge: "图片必须是 PNG、JPEG 或 WebP，且小于 3 MB。", channelIcon: "频道图标", animatedGradient: "渐变动画", models: "模型", internalModelId: "内部模型 ID", modelLabel: "模型标签", removeModel: "移除模型", addModel: "添加模型", updateChannel: "更新频道", publishChannel: "发布频道", previewStyleDetail: "Android 客户端使用这些原生样式令牌", newChannel: "新频道", model: "模型", previewGreeting: "需要我做什么？", messageChannel: "发送消息", publishedChannels: "已发布动态频道", publishedChannelsDetail: "Android 应用刷新配置后会显示更改", assignedForBuild: "已分配给 APK 构建",
-  channelId: "频道 ID", displayName: "显示名称", providerIdLabel: "提供商 ID", sortOrder: "排序序号", openAiEndpoint: "OpenAI 兼容端点", keepEndpoint: "留空则保留当前端点", keepSecret: "留空则保留当前密钥", serverOnlySecret: "仅服务端密钥", typography: "字体", sans: "无衬线", serif: "衬线", mono: "等宽", backgroundStart: "背景起始色", backgroundEnd: "背景结束色", accentColor: "强调色", textColor: "文字色", surfaceColor: "表面色", removeImage: "移除图片", appIconPriorityDetail: "进入构建队列时，按排序序号选择第一个已启用频道的启动图标。", enabledChannel: "启用频道",
+  appIcon: "应用启动图标", appIconDetail: "一个全局品牌资源将打包进下一次 Beta 或生产 APK。", appIconManagement: "启动图标管理", appIconManagementDetail: "独立于频道和模型路由更新构建品牌资源。", currentAppIcon: "当前启动图标", noAppIcon: "项目默认图标", saveAppIcon: "保存启动图标", removeAppIcon: "使用默认图标", appIconSaved: "启动图标已保存。", customCss: "原生背景 CSS", customCssDetail: "支持的颜色、线性渐变、动画时长和字体系列会转换为原生 Compose 样式。", iconTooLarge: "图片必须是 PNG、JPEG 或 WebP，且小于 3 MB。", channelIcon: "频道图标", animatedGradient: "渐变动画", models: "模型", internalModelId: "内部模型 ID", modelLabel: "模型标签", removeModel: "移除模型", addModel: "添加模型", updateChannel: "更新频道", publishChannel: "发布频道", previewStyleDetail: "Android 客户端使用这些原生样式令牌", newChannel: "新频道", model: "模型", previewGreeting: "需要我做什么？", messageChannel: "发送消息", publishedChannels: "已发布动态频道", publishedChannelsDetail: "Android 与 Web 客户端刷新配置后会显示这些频道外观设置。",
+  channelId: "频道 ID", displayName: "显示名称", providerIdLabel: "提供商 ID", sortOrder: "排序序号", openAiEndpoint: "OpenAI 兼容端点", keepEndpoint: "留空则保留当前端点", keepSecret: "留空则保留当前密钥", serverOnlySecret: "仅服务端密钥", typography: "字体", sans: "无衬线", serif: "衬线", mono: "等宽", backgroundStart: "背景起始色", backgroundEnd: "背景结束色", accentColor: "强调色", textColor: "文字色", surfaceColor: "表面色", removeImage: "移除图片", enabledChannel: "启用频道",
   smtpHost: "SMTP 主机", port: "端口", username: "用户名", smtpPassword: "SMTP 密码", configuredKeep: "已配置，留空则保留", senderEmail: "发件邮箱", senderName: "发件人名称", implicitTls: "隐式 TLS", testRecipient: "测试收件人", templateVariablesDetail: "模板变量会在插入前进行转义", subject: "主题", html: "HTML", previewSecurityDetail: "脚本、表单和顶部导航已禁用", announcementDispatch: "公告发送", announcementDetail: "为每个活跃账户加入一封渲染后的消息", title: "标题", sendAnnouncement: "发送公告",
   groupId: "用户组 ID", releaseRing: "发布通道", production: "生产版", beta: "Beta", createGroup: "创建用户组", members: "名成员", buildPipelineDetail: "构建在 API 进程之外执行，并发布限定用户环的 OTA 元数据",
+  releaseGuideTitle: "CI/CD 与发布管理", releaseGuideDetail: "品牌化 Android 发布的只读操作流程", releaseGuidePrinciples: "发布契约", releaseGuidePrinciplesDetail: "构建会固定全局启动图标、应用源码、版本元数据和目标用户环。", releaseGuideBeta: "Beta 发布", releaseGuideBetaDetail: "在公开发布前使用 Beta 完成验证。", releaseGuideProduction: "生产发布", releaseGuideProductionDetail: "向所有符合条件的活跃用户发布已验证产物。", releaseGuideObserve: "验证与恢复", releaseGuideObserveDetail: "以后台任务和发布记录作为部署审计轨迹。", releaseStepIcon: "在“应用构建”中保存目标启动图标，无需修改频道。", releaseStepVersion: "选择单调递增的版本代码和便于识别的版本名称。", releaseStepQueue: "将目标发布环加入队列，并跟踪后台任务直至成功。", releaseStepBetaAudience: "Beta 元数据仅对已加入 Beta 发布组的用户可见。", releaseStepBetaVerify: "安装生成的 APK，验证品牌和核心流程，并保留校验和供发布评审。", releaseStepProductionAudience: "生产发布会向所有符合条件的活跃账户提供 OTA 元数据。", releaseStepProductionVerify: "公告发布前验证下载地址和 SHA-256 结果。", releaseStepFailure: "失败的构建不会创建激活版本；检查后台任务、修复原因后使用新构建重试。", releaseStepRollback: "回滚应在“应用发布”中激活此前兼容版本；绝不能复用版本代码。", releaseImmutable: "本指南特意保持静态。运行状态和日志分别位于应用构建、后台任务和应用发布模块。",
   protocol: "协议", localVolume: "本地卷", s3Compatible: "S3 兼容存储", scheduleUtc: "计划（UTC cron）", directory: "目录", webdavUrl: "WebDAV 地址", s3Endpoint: "S3 端点", region: "区域", bucket: "存储桶", accessKey: "访问密钥", secretKey: "秘密密钥", backupPassphrase: "备份加密口令", addDestination: "添加备份目标",
   recoveryDetail: "恢复经过验证且具备事务一致性的 Adaptive Chat 快照", stopWriters: "停止有状态写入服务", stopWritersDetail: "使用下方命令停止应用服务，并保持 PostgreSQL 和 Redis 可用。", decryptAuthenticate: "解密并验证", decryptDetail: "运行下方命令，并在提示时输入备份目标的原始口令。验证失败会立即终止且不会生成转储文件。", restorePostgres: "恢复 PostgreSQL", restorePostgresDetail: "使用下方命令恢复已验证的转储文件。", verifyRelations: "验证关系数据", verifyRelationsDetail: "确认所有外键均已验证，并将用户、会话、消息、频道和反馈行数与任务表清单逐项比较。", restartValidate: "重启并验证", restartValidateDetail: "重启全部应用服务，然后验证健康检查、Web Client 登录、同步历史及一次新的测试备份。", recoveryNote: "每次成功备份都使用同一个 PostgreSQL 导出快照，逐表验证归档，并在 S3 上传后核验文件长度与 SHA-256 元数据。",
   job: "任务", type: "类型", attempts: "尝试次数", created: "创建时间", resultError: "结果 / 错误", queued: "已排队", jobEmail: "邮件发送", jobBackup: "备份", jobBuild: "Android 构建", jobQueued: "已排队", jobRunning: "运行中", jobRetrying: "正在重试", jobSucceeded: "已成功", jobFailed: "已失败",
@@ -621,7 +625,9 @@ export default function AdminPage() {
           />}
           {overview && section === "Email" && <EmailPanel />}
           {overview && section === "Channels" && <ChannelBuilderPanel />}
-          {overview && section === "Groups & builds" && <GroupsBuildsPanel users={overview.users} />}
+          {overview && section === "User groups" && <UserGroupsPanel users={overview.users} />}
+          {overview && section === "App builds" && <AppBuildsPanel />}
+          {overview && section === "Release guide" && <ReleaseManagementGuide />}
           {overview && section === "Backups & recovery" && <BackupsPanel />}
           {overview && section === "Jobs" && <JobsPanel />}
           {overview && section === "Feedback" && <FeedbackPanel feedbacks={feedbacks} onSetStatus={(id, status) => void mutate(async () => { await request(`feedbacks/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); await loadFeedbacks(); })} submitting={submitting} />}
@@ -834,8 +840,9 @@ function SectionHeading({ title, detail }: { title: string; detail: string }) {
 
 type EmailSettings = { host: string; port: number; secure: boolean; username: string; fromEmail: string; fromName: string; enabled: boolean; passwordConfigured: boolean; updatedAt: string };
 type EmailTemplate = { id: string; trigger: "suspicious_login" | "announcement" | "version_update"; name: string; subject: string; htmlBody: string; enabled: boolean; updatedAt: string };
-type DynamicChannel = { id: string; slug: string; displayName: string; description: string; provider: string; providerKeyId: string | null; iconDataUrl: string; appIconDataUrl: string; customCss: string; backgroundStart: string; backgroundEnd: string; accentColor: string; textColor: string; surfaceColor: string; typography: "sans" | "serif" | "mono"; animatedGradient: boolean; models: DynamicModel[]; enabled: boolean; sortOrder: number; updatedAt: string };
+type DynamicChannel = { id: string; slug: string; displayName: string; description: string; provider: string; providerKeyId: string | null; iconDataUrl: string; customCss: string; backgroundStart: string; backgroundEnd: string; accentColor: string; textColor: string; surfaceColor: string; typography: "sans" | "serif" | "mono"; animatedGradient: boolean; models: DynamicModel[]; enabled: boolean; sortOrder: number; updatedAt: string };
 type DynamicModel = { id: string; label: string; description: string; upstreamModel: string };
+type LauncherIconAsset = { dataUrl: string; updatedAt: string };
 type UserGroup = { id: string; slug: string; name: string; description: string; releaseRing: "beta" | "production"; memberCount: number; createdAt: string; updatedAt: string };
 type BackgroundJob = { id: string; type: "email" | "backup" | "build"; status: string; payload: Record<string, unknown>; result: Record<string, unknown> | null; error: string | null; attempts: number; maxAttempts: number; logs: string[]; createdAt: string; startedAt: string | null; finishedAt: string | null };
 type BackupDestination = { id: string; name: string; protocol: "local" | "webdav" | "s3"; scheduleCron: string; enabled: boolean; localDirectory: string; webdavUrl: string; s3Endpoint: string; s3Region: string; s3Bucket: string; s3Prefix: string; s3ForcePathStyle: boolean; credentialsConfigured: boolean; lastScheduledAt: string | null; updatedAt: string };
@@ -964,7 +971,7 @@ function nativeCssPreview(css: string, form: { backgroundStart: string; backgrou
 }
 
 const emptyChannelForm = {
-  slug: "", displayName: "", description: "", provider: "", endpoint: "", secret: "", priority: "100", iconDataUrl: "", appIconDataUrl: "", customCss: "",
+  slug: "", displayName: "", description: "", provider: "", endpoint: "", secret: "", priority: "100", iconDataUrl: "", customCss: "",
   backgroundStart: "#FFF3A6", backgroundEnd: "#FFE066", accentColor: "#B7791F", textColor: "#2D2600", surfaceColor: "#FFFFFF",
   typography: "sans" as DynamicChannel["typography"], animatedGradient: true, enabled: true, sortOrder: "100",
   models: [{ id: "", label: "Standard", description: "", upstreamModel: "" }] as DynamicModel[],
@@ -985,14 +992,14 @@ function ChannelBuilderPanel() {
   }, [copy.operationFailed]);
   useEffect(() => { void load(); }, [load]);
 
-  function readImage(file: File | undefined, key: "iconDataUrl" | "appIconDataUrl") {
+  function readImage(file: File | undefined) {
     if (!file) return;
-    if (!/^image\/(?:png|jpeg|webp)$/.test(file.type) || file.size > (key === "appIconDataUrl" ? 3_000_000 : 1_000_000)) {
+    if (!/^image\/(?:png|jpeg|webp)$/.test(file.type) || file.size > 1_000_000) {
       setError(copy.iconTooLarge);
       return;
     }
     const reader = new FileReader();
-    reader.onload = () => setForm((current) => ({ ...current, [key]: String(reader.result ?? "") }));
+    reader.onload = () => setForm((current) => ({ ...current, iconDataUrl: String(reader.result ?? "") }));
     reader.readAsDataURL(file);
   }
 
@@ -1018,35 +1025,149 @@ function ChannelBuilderPanel() {
         <form className="stacked-form" onSubmit={submit}>
           <div className="form-grid"><label>{copy.channelId}<input disabled={Boolean(editingId)} pattern="[a-z0-9._-]+" required placeholder="qwen" value={form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value.toLowerCase(), provider: form.provider || event.target.value.toLowerCase() })} /></label><label>{copy.displayName}<input required placeholder="Qwen" value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} /></label><label>{copy.providerIdLabel}<input disabled={Boolean(editingId)} required placeholder="qwen" value={form.provider} onChange={(event) => setForm({ ...form, provider: event.target.value.toLowerCase() })} /></label><label>{copy.priority}<input min="0" type="number" value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })} /></label><label>{copy.sortOrder}<input min="0" type="number" value={form.sortOrder} onChange={(event) => setForm({ ...form, sortOrder: event.target.value })} /></label><label className="wide-field">{copy.description}<input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label><label className="wide-field">{copy.openAiEndpoint}<input required={!editingId} type="url" placeholder={editingId ? copy.keepEndpoint : "https://provider.example/v1"} value={form.endpoint} onChange={(event) => setForm({ ...form, endpoint: event.target.value })} /></label><label>{copy.apiKey}<input required={!editingId} type="password" autoComplete="new-password" placeholder={editingId ? copy.keepSecret : copy.serverOnlySecret} value={form.secret} onChange={(event) => setForm({ ...form, secret: event.target.value })} /></label><label>{copy.typography}<select value={form.typography} onChange={(event) => setForm({ ...form, typography: event.target.value as DynamicChannel["typography"] })}><option value="sans">{copy.sans}</option><option value="serif">{copy.serif}</option><option value="mono">{copy.mono}</option></select></label><label className="checkbox-label"><input checked={form.enabled} type="checkbox" onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />{copy.enabledChannel}</label></div>
           <div className="color-grid">{(["backgroundStart", "backgroundEnd", "accentColor", "textColor", "surfaceColor"] as const).map((key) => <label key={key}>{copy[key]}<input type="color" value={form[key]} onChange={(event) => setForm({ ...form, [key]: event.target.value.toUpperCase() })} /></label>)}</div>
-          <div className="upload-grid"><label>{copy.channelIcon}<input accept="image/png,image/jpeg,image/webp" type="file" onChange={(event) => readImage(event.target.files?.[0], "iconDataUrl")} /></label><div className="image-upload-preview">{form.iconDataUrl ? <img alt="" src={form.iconDataUrl} /> : <Bot size={22} />}<button className="small-button" disabled={!form.iconDataUrl} onClick={() => setForm({ ...form, iconDataUrl: "" })} type="button">{copy.removeImage}</button></div><label>{copy.appIcon}<span>{copy.appIconDetail}</span><input accept="image/png,image/jpeg,image/webp" type="file" onChange={(event) => readImage(event.target.files?.[0], "appIconDataUrl")} /></label><div className="image-upload-preview launcher-upload-preview">{form.appIconDataUrl ? <img alt="" src={form.appIconDataUrl} /> : <ImageUp size={22} />}<button className="small-button" disabled={!form.appIconDataUrl} onClick={() => setForm({ ...form, appIconDataUrl: "" })} type="button">{copy.removeImage}</button></div></div>
+          <div className="upload-grid"><label>{copy.channelIcon}<input accept="image/png,image/jpeg,image/webp" type="file" onChange={(event) => readImage(event.target.files?.[0])} /></label><div className="image-upload-preview">{form.iconDataUrl ? <img alt="" src={form.iconDataUrl} /> : <Bot size={22} />}<button className="small-button" disabled={!form.iconDataUrl} onClick={() => setForm({ ...form, iconDataUrl: "" })} type="button">{copy.removeImage}</button></div></div>
           <label>{copy.customCss}<span>{copy.customCssDetail}</span><textarea rows={7} spellCheck={false} value={form.customCss} onChange={(event) => setForm({ ...form, customCss: event.target.value })} /></label>
           <label className="checkbox-label"><input checked={form.animatedGradient} type="checkbox" onChange={(event) => setForm({ ...form, animatedGradient: event.target.checked })} />{copy.animatedGradient}</label>
           <div className="model-builder"><strong>{copy.models}</strong>{form.models.map((model, index) => <div className="model-builder-row" key={index}><input aria-label={copy.internalModelId} placeholder="qwen-standard" required value={model.id} onChange={(event) => setForm({ ...form, models: form.models.map((item, itemIndex) => itemIndex === index ? { ...item, id: event.target.value.toLowerCase() } : item) })} /><input aria-label={copy.modelLabel} placeholder={copy.standard} required value={model.label} onChange={(event) => setForm({ ...form, models: form.models.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) })} /><input aria-label={copy.upstreamModel} placeholder="qwen-max" required value={model.upstreamModel} onChange={(event) => setForm({ ...form, models: form.models.map((item, itemIndex) => itemIndex === index ? { ...item, upstreamModel: event.target.value } : item) })} /><button aria-label={copy.removeModel} className="icon-button danger-button" disabled={form.models.length === 1} onClick={() => setForm({ ...form, models: form.models.filter((_item, itemIndex) => itemIndex !== index) })} type="button"><Trash2 size={16} /></button></div>)}<button className="small-button" onClick={() => setForm({ ...form, models: [...form.models, { id: "", label: "", description: "", upstreamModel: "" }] })} type="button"><Plus size={15} />{copy.addModel}</button></div>
           <div className="form-actions"><button className="primary-button" disabled={busy} type="submit"><Save size={16} />{editingId ? copy.updateChannel : copy.publishChannel}</button>{editingId && <button className="small-button" onClick={() => { setEditingId(null); setForm(emptyChannelForm); }} type="button">{copy.cancel}</button>}</div>
         </form>
       </section>
-      <section className="data-section sticky-preview"><SectionHeading title={copy.livePreview} detail={copy.previewStyleDetail} /><div className={`native-preview ${previewStyle.animated ? "native-preview-animated" : ""}`} style={previewStyle.container}><div className="native-preview-header">{form.iconDataUrl ? <img alt="" src={form.iconDataUrl} /> : <Bot size={24} color={previewStyle.accentColor} />}<div><strong>{form.displayName || copy.newChannel}</strong><span>{form.models[0]?.label || copy.model}</span></div>{form.appIconDataUrl && <img className="preview-launcher-icon" alt={copy.appIcon} src={form.appIconDataUrl} />}</div><div className="native-preview-message" style={{ background: previewStyle.surfaceColor }}>{copy.previewGreeting}</div><div className="native-preview-composer" style={{ background: previewStyle.surfaceColor, borderColor: previewStyle.accentColor }}><span>{copy.messageChannel}</span><Send color={previewStyle.accentColor} size={18} /></div></div><p className="preview-note">{copy.appIconPriorityDetail}</p></section>
+      <section className="data-section sticky-preview"><SectionHeading title={copy.livePreview} detail={copy.previewStyleDetail} /><div className={`native-preview ${previewStyle.animated ? "native-preview-animated" : ""}`} style={previewStyle.container}><div className="native-preview-header">{form.iconDataUrl ? <img alt="" src={form.iconDataUrl} /> : <Bot size={24} color={previewStyle.accentColor} />}<div><strong>{form.displayName || copy.newChannel}</strong><span>{form.models[0]?.label || copy.model}</span></div></div><div className="native-preview-message" style={{ background: previewStyle.surfaceColor }}>{copy.previewGreeting}</div><div className="native-preview-composer" style={{ background: previewStyle.surfaceColor, borderColor: previewStyle.accentColor }}><span>{copy.messageChannel}</span><Send color={previewStyle.accentColor} size={18} /></div></div></section>
     </div>
-    <section className="data-section"><SectionHeading title={copy.publishedChannels} detail={copy.publishedChannelsDetail} /><div className="channel-list">{channels.map((channel) => <article className="channel-row" key={channel.id}><div className="channel-icon" style={{ background: channel.backgroundStart }}>{channel.iconDataUrl ? <img alt="" src={channel.iconDataUrl} /> : <Bot size={20} />}</div><div><strong>{channel.displayName}</strong><span>{channel.slug} · {channel.models.map((model) => model.label).join(", ")}{channel.appIconDataUrl ? ` · ${copy.assignedForBuild}` : ""}</span></div><span className={channel.enabled ? "status status-good" : "status status-muted"}>{channel.enabled ? copy.enabled : copy.disabled}</span><button className="small-button" onClick={() => edit(channel)} type="button"><Pencil size={14} />{copy.edit}</button><button className="small-button" onClick={() => void request(`dynamic-channels/${channel.id}`, { method: "PATCH", body: JSON.stringify({ enabled: !channel.enabled }) }).then(load)} type="button">{channel.enabled ? copy.disable : copy.enable}</button><button aria-label={`${copy.delete} ${channel.displayName}`} className="icon-button danger-button" onClick={() => void confirm({ title: copy.deleteChannelTitle, message: `${channel.displayName}. ${copy.deleteChannelPrompt}`, confirmLabel: copy.delete }).then((accepted) => { if (accepted) void request(`dynamic-channels/${channel.id}`, { method: "DELETE" }).then(load); })} type="button"><Trash2 size={16} /></button></article>)}</div></section>
+    <section className="data-section"><SectionHeading title={copy.publishedChannels} detail={copy.publishedChannelsDetail} /><div className="channel-list">{channels.map((channel) => <article className="channel-row" key={channel.id}><div className="channel-icon" style={{ background: channel.backgroundStart }}>{channel.iconDataUrl ? <img alt="" src={channel.iconDataUrl} /> : <Bot size={20} />}</div><div><strong>{channel.displayName}</strong><span>{channel.slug} · {channel.models.map((model) => model.label).join(", ")}</span></div><span className={channel.enabled ? "status status-good" : "status status-muted"}>{channel.enabled ? copy.enabled : copy.disabled}</span><button className="small-button" onClick={() => edit(channel)} type="button"><Pencil size={14} />{copy.edit}</button><button className="small-button" onClick={() => void request(`dynamic-channels/${channel.id}`, { method: "PATCH", body: JSON.stringify({ enabled: !channel.enabled }) }).then(load)} type="button">{channel.enabled ? copy.disable : copy.enable}</button><button aria-label={`${copy.delete} ${channel.displayName}`} className="icon-button danger-button" onClick={() => void confirm({ title: copy.deleteChannelTitle, message: `${channel.displayName}. ${copy.deleteChannelPrompt}`, confirmLabel: copy.delete }).then((accepted) => { if (accepted) void request(`dynamic-channels/${channel.id}`, { method: "DELETE" }).then(load); })} type="button"><Trash2 size={16} /></button></article>)}</div></section>
   </div>;
 }
 
-function GroupsBuildsPanel({ users }: { users: UserRecord[] }) {
+function UserGroupsPanel({ users }: { users: UserRecord[] }) {
   const copy = useCopy();
   const [groups, setGroups] = useState<UserGroup[]>([]);
   const [memberships, setMemberships] = useState<Record<string, string[]>>({});
   const [groupForm, setGroupForm] = useState({ slug: "", name: "", description: "", releaseRing: "production" as UserGroup["releaseRing"] });
-  const [buildForm, setBuildForm] = useState({ versionCode: "", versionName: "", releaseNotes: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => { try { const payload = await request<{ data: UserGroup[]; memberships: Record<string, string[]> }>("user-groups"); setGroups(payload.data); setMemberships(payload.memberships); setError(null); } catch (reason) { setError(reason instanceof Error ? reason.message : copy.operationFailed); } }, [copy.operationFailed]);
   useEffect(() => { void load(); }, [load]);
   async function saveMembership(userId: string, groupId: string, checked: boolean) { const current = memberships[userId] ?? []; const next = checked ? [...new Set([...current, groupId])] : current.filter((id) => id !== groupId); setMemberships({ ...memberships, [userId]: next }); try { await request(`users/${userId}/groups`, { method: "PUT", body: JSON.stringify({ groupIds: next }) }); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : copy.operationFailed); } }
-  async function queueBuild(ring: "beta" | "production") { setBusy(true); setError(null); try { await request(`builds/${ring}`, { method: "POST", body: JSON.stringify({ versionCode: Number(buildForm.versionCode), versionName: buildForm.versionName, releaseNotes: buildForm.releaseNotes }) }); } catch (reason) { setError(reason instanceof Error ? reason.message : copy.operationFailed); } finally { setBusy(false); } }
   return <div className="enterprise-stack"><InlineError message={error} /><section className="data-section"><SectionHeading title={copy.groupsTitle} detail={copy.groupsDetail} /><form className="form-grid" onSubmit={(event) => { event.preventDefault(); setBusy(true); void request("user-groups", { method: "POST", body: JSON.stringify(groupForm) }).then(() => { setGroupForm({ slug: "", name: "", description: "", releaseRing: "production" }); return load(); }).catch((reason) => setError(reason instanceof Error ? reason.message : copy.operationFailed)).finally(() => setBusy(false)); }}><label>{copy.groupId}<input required value={groupForm.slug} onChange={(event) => setGroupForm({ ...groupForm, slug: event.target.value.toLowerCase() })} /></label><label>{copy.name}<input required value={groupForm.name} onChange={(event) => setGroupForm({ ...groupForm, name: event.target.value })} /></label><label>{copy.releaseRing}<select value={groupForm.releaseRing} onChange={(event) => setGroupForm({ ...groupForm, releaseRing: event.target.value as UserGroup["releaseRing"] })}><option value="production">{copy.production}</option><option value="beta">{copy.beta}</option></select></label><label className="wide-field">{copy.description}<input value={groupForm.description} onChange={(event) => setGroupForm({ ...groupForm, description: event.target.value })} /></label><button className="primary-button form-action" disabled={busy} type="submit"><Plus size={16} />{copy.createGroup}</button></form>
       <div className="group-chips">{groups.map((group) => <div className="group-chip" key={group.id}><strong>{group.name}</strong><span>{group.releaseRing === "production" ? copy.production : copy.beta} · {group.memberCount} {copy.members}</span></div>)}</div>
       <div className="table-wrap"><table><thead><tr><th>{copy.user}</th>{groups.map((group) => <th key={group.id}>{group.name}</th>)}</tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><strong>{user.email}</strong></td>{groups.map((group) => <td key={group.id}><input aria-label={`${user.email} ${group.name}`} checked={(memberships[user.id] ?? []).includes(group.id)} type="checkbox" onChange={(event) => void saveMembership(user.id, group.id, event.target.checked)} /></td>)}</tr>)}</tbody></table></div>
-    </section><section className="data-section"><SectionHeading title={copy.buildPipeline} detail={copy.buildPipelineDetail} /><div className="form-grid"><label>{copy.versionCode}<input min="1" type="number" value={buildForm.versionCode} onChange={(event) => setBuildForm({ ...buildForm, versionCode: event.target.value })} /></label><label>{copy.versionName}<input placeholder="2.0.0-beta.1" value={buildForm.versionName} onChange={(event) => setBuildForm({ ...buildForm, versionName: event.target.value })} /></label><label className="wide-field">{copy.releaseNotes}<input value={buildForm.releaseNotes} onChange={(event) => setBuildForm({ ...buildForm, releaseNotes: event.target.value })} /></label><button className="small-button form-action" disabled={busy || !buildForm.versionCode || !buildForm.versionName} onClick={() => void queueBuild("beta")} type="button"><Hammer size={16} />{copy.buildBeta}</button><button className="primary-button form-action" disabled={busy || !buildForm.versionCode || !buildForm.versionName} onClick={() => void queueBuild("production")} type="button"><Rocket size={16} />{copy.publishProduction}</button></div></section></div>;
+    </section></div>;
+}
+
+function AppBuildsPanel() {
+  const copy = useCopy();
+  const [icon, setIcon] = useState<LauncherIconAsset | null>(null);
+  const [iconDraft, setIconDraft] = useState("");
+  const [buildForm, setBuildForm] = useState({ versionCode: "", versionName: "", releaseNotes: "" });
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const payload = await request<{ data: LauncherIconAsset }>("launcher-icon");
+      setIcon(payload.data);
+      setIconDraft(payload.data.dataUrl);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.operationFailed);
+    }
+  }, [copy.operationFailed]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  function readLauncherIcon(file: File | undefined) {
+    if (!file) return;
+    setSaved(false);
+    if (!/^image\/(?:png|jpeg|webp)$/.test(file.type) || file.size > 3_000_000) {
+      setError(copy.iconTooLarge);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => { setIconDraft(String(reader.result ?? "")); setError(null); };
+    reader.onerror = () => setError(copy.operationFailed);
+    reader.readAsDataURL(file);
+  }
+
+  async function saveIcon() {
+    setBusy(true); setSaved(false); setError(null);
+    try {
+      const payload = await request<{ data: LauncherIconAsset }>("launcher-icon", {
+        method: "PUT",
+        body: JSON.stringify({ dataUrl: iconDraft }),
+      });
+      setIcon(payload.data);
+      setIconDraft(payload.data.dataUrl);
+      setSaved(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.operationFailed);
+    } finally { setBusy(false); }
+  }
+
+  async function queueBuild(ring: "beta" | "production") {
+    setBusy(true); setSaved(false); setError(null);
+    try {
+      await request(`builds/${ring}`, {
+        method: "POST",
+        body: JSON.stringify({
+          versionCode: Number(buildForm.versionCode),
+          versionName: buildForm.versionName,
+          releaseNotes: buildForm.releaseNotes,
+        }),
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.operationFailed);
+    } finally { setBusy(false); }
+  }
+
+  return <div className="enterprise-stack">
+    <InlineError message={error} />
+    {saved && <div className="status-notice"><CircleCheck size={17} />{copy.appIconSaved}</div>}
+    <div className="enterprise-two-column build-branding-layout">
+      <section className="data-section">
+        <SectionHeading title={copy.appIconManagement} detail={copy.appIconManagementDetail} />
+        <div className="launcher-icon-management">
+          <div className="launcher-icon-preview">
+            {iconDraft ? <img alt={copy.currentAppIcon} src={iconDraft} /> : <ImageUp size={36} />}
+            <strong>{iconDraft ? copy.currentAppIcon : copy.noAppIcon}</strong>
+            {icon?.updatedAt && <span>{formatDate(icon.updatedAt, copy, true)}</span>}
+          </div>
+          <label className="launcher-icon-picker">{copy.appIcon}<span>{copy.appIconDetail}</span><input accept="image/png,image/jpeg,image/webp" type="file" onChange={(event) => readLauncherIcon(event.target.files?.[0])} /></label>
+          <div className="form-actions">
+            <button className="primary-button" disabled={busy || iconDraft === icon?.dataUrl} onClick={() => void saveIcon()} type="button"><Save size={16} />{copy.saveAppIcon}</button>
+            <button className="small-button" disabled={busy || !iconDraft} onClick={() => { setIconDraft(""); setSaved(false); }} type="button">{copy.removeAppIcon}</button>
+          </div>
+        </div>
+      </section>
+      <section className="data-section">
+        <SectionHeading title={copy.buildPipeline} detail={copy.buildPipelineDetail} />
+        <div className="stacked-form">
+          <label>{copy.versionCode}<input min="1" type="number" value={buildForm.versionCode} onChange={(event) => setBuildForm({ ...buildForm, versionCode: event.target.value })} /></label>
+          <label>{copy.versionName}<input placeholder="2.0.0-beta.1" value={buildForm.versionName} onChange={(event) => setBuildForm({ ...buildForm, versionName: event.target.value })} /></label>
+          <label>{copy.releaseNotes}<textarea rows={5} value={buildForm.releaseNotes} onChange={(event) => setBuildForm({ ...buildForm, releaseNotes: event.target.value })} /></label>
+          <div className="form-actions">
+            <button className="small-button" disabled={busy || !buildForm.versionCode || !buildForm.versionName} onClick={() => void queueBuild("beta")} type="button"><Hammer size={16} />{copy.buildBeta}</button>
+            <button className="primary-button" disabled={busy || !buildForm.versionCode || !buildForm.versionName} onClick={() => void queueBuild("production")} type="button"><Rocket size={16} />{copy.publishProduction}</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>;
+}
+
+function ReleaseManagementGuide() {
+  const copy = useCopy();
+  const sections = [
+    { icon: ShieldCheck, title: copy.releaseGuidePrinciples, detail: copy.releaseGuidePrinciplesDetail, steps: [copy.releaseStepIcon, copy.releaseStepVersion, copy.releaseStepQueue] },
+    { icon: Hammer, title: copy.releaseGuideBeta, detail: copy.releaseGuideBetaDetail, steps: [copy.releaseStepBetaAudience, copy.releaseStepBetaVerify] },
+    { icon: Rocket, title: copy.releaseGuideProduction, detail: copy.releaseGuideProductionDetail, steps: [copy.releaseStepProductionAudience, copy.releaseStepProductionVerify] },
+    { icon: Activity, title: copy.releaseGuideObserve, detail: copy.releaseGuideObserveDetail, steps: [copy.releaseStepFailure, copy.releaseStepRollback] },
+  ];
+  return <section className="data-section release-guide">
+    <SectionHeading title={copy.releaseGuideTitle} detail={copy.releaseGuideDetail} />
+    <div className="release-guide-grid">{sections.map(({ icon: Icon, title, detail, steps }) => <article key={title} className="release-guide-card"><div className="release-guide-icon"><Icon size={19} /></div><div><h3>{title}</h3><p>{detail}</p></div><ol>{steps.map((step) => <li key={step}>{step}</li>)}</ol></article>)}</div>
+    <div className="recovery-note"><BookOpen size={18} /><span>{copy.releaseImmutable}</span></div>
+  </section>;
 }
 
 const emptyBackupForm = { name: "", protocol: "local" as BackupDestination["protocol"], scheduleCron: "0 2 * * *", enabled: true, localDirectory: "/backups", webdavUrl: "", s3Endpoint: "", s3Region: "us-east-1", s3Bucket: "", s3Prefix: "adaptive-chat", s3ForcePathStyle: false, encryptionPassphrase: "", username: "", password: "", accessKeyId: "", secretAccessKey: "" };

@@ -333,11 +333,11 @@ async function executeBuild(store: EnterpriseStore, job: BackgroundJob) {
   if (!Number.isInteger(versionCode) || !versionName) throw new Error("Build job version is invalid.");
   const projectRoot = resolve(process.env.ANDROID_PROJECT_ROOT ?? "/workspace");
   await store.appendJobLog(job.id, `Compiling Android ${versionName} for the ${ring} ring`);
-  const iconChannel = (await store.listDynamicChannels()).find((channel) => Boolean(channel.appIconDataUrl));
-  const restoreIcon = iconChannel
-    ? await installBuildAppIcon(projectRoot, iconChannel.appIconDataUrl)
+  const launcherIcon = await store.getLauncherIcon();
+  const restoreIcon = launcherIcon.dataUrl
+    ? await installBuildAppIcon(projectRoot, launcherIcon.dataUrl)
     : undefined;
-  if (iconChannel) await store.appendJobLog(job.id, `Bundled the launcher icon assigned by ${iconChannel.displayName}`);
+  if (launcherIcon.dataUrl) await store.appendJobLog(job.id, "Bundled the global launcher icon");
   try {
     await runCommand("./gradlew", [
       ":app:assembleDebug",

@@ -142,3 +142,48 @@ Verification completed:
 
 The Iteration 9 APK is `app/build/outputs/apk/debug/app-debug.apk` with SHA-256
 `1559b28b54ef52fcf4489f2a7ad5b8924c10e2dc043834207a0bde61af85e8f7`.
+
+# Iteration 10 Conclusion
+
+Iteration 10 is implemented, tested, and deployed as Android version `1.7.0`
+(version code `10`). Android and Web now place every selected avatar into an
+intermediate square crop workflow with pan and zoom controls. Both clients
+generate a compressed `512 x 512` result locally, and only that result reaches
+the unchanged profile API.
+
+The Web Client has a persistent desktop sidebar toggle. Collapsing the history
+rail reallocates its grid column to the chat workspace, an always-visible header
+control restores it, and the preference survives reloads in local storage. The
+mobile drawer remains independent from the desktop preference.
+
+Launcher branding is now a global PostgreSQL-backed asset. A migration creates
+`app_branding` and imports a legacy channel-assigned icon once when available.
+The protected launcher-icon API validates actual PNG, JPEG, and WebP content,
+the build worker snapshots the global asset for either release ring, and dynamic
+channels no longer contain or select build icons. The Admin Console now exposes
+separate User groups, App builds, and Release guide modules. The App builds view
+owns launcher upload and Beta/Production triggers; the localized static guide
+documents audience assignment, versioning, verification, failure handling, and
+rollback.
+
+Verification completed:
+
+- API: 4 test files and 29 tests passed; TypeScript compilation passed.
+- Web Client and Admin Console: TypeScript checks and production Next.js builds
+  passed, including container builds.
+- Android: 15 unit tests passed, lint reported 0 issues, and `assembleDebug`
+  succeeded. The APK manifest reports version `1.7.0`, code `10`, package
+  `com.zengjunjie.adaptivechat`, and the adaptive launcher resource.
+- Deployment: API, worker, Admin, and Web containers were rebuilt and restarted;
+  API, PostgreSQL, and Redis are healthy. PostgreSQL contains the new persistent
+  `app_branding` row, and the live Admin proxy can read it.
+- Public checks: `chat.zengjunjie.com` returns HTTPS 200,
+  `chatapi.zengjunjie.com/health` returns relay mode with PostgreSQL + Redis, and
+  `console.zengjunjie.com` immediately returns the expected HTTP Basic Auth
+  challenge.
+
+The Iteration 10 APK is `app/build/outputs/apk/debug/app-debug.apk` (20,896,655
+bytes) with SHA-256
+`8833f58f0798a9685f706cce921c4c85285c5cfcbb43cd136f08f840676f5504`.
+Android visual validation remains with the Product Owner; no emulator or
+headless Android display tooling was used.

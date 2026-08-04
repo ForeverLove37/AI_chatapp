@@ -18,6 +18,7 @@ import {
   Moon,
   Network,
   PanelLeftClose,
+  PanelLeftOpen,
   RefreshCw,
   Save,
   Send,
@@ -40,6 +41,7 @@ import {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { AvatarCropDialog } from "./AvatarCropDialog";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://chatapi.zengjunjie.com").replace(/\/$/, "");
 const AUTO_SCROLL_EDGE_PX = 56;
@@ -124,7 +126,7 @@ const COPY = {
     createBranch: "Create conversation branch?", createBranchBody: "A separate synchronized conversation will be created from this point.",
     cancel: "Cancel", confirm: "Confirm", editing: "Editing message", stopEditing: "Cancel editing", close: "Close", small: "Small", large: "Large",
     syncError: "Unable to synchronize conversations.", loginError: "Unable to sign in.", requestError: "The response could not be completed.",
-    menu: "Open conversations", closeSidebar: "Close conversations", account: "Account", profileError: "Unable to update your profile.", feedbackError: "Unable to send feedback.", avatarTooLarge: "Avatar images must be 2 MB or smaller.", avatarTypeError: "Choose a JPEG, PNG, or WEBP avatar image.",
+    menu: "Open conversations", closeSidebar: "Close conversations", collapseSidebar: "Collapse sidebar", expandSidebar: "Expand sidebar", account: "Account", profileError: "Unable to update your profile.", feedbackError: "Unable to send feedback.", avatarTooLarge: "Avatar images must be 2 MB or smaller.", avatarTypeError: "Choose a JPEG, PNG, or WEBP avatar image.", cropAvatar: "Crop avatar", cropAvatarDetail: "Drag to reposition the image, then adjust the scale.", zoom: "Zoom", reset: "Reset", applyCrop: "Apply crop", processingCrop: "Processing", cropError: "The cropped avatar could not be created.",
   },
   zh: {
     product: "Adaptive Chat", synchronized: "跨端同步工作区", email: "邮箱", password: "密码",
@@ -142,7 +144,7 @@ const COPY = {
     createBranch: "创建会话分支？", createBranchBody: "将从当前位置创建一个独立且同步的新会话。",
     cancel: "取消", confirm: "确认", editing: "正在编辑消息", stopEditing: "取消编辑", close: "关闭", small: "小", large: "大",
     syncError: "无法同步会话。", loginError: "无法登录。", requestError: "未能完成响应。",
-    menu: "打开会话列表", closeSidebar: "关闭会话列表", account: "账号", profileError: "无法更新个人资料。", feedbackError: "无法发送反馈。", avatarTooLarge: "头像不能超过 2 MB。", avatarTypeError: "请选择 JPEG、PNG 或 WEBP 图片。",
+    menu: "打开会话列表", closeSidebar: "关闭会话列表", collapseSidebar: "收起侧边栏", expandSidebar: "展开侧边栏", account: "账号", profileError: "无法更新个人资料。", feedbackError: "无法发送反馈。", avatarTooLarge: "头像不能超过 2 MB。", avatarTypeError: "请选择 JPEG、PNG 或 WEBP 图片。", cropAvatar: "裁剪头像", cropAvatarDetail: "拖动图片调整位置，然后设置缩放比例。", zoom: "缩放", reset: "重置", applyCrop: "应用裁剪", processingCrop: "正在处理", cropError: "无法生成裁剪后的头像。",
   },
 } as const;
 
@@ -322,6 +324,7 @@ export default function WebChat() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profileDraft, setProfileDraft] = useState("");
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState("");
   const [removeAvatar, setRemoveAvatar] = useState(false);
   const [profileStatus, setProfileStatus] = useState<"idle" | "saving" | "saved">("idle");
@@ -329,6 +332,7 @@ export default function WebChat() {
   const [feedbackDraft, setFeedbackDraft] = useState("");
   const [feedbackStatus, setFeedbackStatus] = useState<"idle" | "sending" | "sent">("idle");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const avatarInput = useRef<HTMLInputElement>(null);
@@ -372,11 +376,13 @@ export default function WebChat() {
     const storedLanguage = localStorage.getItem("adaptive-chat-language") as LanguagePreference | null;
     const storedFontScale = Number(localStorage.getItem("adaptive-chat-font-scale") ?? "1");
     const storedProfile = localStorage.getItem("adaptive-chat-profile");
+    const storedSidebarCollapsed = localStorage.getItem("adaptive-chat-sidebar-collapsed");
     setToken(storedToken);
     setEmail(storedEmail);
     if (storedTheme === "system" || storedTheme === "light" || storedTheme === "dark") setTheme(storedTheme);
     if (storedLanguage === "system" || storedLanguage === "en" || storedLanguage === "zh") setLanguage(storedLanguage);
     if (Number.isFinite(storedFontScale)) setFontScale(Math.min(1.3, Math.max(0.85, storedFontScale)));
+    setSidebarCollapsed(storedSidebarCollapsed === "true");
     if (storedProfile) {
       try { setProfile(JSON.parse(storedProfile) as UserProfile); } catch { localStorage.removeItem("adaptive-chat-profile"); }
     }
@@ -423,6 +429,10 @@ export default function WebChat() {
   useEffect(() => {
     localStorage.setItem("adaptive-chat-font-scale", String(fontScale));
   }, [fontScale]);
+
+  useEffect(() => {
+    localStorage.setItem("adaptive-chat-sidebar-collapsed", String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
 
   useEffect(() => () => {
     if (avatarPreview) URL.revokeObjectURL(avatarPreview);
@@ -502,6 +512,7 @@ export default function WebChat() {
   function openSettings() {
     setProfileDraft(profile?.displayName ?? "");
     setAvatarFile(null);
+    setAvatarCropFile(null);
     setAvatarPreview("");
     setRemoveAvatar(false);
     setProfileStatus("idle");
@@ -523,8 +534,13 @@ export default function WebChat() {
       return;
     }
     setSettingsError("");
+    setAvatarCropFile(file);
+  }
+
+  function applyAvatarCrop(file: File) {
     setAvatarFile(file);
     setAvatarPreview(URL.createObjectURL(file));
+    setAvatarCropFile(null);
     setRemoveAvatar(false);
     setProfileStatus("idle");
   }
@@ -934,13 +950,14 @@ export default function WebChat() {
 
   return (
     <main
-      className={`chat-shell channel-${channel?.id ?? "chatgpt"} ${channel?.style.animatedGradient ? "animated-channel" : ""}`}
+      className={`chat-shell channel-${channel?.id ?? "chatgpt"} ${channel?.style.animatedGradient ? "animated-channel" : ""} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}
       style={shellStyle}
     >
       <aside className={`conversation-sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
         <div className="sidebar-brand">
           <img src="/brand" alt="" />
           <div><strong>{copy.product}</strong><span>{copy.synchronized}</span></div>
+          <button className="icon-command desktop-sidebar-close" title={copy.collapseSidebar} aria-label={copy.collapseSidebar} onClick={() => setSidebarCollapsed(true)}><PanelLeftClose size={20} /></button>
           <button className="icon-command mobile-only" title={copy.closeSidebar} aria-label={copy.closeSidebar} onClick={() => setSidebarOpen(false)}><PanelLeftClose size={20} /></button>
         </div>
         <button className="new-conversation" onClick={() => void createSession()}><MessageSquarePlus size={18} />{copy.newChat}</button>
@@ -965,6 +982,7 @@ export default function WebChat() {
       <section className="conversation-workspace">
         <header className="chat-header">
           <button className="icon-command mobile-only" title={copy.menu} aria-label={copy.menu} onClick={() => setSidebarOpen(true)}><Menu size={21} /></button>
+          <button className="icon-command desktop-sidebar-open" title={copy.expandSidebar} aria-label={copy.expandSidebar} onClick={() => setSidebarCollapsed(false)}><PanelLeftOpen size={20} /></button>
           <div className="channel-model-controls">
             <label>
               <span>{copy.channel}</span>
@@ -1096,7 +1114,7 @@ export default function WebChat() {
                   />
                 </div>
                 <div className="avatar-commands">
-                  <input ref={avatarInput} hidden type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => selectAvatar(event.target.files)} />
+                  <input ref={avatarInput} hidden type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => { selectAvatar(event.target.files); event.currentTarget.value = ""; }} />
                   <button type="button" onClick={() => avatarInput.current?.click()}><ImagePlus size={17} />{copy.chooseAvatar}</button>
                   <button
                     type="button"
@@ -1152,6 +1170,12 @@ export default function WebChat() {
           </section>
         </div>
       )}
+      {avatarCropFile && <AvatarCropDialog
+        file={avatarCropFile}
+        copy={{ title: copy.cropAvatar, detail: copy.cropAvatarDetail, zoom: copy.zoom, reset: copy.reset, cancel: copy.cancel, apply: copy.applyCrop, processing: copy.processingCrop, error: copy.cropError }}
+        onApply={applyAvatarCrop}
+        onCancel={() => setAvatarCropFile(null)}
+      />}
       {confirmation && (
         <div className="modal-backdrop" role="presentation">
           <div className="confirmation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">

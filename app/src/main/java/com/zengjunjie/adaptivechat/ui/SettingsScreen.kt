@@ -1,9 +1,11 @@
 package com.zengjunjie.adaptivechat.ui
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -65,6 +67,7 @@ import com.zengjunjie.adaptivechat.data.ProfileAvatarUpload
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -90,6 +93,7 @@ fun SettingsScreen(
     var displayName by rememberSaveable { mutableStateOf(state.account.displayName) }
     var avatarUpload by remember { mutableStateOf<ProfileAvatarUpload?>(null) }
     var avatarPreview by remember { mutableStateOf<ByteArray?>(null) }
+    var avatarCropSource by remember { mutableStateOf<AvatarCropSource?>(null) }
     var removeAvatar by rememberSaveable { mutableStateOf(false) }
     var avatarError by remember { mutableStateOf<String?>(null) }
 
@@ -107,9 +111,8 @@ fun SettingsScreen(
         scope.launch {
             runCatching { withContext(Dispatchers.IO) { readProfileAvatar(context, uri) } }
                 .onSuccess {
-                    avatarUpload = it.first
-                    avatarPreview = it.second
-                    removeAvatar = false
+                    avatarCropSource?.bitmap?.recycle()
+                    avatarCropSource = it
                     avatarError = null
                 }
                 .onFailure { avatarError = it.message ?: copy.avatarError }
@@ -367,6 +370,24 @@ fun SettingsScreen(
             item { Spacer(Modifier.height(12.dp)) }
         }
     }
+    avatarCropSource?.let { source ->
+        AvatarCropDialog(
+            source = source,
+            onCancel = {
+                source.bitmap.recycle()
+                avatarCropSource = null
+            },
+            onApply = { cropped ->
+                avatarUpload = cropped.upload
+                avatarPreview = cropped.previewBytes
+                removeAvatar = false
+                avatarError = null
+                onDismissProfileState()
+                source.bitmap.recycle()
+                avatarCropSource = null
+            },
+        )
+    }
 }
 
 @Composable
@@ -415,7 +436,7 @@ private fun <T> ChoiceRow(
 
 private const val MAX_PROFILE_AVATAR_BYTES = 2 * 1024 * 1024
 
-private fun readProfileAvatar(context: Context, uri: Uri): Pair<ProfileAvatarUpload, ByteArray> {
+private fun readProfileAvatar(context: Context, uri: Uri): AvatarCropSource {
     val resolver = context.contentResolver
     val mimeType = resolver.getType(uri)?.lowercase()?.substringBefore(';')
         ?: when (uri.toString().substringBefore('?').substringAfterLast('.').lowercase()) {
@@ -443,12 +464,51 @@ private fun readProfileAvatar(context: Context, uri: Uri): Pair<ProfileAvatarUpl
         } ?: throw IllegalArgumentException("The avatar could not be read.")
         output.toByteArray()
     }
-    if (bytes.isEmpty() || BitmapFactory.decodeByteArray(bytes, 0, bytes.size) == null) {
+    if (bytes.isEmpty()) {
         throw IllegalArgumentException("Choose a valid JPEG, PNG, or WEBP avatar image.")
     }
-    val fileName = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-        if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else null
-    }?.takeIf { it.isNotBlank() } ?: "avatar"
-    return ProfileAvatarUpload(fileName = fileName, mimeType = mimeType, bytes = bytes) to bytes
+    return AvatarCropSource(decodeAvatarBitmap(bytes))
 }
+
+private fun decodeAvatarBitmap(bytes: ByteArray): Bitmap {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+        throw IllegalArgumentException("Choose a valid JPEG, PNG, or WEBP avatar image.")
+    }
+    var sampleSize = 1
+    while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > MAX_PROFILE_AVATAR_DIMENSION) sampleSize *= 2
+    val bitmap = BitmapFactory.decodeByteArray(
+        bytes,
+        0,
+        bytes.size,
+        BitmapFactory.Options().apply { inSampleSize = sampleSize },
+    ) ?: throw IllegalArgumentException("Choose a valid JPEG, PNG, or WEBP avatar image.")
+    val orientation = runCatching {
+        ByteArrayInputStream(bytes).use { input ->
+            ExifInterface(input).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        }
+    }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+    val rotation = when (orientation) {
+        ExifInterface.ORIENTATION_ROTATE_90, ExifInterface.ORIENTATION_TRANSPOSE -> 90f
+        ExifInterface.ORIENTATION_ROTATE_180, ExifInterface.ORIENTATION_FLIP_VERTICAL -> 180f
+        ExifInterface.ORIENTATION_ROTATE_270, ExifInterface.ORIENTATION_TRANSVERSE -> 270f
+        else -> 0f
+    }
+    val flipped = orientation in setOf(
+        ExifInterface.ORIENTATION_FLIP_HORIZONTAL,
+        ExifInterface.ORIENTATION_FLIP_VERTICAL,
+        ExifInterface.ORIENTATION_TRANSPOSE,
+        ExifInterface.ORIENTATION_TRANSVERSE,
+    )
+    if (rotation == 0f && !flipped) return bitmap
+    val matrix = Matrix().apply {
+        if (flipped) postScale(-1f, 1f)
+        if (rotation != 0f) postRotate(rotation)
+    }
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true).also {
+        if (it !== bitmap) bitmap.recycle()
+    }
+}
+
+private const val MAX_PROFILE_AVATAR_DIMENSION = 2048
