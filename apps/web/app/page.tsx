@@ -24,11 +24,20 @@ import {
   Volume2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type UIEvent,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://chatapi.zengjunjie.com").replace(/\/$/, "");
+const AUTO_SCROLL_EDGE_PX = 56;
 
 type Language = "en" | "zh";
 type Theme = "light" | "dark";
@@ -266,7 +275,8 @@ export default function WebChat() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const messageEnd = useRef<HTMLDivElement>(null);
+  const messageViewport = useRef<HTMLDivElement>(null);
+  const autoScrollPaused = useRef(false);
   const copy = COPY[language];
 
   const selected = sessions.find((session) => session.id === selectedId) ?? sessions[0];
@@ -319,8 +329,30 @@ export default function WebChat() {
   }, [language]);
 
   useEffect(() => {
-    messageEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [selected?.messages, waiting]);
+    autoScrollPaused.current = false;
+    const viewport = messageViewport.current;
+    if (!viewport) return;
+    const frame = window.requestAnimationFrame(() => {
+      viewport.scrollTop = viewport.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selected?.id]);
+
+  useEffect(() => {
+    if (!streaming || autoScrollPaused.current) return;
+    const viewport = messageViewport.current;
+    if (!viewport) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (!autoScrollPaused.current) viewport.scrollTop = viewport.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selected?.messages, streaming, waiting]);
+
+  const handleMessageScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
+    const viewport = event.currentTarget;
+    const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    autoScrollPaused.current = distanceFromBottom > AUTO_SCROLL_EDGE_PX;
+  }, []);
 
   const persist = useCallback(async (session: ChatSession) => {
     await api(`/v1/sessions/${encodeURIComponent(session.id)}`, token, { method: "PUT", body: snapshotBody(session) });
@@ -774,7 +806,7 @@ export default function WebChat() {
           </div>
         </header>
 
-        <div className="message-viewport">
+        <div className="message-viewport" ref={messageViewport} onScroll={handleMessageScroll}>
           {!selected?.messages.length ? (
             <div className="welcome-state">
               {channel && <div className="welcome-icon"><ChannelIcon channel={channel} /></div>}
@@ -820,7 +852,6 @@ export default function WebChat() {
                   </article>
                 );
               })}
-              <div ref={messageEnd} />
             </div>
           )}
         </div>

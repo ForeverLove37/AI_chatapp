@@ -82,3 +82,22 @@ compiled server-side and the Web/Admin apps do not use Next image optimization.
 
 Android visual validation remains with the Product Owner. No emulator, Xvfb,
 noVNC, Lavapipe, or other headless Android UI environment was used.
+
+# Iteration 8 Hotfix
+
+The Web Client layout now keeps the channel/model header and composer in fixed
+grid rows, with only the message history owning vertical overflow. The former
+document-level `scrollIntoView` loop was removed. Automatic following is now
+limited to active SSE streaming, pauses immediately when the user scrolls more
+than 56 px from the bottom, and resumes only after returning to the edge.
+
+Dropdown controls use a full-surface native select with decorative icons set to
+`pointer-events: none`; the off-screen mobile drawer is also removed from hit
+testing until opened. The root HTML response is marked `no-store` to prevent a
+cached document from hydrating against an older JavaScript chunk set.
+
+Verification: Web TypeScript checking and the production Next.js build passed;
+the rebuilt Docker service is healthy, `https://chat.zengjunjie.com/` returns
+HTTPS 200 with the no-store header, and `https://chatapi.zengjunjie.com/health`
+returns 200. A browser binary is not installed in this server environment, so
+final visual and pointer verification remains available at the public URL.
