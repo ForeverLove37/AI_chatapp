@@ -101,3 +101,44 @@ the rebuilt Docker service is healthy, `https://chat.zengjunjie.com/` returns
 HTTPS 200 with the no-store header, and `https://chatapi.zengjunjie.com/health`
 returns 200. A browser binary is not installed in this server environment, so
 final visual and pointer verification remains available at the public URL.
+
+# Iteration 9 Conclusion
+
+Iteration 9 is implemented, tested, deployed, and pushed. Branch confirmation
+now uses fork/branch iconography in both Android and Web; trash icons remain
+exclusive to destructive actions. The Web Client now provides Settings parity
+for system/English/Chinese language, system/light/dark appearance, font scaling,
+and authenticated feedback submission.
+
+Presentation profiles are persisted in PostgreSQL through nullable
+`display_name` and `avatar_url` columns. Authenticated users can read and update
+their own profile through `GET|PATCH /v1/users/profile`; multipart JPEG, PNG, and
+WebP uploads are capped at 2 MB, decoded with bounded pixel limits, normalized to
+WebP, and stored in a dedicated persistent Docker volume. Randomized filenames,
+strict path validation, MIME validation, and image decoding prevent arbitrary
+file storage or traversal. Neither endpoint can mutate email, role, or session
+identity.
+
+Android and Web display the profile in user messages, navigation/account areas,
+and Settings. Both clients fall back to a deterministic colored initial when no
+avatar is configured. Android keeps profile data in account preferences and
+refreshes it from the Gateway; the Web client persists only presentation and
+Settings state locally while the server remains authoritative.
+
+Verification completed:
+
+- API: 4 test files and 28 tests passed; TypeScript build passed.
+- Web Client and Admin Console: production Next.js builds passed.
+- Android: unit tests, lint (0 errors), and `assembleDebug` passed. No emulator
+  or headless display environment was used.
+- Live profile E2E: disposable account creation, email login, multipart avatar
+  upload, normalized public WebP delivery, display-name login rejection,
+  original-email login retention, avatar removal, and cleanup all passed.
+- PostgreSQL contains both profile columns; the API runs in relay mode with
+  PostgreSQL + Redis, all services are running, and the health-checked API,
+  PostgreSQL, and Redis containers are healthy.
+- `https://chat.zengjunjie.com` returns HTTPS 200 with CSP permission restricted
+  to profile images from `https://chatapi.zengjunjie.com`.
+
+The Iteration 9 APK is `app/build/outputs/apk/debug/app-debug.apk` with SHA-256
+`1559b28b54ef52fcf4489f2a7ad5b8924c10e2dc043834207a0bde61af85e8f7`.

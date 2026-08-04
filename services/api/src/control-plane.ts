@@ -34,6 +34,8 @@ export type ClientKeyView = {
 export type UserRecord = {
   id: string;
   email: string;
+  displayName: string | null;
+  avatarUrl: string | null;
   role: "admin" | "standard";
   status: "active" | "suspended";
   monthlyTokens: number;
@@ -42,15 +44,17 @@ export type UserRecord = {
   createdAt: string;
 };
 
-export type CreateUserInput = Omit<UserRecord, "id" | "monthlyTokens" | "createdAt"> & {
+export type CreateUserInput = Omit<UserRecord, "id" | "monthlyTokens" | "createdAt" | "displayName" | "avatarUrl"> & {
   password: string;
+  displayName?: string | null;
+  avatarUrl?: string | null;
 };
 
-export type UpdateUserInput = Partial<Pick<UserRecord, "status" | "role" | "rpmLimit" | "dailyLimit">> & {
+export type UpdateUserInput = Partial<Pick<UserRecord, "status" | "role" | "rpmLimit" | "dailyLimit" | "displayName" | "avatarUrl">> & {
   password?: string;
 };
 
-export type AuthenticatedUser = Pick<UserRecord, "id" | "email" | "role" | "status">;
+export type AuthenticatedUser = Pick<UserRecord, "id" | "email" | "displayName" | "avatarUrl" | "role" | "status">;
 
 export type RoutingScope = "channel" | "model";
 
@@ -282,6 +286,8 @@ function userFromRow(row: Record<string, unknown>): UserRecord {
   return {
     id: String(row.id),
     email: String(row.email),
+    displayName: row.display_name ? String(row.display_name) : null,
+    avatarUrl: row.avatar_url ? String(row.avatar_url) : null,
     role: String(row.role) as UserRecord["role"],
     status: String(row.status) as UserRecord["status"],
     monthlyTokens: numberValue(row.monthly_tokens),
@@ -350,6 +356,8 @@ export class MemoryControlPlane implements ControlPlane {
     this.users.set("usr_admin", {
       id: "usr_admin",
       email: "admin@adaptive.local",
+      displayName: null,
+      avatarUrl: null,
       role: "admin",
       status: "active",
       monthlyTokens: 0,
@@ -525,6 +533,8 @@ export class MemoryControlPlane implements ControlPlane {
       ...record,
       id: `usr_${randomUUID().slice(0, 12)}`,
       email: input.email.toLowerCase(),
+      displayName: input.displayName?.trim() || null,
+      avatarUrl: input.avatarUrl || null,
       monthlyTokens: 0,
       createdAt: nowIso(),
       passwordHash: await hashPassword(password),
@@ -561,7 +571,14 @@ export class MemoryControlPlane implements ControlPlane {
   async authenticateUser(email: string, password: string) {
     const user = [...this.users.values()].find((candidate) => candidate.email === email.trim().toLowerCase());
     if (!user || user.status !== "active" || !await verifyPassword(password, user.passwordHash)) return undefined;
-    return { id: user.id, email: user.email, role: user.role, status: user.status };
+    return {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      role: user.role,
+      status: user.status,
+    };
   }
 
   async listClientKeys() {
@@ -857,6 +874,8 @@ export class PostgresControlPlane implements ControlPlane {
       CREATE INDEX IF NOT EXISTS request_logs_created_idx ON request_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS request_logs_model_idx ON request_logs(model_id, created_at DESC);
       ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
       ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
       ALTER TABLE provider_keys DROP CONSTRAINT IF EXISTS provider_keys_provider_check;
       ALTER TABLE model_routes DROP CONSTRAINT IF EXISTS model_routes_provider_check;
@@ -1096,9 +1115,19 @@ export class PostgresControlPlane implements ControlPlane {
     const id = `usr_${randomUUID().slice(0, 12)}`;
     const passwordHash = await hashPassword(input.password);
     const result = await this.pool.query<Record<string, unknown>>(
-      `INSERT INTO users (id, email, password_hash, role, status, rpm_limit, daily_limit)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [id, input.email.toLowerCase(), passwordHash, input.role, input.status, input.rpmLimit, input.dailyLimit],
+      `INSERT INTO users (id, email, password_hash, display_name, avatar_url, role, status, rpm_limit, daily_limit)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [
+        id,
+        input.email.toLowerCase(),
+        passwordHash,
+        input.displayName?.trim() || null,
+        input.avatarUrl || null,
+        input.role,
+        input.status,
+        input.rpmLimit,
+        input.dailyLimit,
+      ],
     );
     return userFromRow(result.rows[0]);
   }
@@ -1110,6 +1139,8 @@ export class PostgresControlPlane implements ControlPlane {
     if (patch.role !== undefined) { values.push(patch.role); fields.push(`role = $${values.length}`); }
     if (patch.rpmLimit !== undefined) { values.push(patch.rpmLimit); fields.push(`rpm_limit = $${values.length}`); }
     if (patch.dailyLimit !== undefined) { values.push(patch.dailyLimit); fields.push(`daily_limit = $${values.length}`); }
+    if (patch.displayName !== undefined) { values.push(patch.displayName?.trim() || null); fields.push(`display_name = $${values.length}`); }
+    if (patch.avatarUrl !== undefined) { values.push(patch.avatarUrl || null); fields.push(`avatar_url = $${values.length}`); }
     if (patch.password !== undefined) {
       values.push(await hashPassword(patch.password));
       fields.push(`password_hash = $${values.length}`);
@@ -1162,7 +1193,14 @@ export class PostgresControlPlane implements ControlPlane {
     const row = result.rows[0];
     if (!row || !await verifyPassword(password, row.password_hash ? String(row.password_hash) : null)) return undefined;
     const user = userFromRow(row);
-    return { id: user.id, email: user.email, role: user.role, status: user.status };
+    return {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      role: user.role,
+      status: user.status,
+    };
   }
 
   async createClientKey(input: { name: string; rpmLimit: number; dailyLimit: number; userId?: string | null }) {

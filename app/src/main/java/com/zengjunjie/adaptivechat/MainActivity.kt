@@ -66,6 +66,8 @@ class MainActivity : ComponentActivity() {
                                 onSetFontScale = viewModel::setFontScale,
                                 onSetLanguage = viewModel::setLanguage,
                                 onSubmitFeedback = viewModel::submitFeedback,
+                                onUpdateProfile = viewModel::updateProfile,
+                                onDismissProfileState = viewModel::dismissProfileUpdateState,
                             )
                             else -> ChatScreen(
                                 state = state,

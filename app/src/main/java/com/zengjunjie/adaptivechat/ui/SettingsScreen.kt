@@ -1,5 +1,11 @@
 package com.zengjunjie.adaptivechat.ui
 
+import android.content.Context
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -16,10 +22,12 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Feedback
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.TextFields
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -36,10 +44,14 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
@@ -49,6 +61,11 @@ import androidx.compose.ui.unit.dp
 import com.zengjunjie.adaptivechat.BuildConfig
 import com.zengjunjie.adaptivechat.data.AppearancePreference
 import com.zengjunjie.adaptivechat.data.LanguagePreference
+import com.zengjunjie.adaptivechat.data.ProfileAvatarUpload
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,10 +79,42 @@ fun SettingsScreen(
     onSetFontScale: (Float) -> Unit,
     onSetLanguage: (LanguagePreference) -> Unit,
     onSubmitFeedback: (String) -> Unit,
+    onUpdateProfile: (String, ProfileAvatarUpload?, Boolean) -> Unit,
+    onDismissProfileState: () -> Unit,
 ) {
     val copy = LocalAppCopy.current
     val uriHandler = LocalUriHandler.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var feedback by rememberSaveable { mutableStateOf("") }
+    var displayName by rememberSaveable { mutableStateOf(state.account.displayName) }
+    var avatarUpload by remember { mutableStateOf<ProfileAvatarUpload?>(null) }
+    var avatarPreview by remember { mutableStateOf<ByteArray?>(null) }
+    var removeAvatar by rememberSaveable { mutableStateOf(false) }
+    var avatarError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(state.account.displayName) { displayName = state.account.displayName }
+    LaunchedEffect(state.profileUpdateState) {
+        if (state.profileUpdateState is ProfileUpdateState.Saved) {
+            avatarUpload = null
+            avatarPreview = null
+            removeAvatar = false
+            avatarError = null
+        }
+    }
+    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            runCatching { withContext(Dispatchers.IO) { readProfileAvatar(context, uri) } }
+                .onSuccess {
+                    avatarUpload = it.first
+                    avatarPreview = it.second
+                    removeAvatar = false
+                    avatarError = null
+                }
+                .onFailure { avatarError = it.message ?: copy.avatarError }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -85,6 +134,76 @@ fun SettingsScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            item {
+                SettingsSection(
+                    icon = { Icon(Icons.Outlined.Image, contentDescription = null) },
+                    title = copy.profile,
+                    detail = state.account.email.orEmpty(),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        UserAvatar(
+                            displayName = displayName,
+                            email = state.account.email.orEmpty(),
+                            avatarUrl = if (removeAvatar) "" else state.account.avatarUrl,
+                            previewBytes = avatarPreview,
+                            modifier = Modifier.size(68.dp),
+                        )
+                        Spacer(Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = displayName,
+                                onValueChange = { displayName = it.take(80); onDismissProfileState() },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text(copy.displayName) },
+                                singleLine = true,
+                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = { avatarPicker.launch(arrayOf("image/jpeg", "image/png", "image/webp")) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Icon(Icons.Outlined.Image, contentDescription = null, modifier = Modifier.size(17.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(copy.chooseAvatar)
+                                }
+                                if (state.account.avatarUrl.isNotBlank() || avatarUpload != null) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            avatarUpload = null
+                                            avatarPreview = null
+                                            removeAvatar = true
+                                            onDismissProfileState()
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Icon(Icons.Outlined.DeleteOutline, contentDescription = null, modifier = Modifier.size(17.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(copy.removeAvatar)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    avatarError?.let { Text(copy.localizedError(it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp)) }
+                    when (val profileState = state.profileUpdateState) {
+                        ProfileUpdateState.Saving -> Row(modifier = Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(10.dp))
+                            Text(copy.savingProfile)
+                        }
+                        ProfileUpdateState.Saved -> Text(copy.profileSaved, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp))
+                        is ProfileUpdateState.Failure -> Text(copy.localizedError(profileState.message), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 10.dp))
+                        ProfileUpdateState.Idle -> Unit
+                    }
+                    Button(
+                        onClick = {
+                            onUpdateProfile(displayName, avatarUpload, removeAvatar)
+                        },
+                        enabled = state.profileUpdateState !is ProfileUpdateState.Saving,
+                        modifier = Modifier.padding(top = 10.dp),
+                    ) { Text(copy.saveProfile) }
+                }
+            }
             item {
                 SettingsSection(
                     icon = { Icon(Icons.Outlined.Language, contentDescription = null) },
@@ -227,9 +346,16 @@ fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(state.account.email.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                            Text(state.account.displayName.ifBlank { state.account.email.orEmpty() }, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                            Text(state.account.email.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
                             Text(copy.signedIn, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
+                        UserAvatar(
+                            displayName = state.account.displayName,
+                            email = state.account.email.orEmpty(),
+                            avatarUrl = state.account.avatarUrl,
+                            modifier = Modifier.size(38.dp).padding(end = 8.dp),
+                        )
                         OutlinedButton(onClick = onLogout) {
                             Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null, modifier = Modifier.size(17.dp))
                             Spacer(Modifier.width(6.dp))
@@ -285,4 +411,44 @@ private fun <T> ChoiceRow(
             )
         }
     }
+}
+
+private const val MAX_PROFILE_AVATAR_BYTES = 2 * 1024 * 1024
+
+private fun readProfileAvatar(context: Context, uri: Uri): Pair<ProfileAvatarUpload, ByteArray> {
+    val resolver = context.contentResolver
+    val mimeType = resolver.getType(uri)?.lowercase()?.substringBefore(';')
+        ?: when (uri.toString().substringBefore('?').substringAfterLast('.').lowercase()) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            else -> ""
+        }
+    if (mimeType !in setOf("image/jpeg", "image/png", "image/webp")) {
+        throw IllegalArgumentException("Choose a JPEG, PNG, or WEBP avatar image.")
+    }
+    val bytes = ByteArrayOutputStream().use { output ->
+        resolver.openInputStream(uri)?.use { input ->
+            val buffer = ByteArray(16 * 1024)
+            var total = 0
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                total += count
+                if (total > MAX_PROFILE_AVATAR_BYTES) {
+                    throw IllegalArgumentException("Avatar images must be 2 MB or smaller.")
+                }
+                output.write(buffer, 0, count)
+            }
+        } ?: throw IllegalArgumentException("The avatar could not be read.")
+        output.toByteArray()
+    }
+    if (bytes.isEmpty() || BitmapFactory.decodeByteArray(bytes, 0, bytes.size) == null) {
+        throw IllegalArgumentException("Choose a valid JPEG, PNG, or WEBP avatar image.")
+    }
+    val fileName = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else null
+    }?.takeIf { it.isNotBlank() } ?: "avatar"
+    return ProfileAvatarUpload(fileName = fileName, mimeType = mimeType, bytes = bytes) to bytes
 }

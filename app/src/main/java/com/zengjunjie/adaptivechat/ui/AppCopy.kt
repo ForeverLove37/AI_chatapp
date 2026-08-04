@@ -15,6 +15,14 @@ data class AppCopy(
     val password: String,
     val conversations: String,
     val settings: String,
+    val profile: String,
+    val displayName: String,
+    val chooseAvatar: String,
+    val removeAvatar: String,
+    val saveProfile: String,
+    val savingProfile: String,
+    val profileSaved: String,
+    val avatarError: String,
     val language: String,
     val languageDetail: String,
     val appearance: String,
@@ -113,6 +121,15 @@ data class AppCopy(
             message == "The streaming request failed." -> "流式请求失败。"
             message == "Unable to check for updates." -> "无法检查更新。"
             message == "Unable to send feedback." -> "无法发送反馈。"
+            message == "Avatar images must be 2 MB or smaller." -> "头像图片不能超过 2 MB。"
+            message == "Choose a JPEG, PNG, or WEBP avatar image." -> "请选择 JPEG、PNG 或 WEBP 头像图片。"
+            message == "Choose a valid JPEG, PNG, or WEBP avatar image." -> "请选择有效的 JPEG、PNG 或 WEBP 头像图片。"
+            message == "The avatar image could not be decoded." -> "无法解析头像图片。"
+            message == "The avatar image could not be processed." -> "无法处理头像图片。"
+            message == "Unable to update your profile." -> "无法更新个人资料。"
+            message == "Unable to update the user profile." -> "无法更新个人资料。"
+            message == "A display name or avatar change is required." -> "请输入显示名称或选择头像变更。"
+            message == "Display name must be 80 characters or fewer." -> "显示名称不能超过 80 个字符。"
             message == "The server returned an incomplete sign-in response." -> "服务器返回了不完整的登录响应。"
             message == "The server returned an invalid response." -> "服务器返回了无效响应。"
             message == "Invalid email or password." -> "邮箱或密码无效。"
@@ -167,6 +184,14 @@ private val EnglishCopy = AppCopy(
     password = "Password",
     conversations = "Conversations",
     settings = "Settings",
+    profile = "Profile",
+    displayName = "Display name",
+    chooseAvatar = "Choose avatar",
+    removeAvatar = "Remove avatar",
+    saveProfile = "Save profile",
+    savingProfile = "Saving profile",
+    profileSaved = "Profile saved.",
+    avatarError = "The avatar could not be read.",
     language = "Language",
     languageDetail = "Choose how the app is displayed.",
     appearance = "Appearance",
@@ -241,6 +266,14 @@ private val ChineseCopy = AppCopy(
     password = "密码",
     conversations = "会话",
     settings = "设置",
+    profile = "个人资料",
+    displayName = "显示名称",
+    chooseAvatar = "选择头像",
+    removeAvatar = "移除头像",
+    saveProfile = "保存资料",
+    savingProfile = "正在保存资料",
+    profileSaved = "个人资料已保存。",
+    avatarError = "无法读取头像图片。",
     language = "语言",
     languageDetail = "选择应用显示语言。",
     appearance = "外观",

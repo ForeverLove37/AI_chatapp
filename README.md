@@ -16,7 +16,7 @@ The distributable debug APK is `app/build/outputs/apk/debug/app-debug.apk`. It i
 
 It supports image attachments using OpenAI Chat Completions `content` arrays, native speech-to-text, Edge TTS with an Android `TextToSpeech` fallback, Markdown response rendering, response copy/redo/listen actions, persisted conversation branches, and a per-query Web Search control. Destructive conversation and message operations require explicit confirmation; deleting a user message atomically deletes its paired AI response.
 
-The responsive Next.js Web Client mirrors channel/model selection, dynamic theme variables, ChatGPT/Gemini/DeepSeek presentation, Markdown, DeepSeek reasoning cards, attachments, speech controls, branching, destructive confirmations, and synchronized history. It uses the same account and Gateway APIs as Android.
+The responsive Next.js Web Client mirrors channel/model selection, dynamic theme variables, ChatGPT/Gemini/DeepSeek presentation, Markdown, DeepSeek reasoning cards, attachments, speech controls, branching, destructive confirmations, and synchronized history. Its Settings dialog persists language, light/dark/system appearance, and font scaling, and provides feedback plus profile editing. Android and Web both render the user's display name and avatar with deterministic initial fallbacks while authentication remains tied to the immutable account email and ID.
 
 Build the Android client without launching an emulator:
 
@@ -32,6 +32,8 @@ The Node/Hono gateway exposes OpenAI-compatible endpoints:
 - `POST /v1/chat/completions`
 - `GET /v1/models`
 - `GET /v1/config`
+- `GET|PATCH /v1/users/profile`
+- `GET /v1/users/avatars/:filename`
 - `GET|POST|PUT|DELETE /v1/sessions[/:id]`
 - `DELETE /v1/messages/:id`
 - `GET /health`
@@ -55,7 +57,7 @@ npm run dev --workspace @adaptive-chat/web
 
 ## Deployment
 
-Docker Compose persists PostgreSQL and Redis volumes and publishes the API/admin ports only to loopback for Nginx:
+Docker Compose persists PostgreSQL, Redis, backup artifacts, and normalized profile avatars in dedicated volumes and publishes the API/admin ports only to loopback for Nginx:
 
 ```bash
 docker compose up -d --build

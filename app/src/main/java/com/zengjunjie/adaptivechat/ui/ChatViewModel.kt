@@ -13,6 +13,7 @@ import com.zengjunjie.adaptivechat.data.ChatRepository
 import com.zengjunjie.adaptivechat.data.ChatSession
 import com.zengjunjie.adaptivechat.data.LanguagePreference
 import com.zengjunjie.adaptivechat.data.ProviderMode
+import com.zengjunjie.adaptivechat.data.ProfileAvatarUpload
 import com.zengjunjie.adaptivechat.data.RemoteAppVersion
 import com.zengjunjie.adaptivechat.data.SpeechPlayer
 import com.zengjunjie.adaptivechat.data.UserPreferences
@@ -51,6 +52,13 @@ sealed interface FeedbackState {
     data class Failure(val message: String) : FeedbackState
 }
 
+sealed interface ProfileUpdateState {
+    data object Idle : ProfileUpdateState
+    data object Saving : ProfileUpdateState
+    data object Saved : ProfileUpdateState
+    data class Failure(val message: String) : ProfileUpdateState
+}
+
 data class ChatUiState(
     val sessions: List<ChatSession> = emptyList(),
     val selectedSession: ChatSession? = null,
@@ -68,6 +76,7 @@ data class ChatUiState(
     val errorMessage: String? = null,
     val updateState: UpdateState = UpdateState.Idle,
     val feedbackState: FeedbackState = FeedbackState.Idle,
+    val profileUpdateState: ProfileUpdateState = ProfileUpdateState.Idle,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -84,6 +93,7 @@ class ChatViewModel(
     private val loginError = MutableStateFlow<String?>(null)
     private val updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
     private val feedbackState = MutableStateFlow<FeedbackState>(FeedbackState.Idle)
+    private val profileUpdateState = MutableStateFlow<ProfileUpdateState>(ProfileUpdateState.Idle)
     private val channelCatalog = MutableStateFlow(ProviderMode.entries)
     private val webSearchAvailable = MutableStateFlow(false)
 
@@ -136,6 +146,8 @@ class ChatViewModel(
         state.copy(updateState = update)
     }.combine(feedbackState) { state, feedback ->
         state.copy(feedbackState = feedback)
+    }.combine(profileUpdateState) { state, profileUpdate ->
+        state.copy(profileUpdateState = profileUpdate)
     }.combine(webSearchAvailable) { state, available ->
         state.copy(webSearchAvailable = available)
     }.stateIn(
@@ -161,6 +173,8 @@ class ChatViewModel(
                 .distinctUntilChanged()
                 .collectLatest { accessToken ->
                     if (!accessToken.isNullOrBlank()) {
+                        runCatching { repository.fetchProfile(accessToken) }
+                            .onSuccess { profile -> preferences.saveProfile(profile.email, profile.displayName, profile.avatarUrl) }
                         runCatching {
                             repository.synchronizeFromServer(accessToken)
                             repository.getOrCreateDefaultSession()
@@ -181,7 +195,9 @@ class ChatViewModel(
             isLoggingIn.value = true
             loginError.value = null
             runCatching { repository.login(normalizedEmail, password) }
-                .onSuccess { session -> preferences.saveSession(session.accessToken, session.email) }
+                .onSuccess { session ->
+                    preferences.saveSession(session.accessToken, session.email, session.displayName, session.avatarUrl)
+                }
                 .onFailure { error -> loginError.value = error.message ?: "Sign-in failed." }
             isLoggingIn.value = false
         }
@@ -194,6 +210,7 @@ class ChatViewModel(
         loginError.value = null
         updateState.value = UpdateState.Idle
         feedbackState.value = FeedbackState.Idle
+        profileUpdateState.value = ProfileUpdateState.Idle
     }
 
     fun selectSession(sessionId: String) {
@@ -355,6 +372,8 @@ class ChatViewModel(
         destination.value = AppDestination.SETTINGS
         updateState.value = UpdateState.Idle
         feedbackState.value = FeedbackState.Idle
+        profileUpdateState.value = ProfileUpdateState.Idle
+        refreshProfile()
     }
 
     fun closeSettings() {
@@ -366,6 +385,26 @@ class ChatViewModel(
     fun setAppearance(value: AppearancePreference) = preferences.setAppearance(value)
 
     fun setFontScale(value: Float) = preferences.setFontScale(value)
+
+    fun updateProfile(displayName: String, avatar: ProfileAvatarUpload?, removeAvatar: Boolean) {
+        val token = uiState.value.account.accessToken ?: return
+        if (profileUpdateState.value is ProfileUpdateState.Saving) return
+        viewModelScope.launch(Dispatchers.IO) {
+            profileUpdateState.value = ProfileUpdateState.Saving
+            runCatching { repository.updateProfile(token, displayName.trim(), avatar, removeAvatar) }
+                .onSuccess { profile ->
+                    preferences.saveProfile(profile.email, profile.displayName, profile.avatarUrl)
+                    profileUpdateState.value = ProfileUpdateState.Saved
+                }
+                .onFailure { error ->
+                    profileUpdateState.value = ProfileUpdateState.Failure(error.message ?: "Unable to update your profile.")
+                }
+        }
+    }
+
+    fun dismissProfileUpdateState() {
+        profileUpdateState.value = ProfileUpdateState.Idle
+    }
 
     fun checkForUpdates() {
         if (updateState.value is UpdateState.Checking) return
@@ -414,6 +453,14 @@ class ChatViewModel(
 
     fun dismissFeedbackState() {
         feedbackState.value = FeedbackState.Idle
+    }
+
+    private fun refreshProfile() {
+        val token = uiState.value.account.accessToken ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repository.fetchProfile(token) }
+                .onSuccess { profile -> preferences.saveProfile(profile.email, profile.displayName, profile.avatarUrl) }
+        }
     }
 
     private fun localeTag(preference: LanguagePreference) = when (preference) {

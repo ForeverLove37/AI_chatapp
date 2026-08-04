@@ -247,6 +247,9 @@ fun ChatScreen(
                 SessionDrawer(
                     sessions = state.sessions,
                     selectedSessionId = state.selectedSession?.id,
+                    displayName = state.account.displayName,
+                    email = state.account.email.orEmpty(),
+                    avatarUrl = state.account.avatarUrl,
                     onNewSession = viewModel::createSession,
                     onSelect = { sessionId ->
                         viewModel.selectSession(sessionId)
@@ -365,6 +368,12 @@ fun ChatScreen(
                 val deleting = pending.action == ConfirmedMessageAction.DELETE
                 AlertDialog(
                     onDismissRequest = { pendingMessageConfirmation = null },
+                    icon = {
+                        Icon(
+                            imageVector = if (deleting) Icons.Outlined.DeleteOutline else Icons.Outlined.AccountTree,
+                            contentDescription = null,
+                        )
+                    },
                     title = { Text(if (deleting) copy.deleteMessageTitle else copy.branchConversationTitle) },
                     text = { Text(if (deleting) copy.deleteMessagePrompt else copy.branchConversationPrompt) },
                     dismissButton = {
@@ -481,6 +490,9 @@ private fun GeminiGradientBackdrop() {
 private fun SessionDrawer(
     sessions: List<ChatSession>,
     selectedSessionId: String?,
+    displayName: String,
+    email: String,
+    avatarUrl: String,
     onNewSession: () -> Unit,
     onSelect: (String) -> Unit,
     onDelete: (ChatSession) -> Unit,
@@ -507,7 +519,10 @@ private fun SessionDrawer(
         }
         Spacer(Modifier.height(8.dp))
         HorizontalDivider()
-        LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(vertical = 8.dp),
+        ) {
             items(sessions, key = ChatSession::id) { session ->
                 val selected = session.id == selectedSessionId
                 Row(
@@ -535,6 +550,34 @@ private fun SessionDrawer(
                         Icon(Icons.Outlined.DeleteOutline, contentDescription = copy.delete, modifier = Modifier.size(18.dp))
                     }
                 }
+            }
+        }
+        HorizontalDivider()
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            UserAvatar(
+                displayName = displayName,
+                email = email,
+                avatarUrl = avatarUrl,
+                modifier = Modifier.size(36.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = displayName.ifBlank { email },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = email,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -655,6 +698,9 @@ private fun ChatContent(
                         message = message,
                         provider = state.provider,
                         modelLabel = messageModelLabel(message, state.channels, state.provider, copy),
+                        profileDisplayName = state.account.displayName,
+                        profileEmail = state.account.email.orEmpty(),
+                        profileAvatarUrl = state.account.avatarUrl,
                         isWaitingForFirstToken = state.isWaitingForFirstToken && message.isStreaming,
                         isTerminalUser = message.role == MessageRole.USER && message.id == terminalUserId,
                         interactionsLocked = state.isStreaming,
@@ -855,6 +901,9 @@ private fun MessageItem(
     message: ChatMessage,
     provider: ProviderMode,
     modelLabel: String,
+    profileDisplayName: String,
+    profileEmail: String,
+    profileAvatarUrl: String,
     isWaitingForFirstToken: Boolean,
     isTerminalUser: Boolean,
     interactionsLocked: Boolean,
@@ -945,6 +994,27 @@ private fun MessageItem(
                     ),
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
+                    if (fromUser) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            UserAvatar(
+                                displayName = profileDisplayName,
+                                email = profileEmail,
+                                avatarUrl = profileAvatarUrl,
+                                modifier = Modifier.size(24.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = profileDisplayName.ifBlank { profileEmail },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                        Spacer(Modifier.height(7.dp))
+                    }
                     if (!fromUser) {
                         Text(
                             text = modelLabel,

@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -33,6 +34,20 @@ data class StreamChunk(
 data class LoginResult(
     val accessToken: String,
     val email: String,
+    val displayName: String,
+    val avatarUrl: String,
+)
+
+data class UserProfile(
+    val email: String,
+    val displayName: String,
+    val avatarUrl: String,
+)
+
+data class ProfileAvatarUpload(
+    val fileName: String,
+    val mimeType: String,
+    val bytes: ByteArray,
 )
 
 data class RemoteAppVersion(
@@ -346,7 +361,57 @@ class ChatApi(baseUrl: String) {
         val token = body.optString("token")
         val userEmail = user?.optString("email").orEmpty()
         if (token.isBlank() || userEmail.isBlank()) throw IOException("The server returned an incomplete sign-in response.")
-        LoginResult(accessToken = token, email = userEmail)
+        LoginResult(
+            accessToken = token,
+            email = userEmail,
+            displayName = user?.optString("displayName").orEmpty(),
+            avatarUrl = resolvePublicUrl(user?.optString("avatarUrl").orEmpty()),
+        )
+    }
+
+    suspend fun fetchProfile(accessToken: String): UserProfile = requestJson(
+        path = "/v1/users/profile",
+        method = "GET",
+        accessToken = accessToken,
+    ) { body -> parseUserProfile(body.optJSONObject("data")) }
+
+    suspend fun updateProfile(
+        accessToken: String,
+        displayName: String,
+        avatar: ProfileAvatarUpload?,
+        removeAvatar: Boolean,
+    ): UserProfile = withContext(Dispatchers.IO) {
+        val multipart = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("displayName", displayName.trim())
+            .apply {
+                if (avatar != null) {
+                    addFormDataPart(
+                        "avatar",
+                        avatar.fileName,
+                        avatar.bytes.toRequestBody(avatar.mimeType.toMediaType()),
+                    )
+                }
+                if (removeAvatar) addFormDataPart("removeAvatar", "true")
+            }
+            .build()
+        val request = Request.Builder()
+            .url("$baseEndpoint/v1/users/profile")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer $accessToken")
+            .patch(multipart)
+            .build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            val parsed = runCatching { JSONObject(body) }.getOrNull()
+            if (!response.isSuccessful) {
+                val message = parsed?.optJSONObject("error")?.optString("message")
+                    ?.takeIf(String::isNotBlank)
+                    ?: "Request failed with HTTP ${response.code}."
+                throw IOException(message)
+            }
+            parseUserProfile(parsed?.optJSONObject("data"))
+        }
     }
 
     suspend fun checkForUpdate(accessToken: String, versionCode: Int, versionName: String): UpdateCheckResult = postJson(
@@ -447,6 +512,16 @@ class ChatApi(baseUrl: String) {
             }
             transform(parsed ?: JSONObject())
         }
+    }
+
+    private fun parseUserProfile(user: JSONObject?): UserProfile {
+        val email = user?.optString("email").orEmpty()
+        if (email.isBlank()) throw IOException("The server returned an incomplete profile response.")
+        return UserProfile(
+            email = email,
+            displayName = user?.optString("displayName").orEmpty(),
+            avatarUrl = resolvePublicUrl(user?.optString("avatarUrl").orEmpty()),
+        )
     }
 }
 

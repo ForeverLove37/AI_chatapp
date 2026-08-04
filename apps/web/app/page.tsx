@@ -8,7 +8,9 @@ import {
   Copy,
   Edit3,
   FileImage,
+  GitFork,
   Globe2,
+  ImagePlus,
   LogOut,
   Menu,
   MessageSquarePlus,
@@ -17,10 +19,13 @@ import {
   Network,
   PanelLeftClose,
   RefreshCw,
+  Save,
   Send,
+  Settings,
   Sparkles,
   Sun,
   Trash2,
+  UserRound,
   Volume2,
   X,
 } from "lucide-react";
@@ -40,8 +45,17 @@ const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://chatapi.zengj
 const AUTO_SCROLL_EDGE_PX = 56;
 
 type Language = "en" | "zh";
-type Theme = "light" | "dark";
+type LanguagePreference = "system" | Language;
+type Theme = "system" | "light" | "dark";
 type Role = "user" | "assistant" | "system";
+type UserProfile = {
+  id: string;
+  email: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  role?: "admin" | "standard";
+  status?: "active" | "suspended";
+};
 
 type ChannelModel = { id: string; label: string; description: string };
 type Channel = {
@@ -91,14 +105,15 @@ type ChatSession = {
   updatedAt: number;
   messages: ChatMessage[];
 };
-type Confirmation = { title: string; body: string; confirm: string; run: () => void };
+type Confirmation = { kind: "delete" | "branch"; title: string; body: string; confirm: string; run: () => void };
 
 const COPY = {
   en: {
     product: "Adaptive Chat", synchronized: "Synchronized workspace", email: "Email", password: "Password",
     signIn: "Sign in", signingIn: "Signing in", noRegistration: "Accounts are created by an administrator.",
     newChat: "New conversation", conversations: "Conversations", noHistory: "No conversations yet", signOut: "Sign out",
-    channel: "Channel", model: "Model", light: "Light theme", dark: "Dark theme", language: "Language",
+    channel: "Channel", model: "Model", light: "Light", dark: "Dark", system: "System", language: "Language",
+    settings: "Settings", settingsTitle: "Workspace settings", profile: "Profile", displayName: "Display name", avatar: "Avatar", chooseAvatar: "Choose avatar", removeAvatar: "Remove avatar", saveProfile: "Save profile", saving: "Saving", saved: "Saved", appearance: "Appearance", fontSize: "Font size", fontSizeDetail: "Adjust interface text", feedback: "Feedback", feedbackDetail: "Send a note to the product team", feedbackPrompt: "What would you like to share?", sendFeedback: "Send feedback", feedbackSent: "Feedback sent.", sendingFeedback: "Sending feedback",
     welcome: "How can I help?", welcomeDetail: "Choose a channel and start a synchronized conversation.",
     placeholder: "Message Adaptive Chat", send: "Send", attach: "Attach image", voice: "Voice input",
     webSearch: "Web search", webSearchOn: "Web search enabled for this prompt", remove: "Remove attachment",
@@ -107,15 +122,16 @@ const COPY = {
     deleteMessage: "Delete message?", deleteMessageBody: "The message will be permanently removed. A user prompt and its paired AI response are deleted together.",
     deleteChat: "Delete conversation?", deleteChatBody: "The conversation and all of its messages will be permanently removed.",
     createBranch: "Create conversation branch?", createBranchBody: "A separate synchronized conversation will be created from this point.",
-    cancel: "Cancel", confirm: "Confirm", editing: "Editing message", stopEditing: "Cancel editing",
+    cancel: "Cancel", confirm: "Confirm", editing: "Editing message", stopEditing: "Cancel editing", close: "Close", small: "Small", large: "Large",
     syncError: "Unable to synchronize conversations.", loginError: "Unable to sign in.", requestError: "The response could not be completed.",
-    menu: "Open conversations", closeSidebar: "Close conversations", account: "Account",
+    menu: "Open conversations", closeSidebar: "Close conversations", account: "Account", profileError: "Unable to update your profile.", feedbackError: "Unable to send feedback.", avatarTooLarge: "Avatar images must be 2 MB or smaller.", avatarTypeError: "Choose a JPEG, PNG, or WEBP avatar image.",
   },
   zh: {
     product: "Adaptive Chat", synchronized: "跨端同步工作区", email: "邮箱", password: "密码",
     signIn: "登录", signingIn: "正在登录", noRegistration: "账号仅由管理员创建。",
     newChat: "新建会话", conversations: "会话", noHistory: "暂无会话", signOut: "退出登录",
-    channel: "频道", model: "模型", light: "浅色主题", dark: "深色主题", language: "语言",
+    channel: "频道", model: "模型", light: "浅色", dark: "深色", system: "跟随系统", language: "语言",
+    settings: "设置", settingsTitle: "工作区设置", profile: "个人资料", displayName: "显示名称", avatar: "头像", chooseAvatar: "选择头像", removeAvatar: "移除头像", saveProfile: "保存资料", saving: "正在保存", saved: "已保存", appearance: "外观", fontSize: "文字大小", fontSizeDetail: "调整界面文字", feedback: "反馈", feedbackDetail: "向产品团队发送反馈", feedbackPrompt: "想和我们分享什么？", sendFeedback: "发送反馈", feedbackSent: "反馈已发送。", sendingFeedback: "正在发送反馈",
     welcome: "有什么可以帮你？", welcomeDetail: "选择频道并开始一段跨端同步的对话。",
     placeholder: "发送消息给 Adaptive Chat", send: "发送", attach: "添加图片", voice: "语音输入",
     webSearch: "网页搜索", webSearchOn: "本次提问已启用网页搜索", remove: "移除附件",
@@ -124,9 +140,9 @@ const COPY = {
     deleteMessage: "删除消息？", deleteMessageBody: "该消息将被永久删除。删除用户消息时，其配对的 AI 回复也会一并删除。",
     deleteChat: "删除会话？", deleteChatBody: "该会话及其全部消息将被永久删除。",
     createBranch: "创建会话分支？", createBranchBody: "将从当前位置创建一个独立且同步的新会话。",
-    cancel: "取消", confirm: "确认", editing: "正在编辑消息", stopEditing: "取消编辑",
+    cancel: "取消", confirm: "确认", editing: "正在编辑消息", stopEditing: "取消编辑", close: "关闭", small: "小", large: "大",
     syncError: "无法同步会话。", loginError: "无法登录。", requestError: "未能完成响应。",
-    menu: "打开会话列表", closeSidebar: "关闭会话列表", account: "账号",
+    menu: "打开会话列表", closeSidebar: "关闭会话列表", account: "账号", profileError: "无法更新个人资料。", feedbackError: "无法发送反馈。", avatarTooLarge: "头像不能超过 2 MB。", avatarTypeError: "请选择 JPEG、PNG 或 WEBP 图片。",
   },
 } as const;
 
@@ -140,7 +156,7 @@ async function api<T>(path: string, token?: string, init: RequestInit = {}): Pro
     cache: "no-store",
     headers: {
       Accept: "application/json",
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      ...(typeof init.body === "string" ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init.headers,
     },
@@ -254,6 +270,33 @@ function Markdown({ value }: { value: string }) {
   );
 }
 
+function profileLabel(profile: UserProfile | null, email: string) {
+  return profile?.displayName?.trim() || profile?.email || email || "User";
+}
+
+function UserAvatar({ profile, email, previewUrl = "" }: { profile: UserProfile | null; email: string; previewUrl?: string }) {
+  const label = profileLabel(profile, email);
+  const src = previewUrl || profile?.avatarUrl || "";
+  let hash = 0;
+  for (const character of label.toLowerCase()) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+  const style = { "--avatar-hue": String(Math.abs(hash) % 360) } as CSSProperties;
+  return src
+    ? <img className="user-avatar" src={src} alt={label} />
+    : <span className="user-avatar user-avatar-fallback" style={style} aria-label={label}>{label.slice(0, 1).toUpperCase()}</span>;
+}
+
+function localizeProfileError(message: string, copy: (typeof COPY)[Language]) {
+  if (copy === COPY.zh) {
+    if (message === "Avatar images must be 2 MB or smaller.") return copy.avatarTooLarge;
+    if (message === "Choose a JPEG, PNG, or WEBP avatar image.") return copy.avatarTypeError;
+    if (message === "Choose a valid JPEG, PNG, or WEBP avatar image.") return copy.avatarTypeError;
+    if (message === "The avatar image could not be decoded.") return "无法解析头像图片。";
+    if (message === "The avatar image could not be processed.") return "无法处理头像图片。";
+    if (message === "Unable to update your profile.") return copy.profileError;
+  }
+  return message;
+}
+
 export default function WebChat() {
   const [token, setToken] = useState("");
   const [email, setEmail] = useState("");
@@ -270,14 +313,30 @@ export default function WebChat() {
   const [streaming, setStreaming] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [error, setError] = useState("");
-  const [theme, setTheme] = useState<Theme>("light");
-  const [language, setLanguage] = useState<Language>("en");
+  const [theme, setTheme] = useState<Theme>("system");
+  const [language, setLanguage] = useState<LanguagePreference>("system");
+  const [systemDark, setSystemDark] = useState(false);
+  const [systemLanguage, setSystemLanguage] = useState<Language>("en");
+  const [fontScale, setFontScale] = useState(1);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [profileDraft, setProfileDraft] = useState("");
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState("");
+  const [removeAvatar, setRemoveAvatar] = useState(false);
+  const [profileStatus, setProfileStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [settingsError, setSettingsError] = useState("");
+  const [feedbackDraft, setFeedbackDraft] = useState("");
+  const [feedbackStatus, setFeedbackStatus] = useState<"idle" | "sending" | "sent">("idle");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const avatarInput = useRef<HTMLInputElement>(null);
   const messageViewport = useRef<HTMLDivElement>(null);
   const autoScrollPaused = useRef(false);
-  const copy = COPY[language];
+  const effectiveTheme: Exclude<Theme, "system"> = theme === "system" ? (systemDark ? "dark" : "light") : theme;
+  const effectiveLanguage: Language = language === "system" ? systemLanguage : language;
+  const copy = COPY[effectiveLanguage];
 
   const selected = sessions.find((session) => session.id === selectedId) ?? sessions[0];
   const channel = config?.channels.find((item) => item.id === selected?.channelId)
@@ -297,36 +356,77 @@ export default function WebChat() {
     }
   }, [copy.syncError]);
 
+  const loadProfile = useCallback(async (currentToken: string) => {
+    const result = await api<{ data: UserProfile }>("/v1/users/profile", currentToken);
+    setProfile(result.data);
+    setEmail(result.data.email);
+    localStorage.setItem("adaptive-chat-email", result.data.email);
+    localStorage.setItem("adaptive-chat-profile", JSON.stringify(result.data));
+    return result.data;
+  }, []);
+
   useEffect(() => {
     const storedToken = localStorage.getItem("adaptive-chat-token") ?? "";
     const storedEmail = localStorage.getItem("adaptive-chat-email") ?? "";
     const storedTheme = localStorage.getItem("adaptive-chat-theme") as Theme | null;
-    const storedLanguage = localStorage.getItem("adaptive-chat-language") as Language | null;
+    const storedLanguage = localStorage.getItem("adaptive-chat-language") as LanguagePreference | null;
+    const storedFontScale = Number(localStorage.getItem("adaptive-chat-font-scale") ?? "1");
+    const storedProfile = localStorage.getItem("adaptive-chat-profile");
     setToken(storedToken);
     setEmail(storedEmail);
-    if (storedTheme === "light" || storedTheme === "dark") setTheme(storedTheme);
-    if (storedLanguage === "en" || storedLanguage === "zh") setLanguage(storedLanguage);
+    if (storedTheme === "system" || storedTheme === "light" || storedTheme === "dark") setTheme(storedTheme);
+    if (storedLanguage === "system" || storedLanguage === "en" || storedLanguage === "zh") setLanguage(storedLanguage);
+    if (Number.isFinite(storedFontScale)) setFontScale(Math.min(1.3, Math.max(0.85, storedFontScale)));
+    if (storedProfile) {
+      try { setProfile(JSON.parse(storedProfile) as UserProfile); } catch { localStorage.removeItem("adaptive-chat-profile"); }
+    }
     void api<RemoteConfig>("/v1/config").then(setConfig).catch(() => setConfig(null));
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const updateSystemPreferences = () => {
+      setSystemDark(media.matches);
+      setSystemLanguage(navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en");
+    };
+    updateSystemPreferences();
+    media.addEventListener("change", updateSystemPreferences);
+    return () => media.removeEventListener("change", updateSystemPreferences);
   }, []);
 
   useEffect(() => {
     if (!token) return;
     void loadSessions(token);
+    void loadProfile(token).catch(() => undefined);
     const interval = window.setInterval(() => {
       if (!streaming && !document.hidden) void loadSessions(token, true);
     }, 2_000);
-    return () => window.clearInterval(interval);
-  }, [loadSessions, streaming, token]);
+    const profileInterval = window.setInterval(() => {
+      if (!document.hidden) void loadProfile(token).catch(() => undefined);
+    }, 30_000);
+    return () => {
+      window.clearInterval(interval);
+      window.clearInterval(profileInterval);
+    };
+  }, [loadProfile, loadSessions, streaming, token]);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.theme = effectiveTheme;
     localStorage.setItem("adaptive-chat-theme", theme);
-  }, [theme]);
+  }, [effectiveTheme, theme]);
 
   useEffect(() => {
-    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+    document.documentElement.lang = effectiveLanguage === "zh" ? "zh-CN" : "en";
     localStorage.setItem("adaptive-chat-language", language);
-  }, [language]);
+  }, [effectiveLanguage, language]);
+
+  useEffect(() => {
+    localStorage.setItem("adaptive-chat-font-scale", String(fontScale));
+  }, [fontScale]);
+
+  useEffect(() => () => {
+    if (avatarPreview) URL.revokeObjectURL(avatarPreview);
+  }, [avatarPreview]);
 
   useEffect(() => {
     autoScrollPaused.current = false;
@@ -369,13 +469,15 @@ export default function WebChat() {
     setLoginPending(true);
     setLoginError("");
     try {
-      const result = await api<{ token: string; user: { email: string } }>("/v1/auth/login", undefined, {
+      const result = await api<{ token: string; user: UserProfile }>("/v1/auth/login", undefined, {
         method: "POST",
         body: JSON.stringify({ email: email.trim(), password }),
       });
       localStorage.setItem("adaptive-chat-token", result.token);
       localStorage.setItem("adaptive-chat-email", result.user.email);
+      localStorage.setItem("adaptive-chat-profile", JSON.stringify(result.user));
       setEmail(result.user.email);
+      setProfile(result.user);
       setPassword("");
       setToken(result.token);
     } catch (cause) {
@@ -388,10 +490,89 @@ export default function WebChat() {
   function logout() {
     localStorage.removeItem("adaptive-chat-token");
     localStorage.removeItem("adaptive-chat-email");
+    localStorage.removeItem("adaptive-chat-profile");
     setToken("");
+    setProfile(null);
     setSessions([]);
     setSelectedId("");
     setDraft("");
+    setSettingsOpen(false);
+  }
+
+  function openSettings() {
+    setProfileDraft(profile?.displayName ?? "");
+    setAvatarFile(null);
+    setAvatarPreview("");
+    setRemoveAvatar(false);
+    setProfileStatus("idle");
+    setFeedbackStatus("idle");
+    setSettingsError("");
+    setSidebarOpen(false);
+    setSettingsOpen(true);
+  }
+
+  function selectAvatar(files: FileList | null) {
+    const file = files?.[0];
+    if (!file) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      setSettingsError(copy.avatarTypeError);
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setSettingsError(copy.avatarTooLarge);
+      return;
+    }
+    setSettingsError("");
+    setAvatarFile(file);
+    setAvatarPreview(URL.createObjectURL(file));
+    setRemoveAvatar(false);
+    setProfileStatus("idle");
+  }
+
+  async function saveProfile() {
+    if (profileStatus === "saving") return;
+    setProfileStatus("saving");
+    setSettingsError("");
+    try {
+      const form = new FormData();
+      form.set("displayName", profileDraft.trim());
+      if (avatarFile) form.set("avatar", avatarFile, avatarFile.name);
+      if (removeAvatar) form.set("removeAvatar", "true");
+      const result = await api<{ data: UserProfile }>("/v1/users/profile", token, { method: "PATCH", body: form });
+      setProfile(result.data);
+      setEmail(result.data.email);
+      localStorage.setItem("adaptive-chat-profile", JSON.stringify(result.data));
+      localStorage.setItem("adaptive-chat-email", result.data.email);
+      setAvatarFile(null);
+      setAvatarPreview("");
+      setRemoveAvatar(false);
+      setProfileStatus("saved");
+    } catch (cause) {
+      setProfileStatus("idle");
+      setSettingsError(cause instanceof Error ? localizeProfileError(cause.message, copy) : copy.profileError);
+    }
+  }
+
+  async function submitSettingsFeedback() {
+    if (feedbackDraft.trim().length < 3 || feedbackStatus === "sending") return;
+    setFeedbackStatus("sending");
+    setSettingsError("");
+    try {
+      await api("/v1/app/feedback", token, {
+        method: "POST",
+        body: JSON.stringify({
+          message: feedbackDraft.trim(),
+          category: "general",
+          appVersion: "web",
+          locale: language === "system" ? "system" : effectiveLanguage === "zh" ? "zh-CN" : "en",
+        }),
+      });
+      setFeedbackDraft("");
+      setFeedbackStatus("sent");
+    } catch (cause) {
+      setFeedbackStatus("idle");
+      setSettingsError(cause instanceof Error ? cause.message : copy.feedbackError);
+    }
   }
 
   async function createSession(preferredChannel = channel) {
@@ -619,6 +800,7 @@ export default function WebChat() {
 
   function confirmMessageDeletion(message: ChatMessage) {
     setConfirmation({
+      kind: "delete",
       title: copy.deleteMessage,
       body: copy.deleteMessageBody,
       confirm: copy.delete,
@@ -634,6 +816,7 @@ export default function WebChat() {
 
   function confirmSessionDeletion(session: ChatSession) {
     setConfirmation({
+      kind: "delete",
       title: copy.deleteChat,
       body: copy.deleteChatBody,
       confirm: copy.delete,
@@ -672,6 +855,7 @@ export default function WebChat() {
 
   function confirmBranch(message: ChatMessage) {
     setConfirmation({
+      kind: "branch",
       title: copy.createBranch,
       body: copy.createBranchBody,
       confirm: copy.branch,
@@ -712,12 +896,15 @@ export default function WebChat() {
     const Recognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
     if (!Recognition) return;
     const recognition = new Recognition();
-    recognition.lang = language === "zh" ? "zh-CN" : "en-US";
+    recognition.lang = effectiveLanguage === "zh" ? "zh-CN" : "en-US";
     recognition.onresult = (event) => setDraft((current) => `${current}${current ? " " : ""}${event.results[0][0].transcript}`);
     recognition.start();
   }
 
-  const shellStyle = useMemo(() => channel ? channelVariables(channel, theme) : {}, [channel, theme]);
+  const shellStyle = useMemo(() => ({
+    ...(channel ? channelVariables(channel, effectiveTheme) : {}),
+    "--font-scale": String(fontScale),
+  }) as CSSProperties, [channel, effectiveTheme, fontScale]);
   const terminalUserId = [...(selected?.messages ?? [])].reverse().find((message) => message.role === "user")?.id;
 
   if (!token) {
@@ -739,7 +926,7 @@ export default function WebChat() {
             </button>
           </form>
           <small>{copy.noRegistration}</small>
-          <button className="language-switch" onClick={() => setLanguage(language === "en" ? "zh" : "en")}>{language === "en" ? "中文" : "English"}</button>
+          <button className="language-switch" onClick={() => setLanguage(effectiveLanguage === "en" ? "zh" : "en")}>{effectiveLanguage === "en" ? "中文" : "English"}</button>
         </section>
       </main>
     );
@@ -768,7 +955,9 @@ export default function WebChat() {
           ))}
         </nav>
         <div className="sidebar-account">
-          <div><span>{copy.account}</span><strong>{email}</strong></div>
+          <UserAvatar profile={profile} email={email} />
+          <div><strong>{profileLabel(profile, email)}</strong><span>{profile?.email ?? email}</span></div>
+          <button className="icon-command" title={copy.settings} aria-label={copy.settings} onClick={openSettings}><Settings size={18} /></button>
           <button className="icon-command" title={copy.signOut} aria-label={copy.signOut} onClick={logout}><LogOut size={18} /></button>
         </div>
       </aside>
@@ -799,10 +988,11 @@ export default function WebChat() {
             </label>
           </div>
           <div className="header-actions">
-            <button className="icon-command" title={copy.language} aria-label={copy.language} onClick={() => setLanguage(language === "en" ? "zh" : "en")}>{language === "en" ? "中" : "EN"}</button>
-            <button className="icon-command" title={theme === "light" ? copy.dark : copy.light} aria-label={theme === "light" ? copy.dark : copy.light} onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
-              {theme === "light" ? <Moon size={19} /> : <Sun size={19} />}
+            <button className="icon-command quick-setting" title={copy.language} aria-label={copy.language} onClick={() => setLanguage(effectiveLanguage === "en" ? "zh" : "en")}>{effectiveLanguage === "en" ? "中" : "EN"}</button>
+            <button className="icon-command quick-setting" title={effectiveTheme === "light" ? copy.dark : copy.light} aria-label={effectiveTheme === "light" ? copy.dark : copy.light} onClick={() => setTheme(effectiveTheme === "light" ? "dark" : "light")}>
+              {effectiveTheme === "light" ? <Moon size={19} /> : <Sun size={19} />}
             </button>
+            <button className="icon-command" title={copy.settings} aria-label={copy.settings} onClick={openSettings}><Settings size={19} /></button>
           </div>
         </header>
 
@@ -826,6 +1016,7 @@ export default function WebChat() {
                       </details>
                     )}
                     <div className="message-bubble">
+                      {user && <div className="user-identity"><UserAvatar profile={profile} email={email} /><strong>{profileLabel(profile, email)}</strong></div>}
                       {!user && <div className="message-model">{channel?.displayName} · {channel?.models.find((item) => item.id === message.modelId)?.label ?? message.modelId}</div>}
                       {message.attachments.length > 0 && <div className="message-attachments">{message.attachments.map((item) => <img key={item.dataUrl} src={item.dataUrl} alt={item.fileName} />)}</div>}
                       {message.content && <Markdown value={message.content} />}
@@ -843,7 +1034,7 @@ export default function WebChat() {
                         <>
                           <button title={copy.redo} disabled={streaming} onClick={() => void redo(message)}><RefreshCw size={15} />{copy.redo}</button>
                           <button title={copy.copy} disabled={!message.content} onClick={() => void navigator.clipboard.writeText(message.content)}><Clipboard size={15} />{copy.copy}</button>
-                          <button title={copy.branch} disabled={streaming} onClick={() => confirmBranch(message)}><Network size={15} />{copy.branch}</button>
+                          <button title={copy.branch} disabled={streaming} onClick={() => confirmBranch(message)}><GitFork size={15} />{copy.branch}</button>
                           <button title={copy.listen} disabled={!message.content} onClick={() => void listen(message).catch(() => setError(copy.requestError))}><Volume2 size={15} />{copy.listen}</button>
                           <button title={copy.delete} disabled={streaming} onClick={() => confirmMessageDeletion(message)}><Trash2 size={15} />{copy.delete}</button>
                         </>
@@ -882,15 +1073,98 @@ export default function WebChat() {
       </section>
 
       {sidebarOpen && <button className="sidebar-scrim mobile-only" aria-label={copy.closeSidebar} onClick={() => setSidebarOpen(false)} />}
+      {settingsOpen && (
+        <div
+          className="settings-backdrop"
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false); }}
+        >
+          <section className="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+            <header className="settings-heading">
+              <div><span>{copy.settings}</span><h2 id="settings-title">{copy.settingsTitle}</h2></div>
+              <button className="icon-command" title={copy.close} aria-label={copy.close} onClick={() => setSettingsOpen(false)}><X size={19} /></button>
+            </header>
+
+            <div className="settings-section">
+              <div className="settings-section-heading"><UserRound size={18} /><div><strong>{copy.profile}</strong><span>{profile?.email ?? email}</span></div></div>
+              <div className="profile-editor">
+                <div className="settings-avatar">
+                  <UserAvatar
+                    profile={removeAvatar && profile ? { ...profile, avatarUrl: null } : profile}
+                    email={email}
+                    previewUrl={avatarPreview}
+                  />
+                </div>
+                <div className="avatar-commands">
+                  <input ref={avatarInput} hidden type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => selectAvatar(event.target.files)} />
+                  <button type="button" onClick={() => avatarInput.current?.click()}><ImagePlus size={17} />{copy.chooseAvatar}</button>
+                  <button
+                    type="button"
+                    disabled={!avatarFile && (!profile?.avatarUrl || removeAvatar)}
+                    onClick={() => { setAvatarFile(null); setAvatarPreview(""); setRemoveAvatar(true); setProfileStatus("idle"); }}
+                  ><Trash2 size={17} />{copy.removeAvatar}</button>
+                </div>
+              </div>
+              <label className="settings-field">{copy.displayName}<input maxLength={80} autoComplete="name" value={profileDraft} onChange={(event) => { setProfileDraft(event.target.value); setProfileStatus("idle"); }} /></label>
+              <button className="settings-primary" type="button" disabled={profileStatus === "saving"} onClick={() => void saveProfile()}>
+                {profileStatus === "saving" ? <RefreshCw className="spin" size={17} /> : profileStatus === "saved" ? <Check size={17} /> : <Save size={17} />}
+                {profileStatus === "saving" ? copy.saving : profileStatus === "saved" ? copy.saved : copy.saveProfile}
+              </button>
+            </div>
+
+            <div className="settings-section">
+              <div className="settings-section-heading"><Sun size={18} /><strong>{copy.appearance}</strong></div>
+              <div className="settings-segments">
+                {(["system", "light", "dark"] as Theme[]).map((value) => (
+                  <button key={value} type="button" aria-pressed={theme === value} className={theme === value ? "segment-active" : ""} onClick={() => setTheme(value)}>
+                    {value === "system" ? copy.system : value === "light" ? copy.light : copy.dark}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-section">
+              <div className="settings-section-heading"><Globe2 size={18} /><strong>{copy.language}</strong></div>
+              <div className="settings-segments">
+                {(["system", "en", "zh"] as LanguagePreference[]).map((value) => (
+                  <button key={value} type="button" aria-pressed={language === value} className={language === value ? "segment-active" : ""} onClick={() => setLanguage(value)}>
+                    {value === "system" ? copy.system : value === "en" ? "English" : "中文"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-section">
+              <div className="settings-section-heading"><Settings size={18} /><div><strong>{copy.fontSize}</strong><span>{copy.fontSizeDetail}</span></div></div>
+              <div className="font-scale-control"><span>{copy.small}</span><input aria-label={copy.fontSize} type="range" min="0.85" max="1.3" step="0.05" value={fontScale} onChange={(event) => setFontScale(Number(event.target.value))} /><span>{copy.large}</span></div>
+            </div>
+
+            <div className="settings-section">
+              <div className="settings-section-heading"><MessageSquarePlus size={18} /><div><strong>{copy.feedback}</strong><span>{copy.feedbackDetail}</span></div></div>
+              <textarea className="feedback-field" rows={4} maxLength={4000} value={feedbackDraft} placeholder={copy.feedbackPrompt} onChange={(event) => { setFeedbackDraft(event.target.value); setFeedbackStatus("idle"); }} />
+              <button className="settings-primary" type="button" disabled={feedbackDraft.trim().length < 3 || feedbackStatus === "sending"} onClick={() => void submitSettingsFeedback()}>
+                {feedbackStatus === "sending" ? <RefreshCw className="spin" size={17} /> : feedbackStatus === "sent" ? <Check size={17} /> : <Send size={17} />}
+                {feedbackStatus === "sending" ? copy.sendingFeedback : feedbackStatus === "sent" ? copy.feedbackSent : copy.sendFeedback}
+              </button>
+            </div>
+
+            {settingsError && <div className="settings-error">{settingsError}</div>}
+          </section>
+        </div>
+      )}
       {confirmation && (
         <div className="modal-backdrop" role="presentation">
           <div className="confirmation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
-            <div className="confirm-icon"><Trash2 size={20} /></div>
+            <div className={`confirm-icon ${confirmation.kind === "branch" ? "branch-confirm-icon" : ""}`}>
+              {confirmation.kind === "branch" ? <GitFork size={20} /> : <Trash2 size={20} />}
+            </div>
             <h2 id="confirm-title">{confirmation.title}</h2>
             <p>{confirmation.body}</p>
             <div className="dialog-actions">
               <button onClick={() => setConfirmation(null)}>{copy.cancel}</button>
-              <button className="danger-command" onClick={() => { const action = confirmation.run; setConfirmation(null); action(); }}><Trash2 size={16} />{confirmation.confirm}</button>
+              <button className={confirmation.kind === "branch" ? "branch-command" : "danger-command"} onClick={() => { const action = confirmation.run; setConfirmation(null); action(); }}>
+                {confirmation.kind === "branch" ? <GitFork size={16} /> : <Trash2 size={16} />}{confirmation.confirm}
+              </button>
             </div>
           </div>
         </div>

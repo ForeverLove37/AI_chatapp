@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./index.js";
 import { MemoryEnterpriseStore } from "./enterprise.js";
@@ -550,6 +554,88 @@ describe("Adaptive Chat API", () => {
       body: JSON.stringify({ model: "chatgpt-lite", messages: [{ role: "user", content: "hello" }] }),
     });
     expect(chat.status).toBe(200);
+  });
+
+  it("updates presentation profiles without changing email authentication", async () => {
+    const avatarStorageDir = await mkdtemp(join(tmpdir(), "adaptive-chat-avatar-test-"));
+    try {
+      const app = createApp({
+        requireClientAuth: true,
+        avatarStorageDir,
+        publicApiBaseUrl: "https://chatapi.example.test",
+      });
+      const adminHeaders = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+      await app.request("/admin/users", {
+        method: "POST",
+        headers: adminHeaders,
+        body: JSON.stringify({
+          email: "profile@example.test",
+          password: "profile-password",
+          role: "standard",
+          rpmLimit: 60,
+          dailyLimit: 1_000,
+        }),
+      });
+      const login = await app.request("/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "profile@example.test", password: "profile-password" }),
+      });
+      const loginBody = await login.json();
+      const token = loginBody.token as string;
+      expect(loginBody.user).toMatchObject({
+        email: "profile@example.test",
+        displayName: null,
+        avatarUrl: null,
+      });
+      expect((await app.request("/v1/users/profile")).status).toBe(401);
+
+      const avatar = await sharp({
+        create: { width: 96, height: 64, channels: 4, background: "#087f73" },
+      }).png().toBuffer();
+      const form = new FormData();
+      form.set("displayName", "Ada Lovelace");
+      form.set("avatar", new File([avatar], "avatar.png", { type: "image/png" }));
+      const updated = await app.request("/v1/users/profile", {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      expect(updated.status).toBe(200);
+      const profile = (await updated.json()).data;
+      expect(profile).toMatchObject({ email: "profile@example.test", displayName: "Ada Lovelace" });
+      expect(profile.avatarUrl).toMatch(/^https:\/\/chatapi\.example\.test\/v1\/users\/avatars\/[0-9a-f]{32}\.webp$/);
+
+      const avatarResponse = await app.request(new URL(profile.avatarUrl).pathname);
+      expect(avatarResponse.status).toBe(200);
+      expect(avatarResponse.headers.get("content-type")).toBe("image/webp");
+      expect((await avatarResponse.arrayBuffer()).byteLength).toBeGreaterThan(0);
+
+      const displayNameLogin = await app.request("/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "Ada Lovelace", password: "profile-password" }),
+      });
+      expect(displayNameLogin.status).toBe(400);
+      const originalEmailLogin = await app.request("/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "profile@example.test", password: "profile-password" }),
+      });
+      expect(originalEmailLogin.status).toBe(200);
+      expect((await originalEmailLogin.json()).user).toMatchObject({ displayName: "Ada Lovelace", avatarUrl: profile.avatarUrl });
+
+      const removed = await app.request("/v1/users/profile", {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ removeAvatar: true }),
+      });
+      expect(removed.status).toBe(200);
+      expect((await removed.json()).data.avatarUrl).toBeNull();
+      expect((await app.request(new URL(profile.avatarUrl).pathname)).status).toBe(404);
+    } finally {
+      await rm(avatarStorageDir, { recursive: true, force: true });
+    }
   });
 
   it("updates a user password through the protected v1 user endpoint", async () => {

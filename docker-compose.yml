@@ -12,10 +12,14 @@ services:
       AUTH_TOKEN_TTL_SECONDS: ${AUTH_TOKEN_TTL_SECONDS:-604800}
       REQUIRE_CLIENT_AUTH: ${REQUIRE_CLIENT_AUTH:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://console.zengjunjie.com,https://chatapi.zengjunjie.com,https://chat.zengjunjie.com}
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-https://chatapi.zengjunjie.com}
+      AVATAR_STORAGE_DIR: /avatars
       REDIS_URL: redis://redis:6379
       DATABASE_URL: postgresql://${POSTGRES_USER:-adaptive_chat}:${POSTGRES_PASSWORD:-adaptive_chat}@postgres:5432/${POSTGRES_DB:-adaptive_chat}
     ports:
       - "127.0.0.1:8787:8787"
+    volumes:
+      - avatar_data:/avatars
     depends_on:
       postgres:
         condition: service_healthy
@@ -114,3 +118,4 @@ volumes:
   postgres_data:
   redis_data:
   backup_data:
+  avatar_data:

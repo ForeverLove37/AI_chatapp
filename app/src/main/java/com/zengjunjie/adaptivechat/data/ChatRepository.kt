@@ -370,6 +370,15 @@ class ChatRepository(
 
     suspend fun login(email: String, password: String): LoginResult = chatApi.login(email, password)
 
+    suspend fun fetchProfile(accessToken: String): UserProfile = chatApi.fetchProfile(accessToken)
+
+    suspend fun updateProfile(
+        accessToken: String,
+        displayName: String,
+        avatar: ProfileAvatarUpload?,
+        removeAvatar: Boolean,
+    ): UserProfile = chatApi.updateProfile(accessToken, displayName, avatar, removeAvatar)
+
     suspend fun fetchRemoteConfig(): RemoteConfig = chatApi.fetchConfig()
 
     suspend fun checkForUpdate(accessToken: String, versionCode: Int, versionName: String): UpdateCheckResult =

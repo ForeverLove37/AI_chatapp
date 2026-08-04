@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
 import { Hono, type Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { CronExpressionParser } from "cron-parser";
 import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
+import sharp from "sharp";
 import { z } from "zod";
 import {
   createPostgresControlPlane,
@@ -14,6 +18,7 @@ import {
   type RequestMetric,
   type RoutingScope,
   type SelectedUpstream,
+  type UpdateUserInput,
 } from "./control-plane.js";
 import {
   createPostgresEnterpriseStore,
@@ -74,6 +79,7 @@ const keyCreateSchema = z.object({
 const userCreateSchema = z.object({
   email: z.email().max(320),
   password: z.string().min(8).max(200),
+  displayName: z.string().trim().max(80).nullable().optional(),
   role: z.enum(["admin", "standard"]).default("standard"),
   status: z.enum(["active", "suspended"]).default("active"),
   rpmLimit: z.number().int().min(1).max(10_000).default(60),
@@ -82,11 +88,17 @@ const userCreateSchema = z.object({
 
 const userPatchSchema = z.object({
   password: z.string().min(8).max(200).optional(),
+  displayName: z.string().trim().max(80).nullable().optional(),
   status: z.enum(["active", "suspended"]).optional(),
   role: z.enum(["admin", "standard"]).optional(),
   rpmLimit: z.number().int().min(1).max(10_000).optional(),
   dailyLimit: z.number().int().min(1).max(10_000_000).optional(),
 }).refine((value) => Object.keys(value).length > 0);
+
+const profileJsonSchema = z.object({
+  displayName: z.string().trim().max(80).nullable().optional(),
+  removeAvatar: z.boolean().optional(),
+}).refine((value) => value.displayName !== undefined || value.removeAvatar === true);
 
 const providerKeySchema = z.object({
   provider: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
@@ -309,6 +321,8 @@ export type CreateAppOptions = {
   requireClientAuth?: boolean;
   synthesizeSpeech?: (input: string, voice: string) => Promise<Uint8Array>;
   executeSearch?: (providers: SearchProviderExecutionConfig[], query: string) => Promise<WebSearchResponse>;
+  avatarStorageDir?: string;
+  publicApiBaseUrl?: string;
 };
 
 const flag = (value: string | undefined, fallback: boolean) =>
@@ -352,6 +366,58 @@ const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeou
 const EDGE_TTS_TIMEOUT_MS = 12_000;
 const MAX_TTS_BYTES = 8 * 1024 * 1024;
 const defaultEdgeVoice = "en-US-AriaNeural";
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+const MAX_AVATAR_REQUEST_BYTES = MAX_AVATAR_BYTES + 256 * 1024;
+const AVATAR_FILE_PATTERN = /^[0-9a-f]{32}\.webp$/;
+const PUBLIC_PROFILE_ERRORS = new Set([
+  "Avatar images must be 2 MB or smaller.",
+  "Choose a JPEG, PNG, or WEBP avatar image.",
+  "Choose a valid JPEG, PNG, or WEBP avatar image.",
+  "The avatar image could not be decoded.",
+  "The avatar image could not be processed.",
+  "Unable to update your profile.",
+]);
+
+function avatarFilename(value: string | null | undefined) {
+  if (!value) return undefined;
+  try {
+    const filename = new URL(value, "https://avatar.invalid").pathname.split("/").pop();
+    return filename && AVATAR_FILE_PATTERN.test(filename) ? filename : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveAvatar(root: string, file: File) {
+  if (!file.size || file.size > MAX_AVATAR_BYTES) throw new Error("Avatar images must be 2 MB or smaller.");
+  if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(file.type.toLowerCase())) {
+    throw new Error("Choose a JPEG, PNG, or WEBP avatar image.");
+  }
+  const input = Buffer.from(await file.arrayBuffer());
+  let metadata: { width?: number; height?: number; format?: string };
+  try {
+    metadata = await sharp(input, { limitInputPixels: 16_777_216 }).metadata();
+  } catch {
+    throw new Error("The avatar image could not be decoded.");
+  }
+  if (!metadata.width || !metadata.height || !["jpeg", "png", "webp"].includes(metadata.format ?? "")) {
+    throw new Error("Choose a valid JPEG, PNG, or WEBP avatar image.");
+  }
+  let output: Buffer;
+  try {
+    output = await sharp(input, { limitInputPixels: 16_777_216 })
+      .rotate()
+      .resize(512, 512, { fit: "cover", position: "centre", withoutEnlargement: true })
+      .webp({ quality: 86, effort: 4 })
+      .toBuffer();
+  } catch {
+    throw new Error("The avatar image could not be processed.");
+  }
+  const filename = `${randomUUID().replaceAll("-", "")}.webp`;
+  await mkdir(root, { recursive: true, mode: 0o750 });
+  await writeFile(join(root, filename), output, { flag: "wx", mode: 0o640 });
+  return filename;
+}
 
 function escapeSsml(value: string) {
   return value
@@ -601,6 +667,8 @@ export function createApp(options: CreateAppOptions = {}) {
   const startedAt = Date.now();
   const demoMode = () => options.demoMode ?? flag(process.env.DEMO_MODE, true);
   const adminKey = () => process.env.ADMIN_API_KEY ?? "dev-admin-key";
+  const avatarStorageDir = options.avatarStorageDir ?? process.env.AVATAR_STORAGE_DIR ?? "/tmp/adaptive-chat-avatars";
+  const configuredPublicApiBase = (options.publicApiBaseUrl ?? process.env.PUBLIC_API_BASE_URL ?? "").replace(/\/$/, "");
   const allowedOrigins = new Set([
     "https://console.zengjunjie.com",
     "https://chatapi.zengjunjie.com",
@@ -838,6 +906,117 @@ export function createApp(options: CreateAppOptions = {}) {
       user,
     });
   });
+
+  app.get("/v1/users/avatars/:filename", async (context) => {
+    const filename = context.req.param("filename");
+    if (!AVATAR_FILE_PATTERN.test(filename)) {
+      return context.json({ error: { code: "avatar_not_found", message: "Avatar image was not found." } }, 404);
+    }
+    try {
+      const image = await readFile(join(avatarStorageDir, filename));
+      return new Response(new Uint8Array(image), {
+        headers: {
+          "Content-Type": "image/webp",
+          "Content-Length": String(image.byteLength),
+          "Cache-Control": "public, max-age=31536000, immutable",
+          "Cross-Origin-Resource-Policy": "cross-origin",
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    } catch {
+      return context.json({ error: { code: "avatar_not_found", message: "Avatar image was not found." } }, 404);
+    }
+  });
+
+  app.get("/v1/users/profile", async (context) => {
+    const session = await requireSessionUser(context);
+    if ("response" in session) return session.response;
+    const user = await controlPlane.getUser(session.userId);
+    return user
+      ? context.json({ data: user })
+      : context.json({ error: { code: "profile_not_found", message: "User profile was not found." } }, 404);
+  });
+
+  app.patch(
+    "/v1/users/profile",
+    bodyLimit({
+      maxSize: MAX_AVATAR_REQUEST_BYTES,
+      onError: (context) => context.json({ error: { code: "avatar_too_large", message: "Avatar images must be 2 MB or smaller." } }, 413),
+    }),
+    async (context) => {
+      const session = await requireSessionUser(context);
+      if ("response" in session) return session.response;
+      const current = await controlPlane.getUser(session.userId);
+      if (!current) return context.json({ error: { code: "profile_not_found", message: "User profile was not found." } }, 404);
+
+      let displayName: string | null | undefined;
+      let removeAvatar = false;
+      let avatar: File | undefined;
+      const contentType = context.req.header("content-type")?.toLowerCase() ?? "";
+      if (contentType.startsWith("multipart/form-data")) {
+        const body = await context.req.parseBody().catch(() => undefined);
+        if (!body) return context.json({ error: { code: "invalid_profile", message: "Invalid profile form data." } }, 400);
+        const nameValue = body.displayName;
+        const removeValue = body.removeAvatar;
+        const avatarValue = body.avatar;
+        if (nameValue !== undefined && typeof nameValue !== "string") {
+          return context.json({ error: { code: "invalid_display_name", message: "Display name must be text." } }, 400);
+        }
+        if (avatarValue !== undefined && !(avatarValue instanceof File)) {
+          return context.json({ error: { code: "invalid_avatar", message: "Avatar must be an image file." } }, 400);
+        }
+        if (typeof nameValue === "string") {
+          const parsedName = z.string().trim().max(80).safeParse(nameValue);
+          if (!parsedName.success) return context.json({ error: { code: "invalid_display_name", message: "Display name must be 80 characters or fewer." } }, 400);
+          displayName = parsedName.data || null;
+        }
+        removeAvatar = removeValue === "true" || removeValue === "1";
+        avatar = avatarValue instanceof File ? avatarValue : undefined;
+      } else {
+        const parsed = profileJsonSchema.safeParse(await context.req.json().catch(() => undefined));
+        if (!parsed.success) return context.json({ error: { code: "invalid_profile", message: "Invalid profile update." } }, 400);
+        displayName = parsed.data.displayName?.trim() || (parsed.data.displayName === null || parsed.data.displayName === "" ? null : undefined);
+        removeAvatar = parsed.data.removeAvatar === true;
+      }
+      if (displayName === undefined && !removeAvatar && !avatar) {
+        return context.json({ error: { code: "empty_profile_update", message: "A display name or avatar change is required." } }, 400);
+      }
+      if (removeAvatar && avatar) {
+        return context.json({ error: { code: "conflicting_avatar_update", message: "Choose either a new avatar or remove the current avatar." } }, 400);
+      }
+
+      let newFilename: string | undefined;
+      try {
+        const patch: UpdateUserInput = {};
+        if (displayName !== undefined) patch.displayName = displayName;
+        if (avatar) {
+          newFilename = await saveAvatar(avatarStorageDir, avatar);
+          const requestBase = new URL(context.req.url).origin;
+          patch.avatarUrl = `${configuredPublicApiBase || requestBase}/v1/users/avatars/${newFilename}`;
+        } else if (removeAvatar) {
+          patch.avatarUrl = null;
+        }
+        const updated = await controlPlane.updateUser(current.id, patch);
+        if (!updated) throw new Error("User profile was not found.");
+        const previousFilename = avatarFilename(current.avatarUrl);
+        if ((avatar || removeAvatar) && previousFilename && previousFilename !== newFilename) {
+          await unlink(join(avatarStorageDir, previousFilename)).catch(() => undefined);
+        }
+        return context.json({ data: updated });
+      } catch (error) {
+        if (newFilename) await unlink(join(avatarStorageDir, newFilename)).catch(() => undefined);
+        const message = error instanceof Error && PUBLIC_PROFILE_ERRORS.has(error.message)
+          ? error.message
+          : "Unable to update your profile.";
+        return context.json({
+          error: {
+            code: "profile_update_failed",
+            message,
+          },
+        }, 400);
+      }
+    },
+  );
 
   app.get("/v1/sessions", async (context) => {
     const session = await requireSessionUser(context);
