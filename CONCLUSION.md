@@ -187,3 +187,36 @@ bytes) with SHA-256
 `8833f58f0798a9685f706cce921c4c85285c5cfcbb43cd136f08f840676f5504`.
 Android visual validation remains with the Product Owner; no emulator or
 headless Android display tooling was used.
+
+# Iteration 11 Conclusion
+
+Iteration 11 is implemented and deployed as a Web Client-only UI hotfix. The
+three breakpoint-specific sidebar icon buttons were replaced by one persistent,
+state-aware toggle. It moves between the header edge and the open mobile drawer,
+updates its icon and accessible state, and remains the only sidebar toggle button
+in the authenticated DOM.
+
+The top navigation now provides a styled language dropdown for English and
+Simplified Chinese. Channel, model, and language selects consume the active
+theme directly from the chat shell; dark mode applies the browser's dark color
+scheme plus an explicit deep-gray option surface and white text. Gemini retains
+its animated color flow in light mode and uses dedicated near-black blue, plum,
+and teal stops in dark mode, eliminating the pastel luminance leak.
+
+Verification completed:
+
+- Web Client TypeScript checking and the optimized Next.js production build
+  passed.
+- A structural assertion confirms exactly one authenticated sidebar-toggle
+  button, and the compiled bundle contains the dark option-surface and Gemini
+  dark-palette rules.
+- The Web Docker image rebuilt successfully and the replacement container
+  reached the Next.js ready state in 616 ms.
+- Both `http://127.0.0.1:3001/` and `https://chat.zengjunjie.com/` return HTTP
+  200; the public response retains HSTS, CSP, frame denial, and MIME-sniffing
+  protection.
+
+This iteration does not alter Android code or produce a new APK. Final visual
+review is available at `https://chat.zengjunjie.com`; the referenced Iteration
+11 screenshots and a browser executable were not present on the server, so
+automated pixel comparison was not possible.

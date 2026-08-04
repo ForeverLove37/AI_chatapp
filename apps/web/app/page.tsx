@@ -12,7 +12,6 @@ import {
   Globe2,
   ImagePlus,
   LogOut,
-  Menu,
   MessageSquarePlus,
   Mic,
   Moon,
@@ -243,9 +242,13 @@ function channelVariables(channel: Channel, theme: Theme) {
   const start = color("--chat-background-start", channel.style.backgroundStart);
   const end = color("--chat-background-end", channel.style.backgroundEnd);
   const surface = color("--chat-surface", channel.style.surfaceColor);
+  const geminiDark = theme === "dark" && channel.id.toLowerCase() === "gemini";
   return {
-    "--channel-start": theme === "dark" ? "#151817" : start,
-    "--channel-end": theme === "dark" ? "#202523" : end,
+    "--channel-start": geminiDark ? "#080d12" : theme === "dark" ? "#151817" : start,
+    "--channel-end": geminiDark ? "#11191a" : theme === "dark" ? "#202523" : end,
+    "--channel-flow-one": geminiDark ? "#13233b" : theme === "dark" ? "#18211f" : "#fce8f3",
+    "--channel-flow-two": geminiDark ? "#291c2e" : theme === "dark" ? "#222326" : "#e9e7fb",
+    "--channel-flow-three": geminiDark ? "#102d27" : theme === "dark" ? "#1b2722" : "#e6f4ea",
     "--channel-accent": color("--chat-accent", channel.style.accentColor),
     "--channel-text": theme === "dark" ? "#f2f5f3" : color("--chat-text", channel.style.textColor),
     "--channel-surface": theme === "dark" ? "#222725" : surface,
@@ -333,6 +336,7 @@ export default function WebChat() {
   const [feedbackStatus, setFeedbackStatus] = useState<"idle" | "sending" | "sent">("idle");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [compactLayout, setCompactLayout] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const avatarInput = useRef<HTMLInputElement>(null);
@@ -398,6 +402,17 @@ export default function WebChat() {
     updateSystemPreferences();
     media.addEventListener("change", updateSystemPreferences);
     return () => media.removeEventListener("change", updateSystemPreferences);
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 820px)");
+    const updateLayout = () => {
+      setCompactLayout(media.matches);
+      if (!media.matches) setSidebarOpen(false);
+    };
+    updateLayout();
+    media.addEventListener("change", updateLayout);
+    return () => media.removeEventListener("change", updateLayout);
   }, []);
 
   useEffect(() => {
@@ -922,6 +937,18 @@ export default function WebChat() {
     "--font-scale": String(fontScale),
   }) as CSSProperties, [channel, effectiveTheme, fontScale]);
   const terminalUserId = [...(selected?.messages ?? [])].reverse().find((message) => message.role === "user")?.id;
+  const sidebarVisible = compactLayout ? sidebarOpen : !sidebarCollapsed;
+  const sidebarToggleLabel = sidebarVisible
+    ? compactLayout ? copy.closeSidebar : copy.collapseSidebar
+    : compactLayout ? copy.menu : copy.expandSidebar;
+
+  function toggleSidebar() {
+    if (compactLayout) {
+      setSidebarOpen((current) => !current);
+      return;
+    }
+    setSidebarCollapsed((current) => !current);
+  }
 
   if (!token) {
     return (
@@ -951,14 +978,13 @@ export default function WebChat() {
   return (
     <main
       className={`chat-shell channel-${channel?.id ?? "chatgpt"} ${channel?.style.animatedGradient ? "animated-channel" : ""} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}
+      data-theme={effectiveTheme}
       style={shellStyle}
     >
-      <aside className={`conversation-sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
+      <aside id="conversation-sidebar" className={`conversation-sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
         <div className="sidebar-brand">
           <img src="/brand" alt="" />
           <div><strong>{copy.product}</strong><span>{copy.synchronized}</span></div>
-          <button className="icon-command desktop-sidebar-close" title={copy.collapseSidebar} aria-label={copy.collapseSidebar} onClick={() => setSidebarCollapsed(true)}><PanelLeftClose size={20} /></button>
-          <button className="icon-command mobile-only" title={copy.closeSidebar} aria-label={copy.closeSidebar} onClick={() => setSidebarOpen(false)}><PanelLeftClose size={20} /></button>
         </div>
         <button className="new-conversation" onClick={() => void createSession()}><MessageSquarePlus size={18} />{copy.newChat}</button>
         <div className="sidebar-label">{copy.conversations}</div>
@@ -979,10 +1005,20 @@ export default function WebChat() {
         </div>
       </aside>
 
+      <button
+        type="button"
+        className="icon-command sidebar-toggle"
+        title={sidebarToggleLabel}
+        aria-label={sidebarToggleLabel}
+        aria-controls="conversation-sidebar"
+        aria-expanded={sidebarVisible}
+        onClick={toggleSidebar}
+      >
+        {sidebarVisible ? <PanelLeftClose size={20} /> : <PanelLeftOpen size={20} />}
+      </button>
+
       <section className="conversation-workspace">
         <header className="chat-header">
-          <button className="icon-command mobile-only" title={copy.menu} aria-label={copy.menu} onClick={() => setSidebarOpen(true)}><Menu size={21} /></button>
-          <button className="icon-command desktop-sidebar-open" title={copy.expandSidebar} aria-label={copy.expandSidebar} onClick={() => setSidebarCollapsed(false)}><PanelLeftOpen size={20} /></button>
           <div className="channel-model-controls">
             <label>
               <span>{copy.channel}</span>
@@ -1006,7 +1042,14 @@ export default function WebChat() {
             </label>
           </div>
           <div className="header-actions">
-            <button className="icon-command quick-setting" title={copy.language} aria-label={copy.language} onClick={() => setLanguage(effectiveLanguage === "en" ? "zh" : "en")}>{effectiveLanguage === "en" ? "中" : "EN"}</button>
+            <div className="top-language-select" title={copy.language}>
+              <Globe2 size={17} />
+              <select aria-label={copy.language} value={effectiveLanguage} onChange={(event) => setLanguage(event.target.value as Language)}>
+                <option value="en">English</option>
+                <option value="zh">简体中文</option>
+              </select>
+              <ChevronDown size={14} />
+            </div>
             <button className="icon-command quick-setting" title={effectiveTheme === "light" ? copy.dark : copy.light} aria-label={effectiveTheme === "light" ? copy.dark : copy.light} onClick={() => setTheme(effectiveTheme === "light" ? "dark" : "light")}>
               {effectiveTheme === "light" ? <Moon size={19} /> : <Sun size={19} />}
             </button>
