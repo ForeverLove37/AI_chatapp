@@ -12,12 +12,14 @@ import com.zengjunjie.adaptivechat.data.ChatModel
 import com.zengjunjie.adaptivechat.data.ChatRepository
 import com.zengjunjie.adaptivechat.data.ChatSession
 import com.zengjunjie.adaptivechat.data.LanguagePreference
+import com.zengjunjie.adaptivechat.data.MessageRole
 import com.zengjunjie.adaptivechat.data.ProviderMode
 import com.zengjunjie.adaptivechat.data.ProfileAvatarUpload
 import com.zengjunjie.adaptivechat.data.RemoteAppVersion
 import com.zengjunjie.adaptivechat.data.SpeechPlayer
 import com.zengjunjie.adaptivechat.data.UserPreferences
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,6 +33,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 
 enum class AppDestination {
     CHAT,
@@ -96,6 +99,7 @@ class ChatViewModel(
     private val profileUpdateState = MutableStateFlow<ProfileUpdateState>(ProfileUpdateState.Idle)
     private val channelCatalog = MutableStateFlow(ProviderMode.entries)
     private val webSearchAvailable = MutableStateFlow(false)
+    private var generationJob: Job? = null
 
     private val sessions = repository.observeSessions().stateIn(
         scope = viewModelScope,
@@ -260,7 +264,7 @@ class ChatViewModel(
         val accessToken = uiState.value.account.accessToken ?: return
         if (isStreaming.value || (text.isBlank() && attachments.isEmpty())) return
 
-        viewModelScope.launch(Dispatchers.IO) {
+        generationJob = viewModelScope.launch(Dispatchers.IO) {
             isStreaming.value = true
             isWaitingForFirstToken.value = true
             errorMessage.value = null
@@ -275,7 +279,7 @@ class ChatViewModel(
                     isWaitingForFirstToken.value = false
                 }
             }
-                .onFailure { errorMessage.value = it.message ?: "The streaming request failed." }
+                .onFailure { error -> if (error !is CancellationException) errorMessage.value = error.message ?: "The streaming request failed." }
             isWaitingForFirstToken.value = false
             isStreaming.value = false
         }
@@ -285,8 +289,10 @@ class ChatViewModel(
         val session = uiState.value.selectedSession ?: return
         val accessToken = uiState.value.account.accessToken ?: return
         if (isStreaming.value) return
+        val terminal = uiState.value.messages.lastOrNull()
+        if (terminal?.id != messageId || terminal.role != MessageRole.ASSISTANT) return
 
-        viewModelScope.launch(Dispatchers.IO) {
+        generationJob = viewModelScope.launch(Dispatchers.IO) {
             isStreaming.value = true
             isWaitingForFirstToken.value = true
             errorMessage.value = null
@@ -294,7 +300,7 @@ class ChatViewModel(
                 repository.redoAssistant(session, messageId, accessToken) {
                     isWaitingForFirstToken.value = false
                 }
-            }.onFailure { errorMessage.value = it.message ?: "The streaming request failed." }
+            }.onFailure { error -> if (error !is CancellationException) errorMessage.value = error.message ?: "The streaming request failed." }
             isWaitingForFirstToken.value = false
             isStreaming.value = false
         }
@@ -310,7 +316,7 @@ class ChatViewModel(
         val accessToken = uiState.value.account.accessToken ?: return
         if (isStreaming.value || (text.isBlank() && attachments.isEmpty())) return
 
-        viewModelScope.launch(Dispatchers.IO) {
+        generationJob = viewModelScope.launch(Dispatchers.IO) {
             isStreaming.value = true
             isWaitingForFirstToken.value = true
             errorMessage.value = null
@@ -325,10 +331,17 @@ class ChatViewModel(
                 ) {
                     isWaitingForFirstToken.value = false
                 }
-            }.onFailure { errorMessage.value = it.message ?: "The streaming request failed." }
+            }.onFailure { error -> if (error !is CancellationException) errorMessage.value = error.message ?: "The streaming request failed." }
             isWaitingForFirstToken.value = false
             isStreaming.value = false
         }
+    }
+
+    fun stopGeneration() {
+        generationJob?.cancel()
+        generationJob = null
+        isWaitingForFirstToken.value = false
+        isStreaming.value = false
     }
 
     fun deleteMessage(messageId: String) {

@@ -22,7 +22,7 @@ const logTime = () => new Date().toISOString();
 async function runCommand(
   command: string,
   args: string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
   onLine?: (line: string) => Promise<void>,
 ) {
   return new Promise<{ stdout: string; stderr: string }>((resolveCommand, reject) => {
@@ -33,18 +33,34 @@ async function runCommand(
     });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    const pendingLines: Promise<void>[] = [];
+    const timeout = options.timeoutMs && options.timeoutMs > 0
+      ? setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+        setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, 5_000);
+      }, options.timeoutMs)
+      : undefined;
     const consume = (chunk: Buffer, isError: boolean) => {
       const value = chunk.toString("utf8");
       if (isError) stderr = `${stderr}${value}`.slice(-8_000);
       else stdout = `${stdout}${value}`.slice(-4_000_000);
-      for (const line of value.split(/\r?\n/).filter(Boolean)) void onLine?.(line);
+      for (const line of value.split(/\r?\n/).filter(Boolean)) {
+        const pending = onLine?.(line);
+        if (pending) pendingLines.push(pending.catch(() => undefined));
+      }
     };
     child.stdout.on("data", (chunk: Buffer) => consume(chunk, false));
     child.stderr.on("data", (chunk: Buffer) => consume(chunk, true));
-    child.once("error", reject);
-    child.once("close", (code) => code === 0
-      ? resolveCommand({ stdout, stderr })
-      : reject(new Error(`${command} exited with code ${code}: ${stderr.trim()}`)));
+    child.once("error", (error) => { if (timeout) clearTimeout(timeout); reject(error); });
+    child.once("close", async (code) => {
+      if (timeout) clearTimeout(timeout);
+      await Promise.all(pendingLines);
+      if (timedOut) reject(new Error(`${command} timed out after ${Math.ceil((options.timeoutMs ?? 0) / 1000)} seconds.`));
+      else if (code === 0) resolveCommand({ stdout, stderr });
+      else reject(new Error(`${command} exited with code ${code}: ${stderr.trim()}`));
+    });
   });
 }
 
@@ -328,6 +344,7 @@ async function executeBuild(store: EnterpriseStore, job: BackgroundJob) {
   const versionName = String(job.payload.versionName ?? "");
   const ring = job.payload.ring === "beta" || job.payload.ring === "production" ? job.payload.ring : undefined;
   const artifactId = String(job.payload.artifactId ?? "");
+  const timeoutSeconds = Math.min(7_200, Math.max(60, Number(job.payload.timeoutSeconds ?? 1_800)));
   if (!Number.isInteger(versionCode) || !versionName) throw new Error("Build job version is invalid.");
   const artifact = artifactId ? await store.getArtifact(artifactId) : undefined;
   if (!artifact) throw new Error("Build artifact tracking record was not found.");
@@ -350,7 +367,7 @@ async function executeBuild(store: EnterpriseStore, job: BackgroundJob) {
       "-Pkotlin.compiler.execution.strategy=in-process",
       "--console=plain",
     ];
-    await runCommand("./gradlew", gradleArgs, { cwd: projectRoot }, (line) => store.appendJobLog(job.id, line));
+    await runCommand("./gradlew", gradleArgs, { cwd: projectRoot, timeoutMs: timeoutSeconds * 1_000 }, (line) => store.appendJobLog(job.id, line));
 
     const source = join(projectRoot, "app/build/outputs/apk/debug/app-debug.apk");
     const outputRoot = resolve(process.env.APK_OUTPUT_DIR ?? "/artifacts");

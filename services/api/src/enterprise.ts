@@ -253,6 +253,7 @@ export interface EnterpriseStore {
   finishBackupRun(id: string, result: { status: "succeeded" | "failed"; location?: string; bytes?: number; checksum?: string; error?: string }): Promise<void>;
   enqueueJob(type: JobType, payload: Record<string, unknown>, maxAttempts?: number): Promise<BackgroundJob>;
   listJobs(limit?: number): Promise<BackgroundJob[]>;
+  getJob(id: string): Promise<BackgroundJob | undefined>;
   waitForJob(timeoutSeconds?: number): Promise<string | undefined>;
   claimJob(id: string): Promise<BackgroundJob | undefined>;
   appendJobLog(id: string, line: string): Promise<void>;
@@ -1128,6 +1129,11 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
     return result.rows.map(jobFromRow);
   }
 
+  async getJob(id: string) {
+    const result = await this.pool.query<Record<string, unknown>>("SELECT * FROM background_jobs WHERE id = $1", [id]);
+    return result.rows[0] ? jobFromRow(result.rows[0]) : undefined;
+  }
+
   async waitForJob(timeoutSeconds = 5) {
     const result = await this.redis.brPop(this.queueKey, timeoutSeconds);
     return result?.element;
@@ -1442,6 +1448,7 @@ export class MemoryEnterpriseStore implements EnterpriseStore {
   async finishBackupRun(_id: string, _result: { status: "succeeded" | "failed"; location?: string; bytes?: number; checksum?: string; error?: string }) {}
   async enqueueJob(type: JobType, payload: Record<string, unknown>, maxAttempts = 3) { const item: BackgroundJob = { id: `job_${randomUUID().slice(0, 16)}`, type, status: "queued", payload, result: null, error: null, attempts: 0, maxAttempts, logs: [], createdAt: nowIso(), startedAt: null, finishedAt: null }; this.jobs.set(item.id, item); this.queue.push(item.id); return item; }
   async listJobs(limit = 100) { return [...this.jobs.values()].slice(-limit).reverse(); }
+  async getJob(id: string) { const item = this.jobs.get(id); return item ? { ...item, logs: [...item.logs] } : undefined; }
   async waitForJob(_timeoutSeconds = 5) { return this.queue.shift(); }
   async claimJob(id: string) { const item = this.jobs.get(id); if (!item || !["queued", "retrying"].includes(item.status)) return undefined; Object.assign(item, { status: "running", attempts: item.attempts + 1, startedAt: nowIso(), error: null }); return item; }
   async appendJobLog(id: string, line: string) { this.jobs.get(id)?.logs.push(line); }

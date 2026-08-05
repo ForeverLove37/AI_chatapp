@@ -121,6 +121,17 @@ export type ModelRoutePatch = Partial<Pick<ModelRoute, "provider" | "upstreamMod
   enabled?: boolean;
 };
 
+export type ModelMapping = {
+  id: string;
+  modelId: string;
+  provider: Provider;
+  upstreamModel: string;
+  priority: number;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type RequestMetric = {
   model: string;
   provider: Provider;
@@ -162,6 +173,7 @@ export type SelectedUpstream = {
   secret: string;
   bypassAuth: boolean;
   keyId: string;
+  upstreamModel?: string;
 };
 
 export type ClientAuthorization =
@@ -200,6 +212,10 @@ export interface ControlPlane {
   listModelRoutes(): Promise<ModelRoute[]>;
   createModelRoute(route: ModelRoute): Promise<ModelRoute>;
   updateModelRoute(id: string, patch: ModelRoutePatch): Promise<ModelRoute | undefined>;
+  listModelMappings(modelId?: string): Promise<ModelMapping[]>;
+  createModelMapping(input: Omit<ModelMapping, "id" | "createdAt" | "updatedAt">): Promise<ModelMapping>;
+  updateModelMapping(id: string, patch: Partial<Omit<ModelMapping, "id" | "createdAt" | "updatedAt">>): Promise<ModelMapping | undefined>;
+  deleteModelMapping(id: string): Promise<boolean>;
   getRoutingStrategy(): Promise<LoadBalanceStrategy>;
   setRoutingStrategy(strategy: LoadBalanceStrategy): Promise<LoadBalanceStrategy>;
   listRoutingPolicies(): Promise<RoutingPolicy[]>;
@@ -287,6 +303,19 @@ function modelFromRow(row: Record<string, unknown>): ModelRoute {
   };
 }
 
+function mappingFromRow(row: Record<string, unknown>): ModelMapping {
+  return {
+    id: String(row.id),
+    modelId: String(row.model_id),
+    provider: String(row.provider),
+    upstreamModel: String(row.upstream_model),
+    priority: numberValue(row.priority),
+    enabled: Boolean(row.enabled),
+    createdAt: isoValue(row.created_at),
+    updatedAt: isoValue(row.updated_at),
+  };
+}
+
 function userFromRow(row: Record<string, unknown>): UserRecord {
   return {
     id: String(row.id),
@@ -348,6 +377,7 @@ export class MemoryControlPlane implements ControlPlane {
   private readonly users = new Map<string, StoredUser>();
   private readonly providerKeys = new Map<string, StoredProviderKey>();
   private readonly models = new Map(modelCatalog.map((model) => [model.id, { ...model, enabled: true }]));
+  private readonly modelMappings = new Map<string, ModelMapping>();
   private readonly policies = new Map<string, RoutingPolicy>();
   private readonly userUsage = new Map<string, UsageWindow>();
   private readonly feedbacks = new Map<string, StoredFeedback>();
@@ -388,6 +418,19 @@ export class MemoryControlPlane implements ControlPlane {
       minuteCalls: [],
       usageDay: dayKey(),
     });
+    for (const model of modelCatalog) {
+      const timestamp = nowIso();
+      this.modelMappings.set(`map_${model.id}`, {
+        id: `map_${model.id}`,
+        modelId: model.id,
+        provider: model.provider,
+        upstreamModel: model.upstreamModel,
+        priority: 100,
+        enabled: true,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+    }
   }
 
   async start() {}
@@ -402,34 +445,51 @@ export class MemoryControlPlane implements ControlPlane {
   }
 
   async hasAvailableUpstream(route: ModelRoute) {
-    return (await this.selectUpstreams(route)).length > 0;
+    const mappings = [...this.modelMappings.values()].filter((mapping) => mapping.modelId === route.id && mapping.enabled);
+    const providers = new Set((mappings.length ? mappings : [{ provider: route.provider }]).map((mapping) => mapping.provider));
+    const explicit = this.policies.get(policyKey("model", route.id))
+      ?? this.policies.get(policyKey("channel", route.uiMode));
+    return [...this.providerKeys.values()].some((key) => key.status === "active"
+      && providers.has(key.provider)
+      && (!explicit || explicit.keyIds.includes(key.id)));
   }
 
   async selectUpstreams(route: ModelRoute) {
+    const mappings = [...this.modelMappings.values()]
+      .filter((mapping) => mapping.modelId === route.id && mapping.enabled)
+      .sort((left, right) => left.priority - right.priority || left.createdAt.localeCompare(right.createdAt));
     const explicit = this.policies.get(policyKey("model", route.id))
       ?? this.policies.get(policyKey("channel", route.uiMode));
     if (explicit) {
       return explicit.keyIds
         .map((id) => this.providerKeys.get(id))
         .filter((key): key is StoredProviderKey => Boolean(key && key.status === "active"))
-        .map((key) => ({ endpoint: key.endpoint, secret: key.secret, bypassAuth: key.bypassAuth, keyId: key.id }));
+        .map((key) => ({ endpoint: key.endpoint, secret: key.secret, bypassAuth: key.bypassAuth, keyId: key.id, upstreamModel: mappings.find((mapping) => mapping.provider === key.provider)?.upstreamModel ?? route.upstreamModel }));
     }
-    const provider = route.provider;
-    const sorted = [...this.providerKeys.values()]
-      .filter((key) => key.provider === provider && key.status === "active")
-      .sort((left, right) => left.priority - right.priority || left.createdAt.localeCompare(right.createdAt));
+    const activeMappings = mappings.length ? mappings : [{ provider: route.provider, upstreamModel: route.upstreamModel, priority: 100 } as ModelMapping];
     const ordered: StoredProviderKey[] = [];
-    for (const priority of [...new Set(sorted.map((key) => key.priority))]) {
-      const tier = sorted.filter((key) => key.priority === priority);
-      if (this.strategy === "random") tier.sort(() => Math.random() - 0.5);
-      else if (tier.length > 1) {
-        const offset = (this.cursors[provider] ?? 0) % tier.length;
-        this.cursors[provider] = offset + 1;
-        tier.push(...tier.splice(0, offset));
+    const modelsByKey = new Map<string, string>();
+    for (const mapping of activeMappings) {
+      const sorted = [...this.providerKeys.values()]
+        .filter((key) => key.provider === mapping.provider && key.status === "active")
+        .sort((left, right) => left.priority - right.priority || left.createdAt.localeCompare(right.createdAt));
+      for (const priority of [...new Set(sorted.map((key) => key.priority))]) {
+        const tier = sorted.filter((key) => key.priority === priority);
+        if (this.strategy === "random") tier.sort(() => Math.random() - 0.5);
+        else if (tier.length > 1) {
+          const offset = (this.cursors[mapping.provider] ?? 0) % tier.length;
+          this.cursors[mapping.provider] = offset + 1;
+          tier.push(...tier.splice(0, offset));
+        }
+        for (const key of tier) {
+          if (!modelsByKey.has(key.id)) {
+            ordered.push(key);
+            modelsByKey.set(key.id, mapping.upstreamModel);
+          }
+        }
       }
-      ordered.push(...tier);
     }
-    return ordered.map((key) => ({ endpoint: key.endpoint, secret: key.secret, bypassAuth: key.bypassAuth, keyId: key.id }));
+    return ordered.map((key) => ({ endpoint: key.endpoint, secret: key.secret, bypassAuth: key.bypassAuth, keyId: key.id, upstreamModel: modelsByKey.get(key.id) ?? route.upstreamModel }));
   }
 
   async authorizeClient(secret: string): Promise<ClientAuthorization> {
@@ -693,6 +753,32 @@ export class MemoryControlPlane implements ControlPlane {
     return route;
   }
 
+  async listModelMappings(modelId?: string) {
+    return [...this.modelMappings.values()]
+      .filter((mapping) => !modelId || mapping.modelId === modelId)
+      .sort((left, right) => left.modelId.localeCompare(right.modelId) || left.priority - right.priority);
+  }
+
+  async createModelMapping(input: Omit<ModelMapping, "id" | "createdAt" | "updatedAt">) {
+    if (!this.models.has(input.modelId)) throw new Error("The selected internal model was not found.");
+    const timestamp = nowIso();
+    const mapping: ModelMapping = { ...input, id: `map_${randomUUID().slice(0, 12)}`, createdAt: timestamp, updatedAt: timestamp };
+    this.modelMappings.set(mapping.id, mapping);
+    return mapping;
+  }
+
+  async updateModelMapping(id: string, patch: Partial<Omit<ModelMapping, "id" | "createdAt" | "updatedAt">>) {
+    const current = this.modelMappings.get(id);
+    if (!current) return undefined;
+    const next = { ...current, ...patch, updatedAt: nowIso() };
+    this.modelMappings.set(id, next);
+    return next;
+  }
+
+  async deleteModelMapping(id: string) {
+    return this.modelMappings.delete(id);
+  }
+
   async getRoutingStrategy() {
     return this.strategy;
   }
@@ -851,6 +937,17 @@ export class PostgresControlPlane implements ControlPlane {
         enabled BOOLEAN NOT NULL DEFAULT TRUE,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      CREATE TABLE IF NOT EXISTS model_mappings (
+        id TEXT PRIMARY KEY,
+        model_id TEXT NOT NULL REFERENCES model_routes(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        upstream_model TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 100 CHECK (priority >= 0 AND priority <= 100000),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS model_mappings_route_idx ON model_mappings(model_id, enabled, priority, created_at);
       CREATE TABLE IF NOT EXISTS routing_settings (
         id SMALLINT PRIMARY KEY CHECK (id = 1),
         strategy TEXT NOT NULL CHECK (strategy IN ('round_robin', 'random')) DEFAULT 'round_robin',
@@ -921,6 +1018,11 @@ export class PostgresControlPlane implements ControlPlane {
          ON CONFLICT (id) DO NOTHING`,
         [model.id, model.provider, model.upstreamModel, model.label, model.description, model.uiMode, model.aliases],
       );
+      await this.pool.query(
+        `INSERT INTO model_mappings (id, model_id, provider, upstream_model, priority)
+         VALUES ($1, $2, $3, $4, 100) ON CONFLICT (id) DO NOTHING`,
+        [`map_${model.id}`, model.id, model.provider, model.upstreamModel],
+      );
     }
   }
 
@@ -958,6 +1060,42 @@ export class PostgresControlPlane implements ControlPlane {
     return result.rows[0] ? modelFromRow(result.rows[0]) : undefined;
   }
 
+  async listModelMappings(modelId?: string) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      `SELECT * FROM model_mappings ${modelId ? "WHERE model_id = $1" : ""} ORDER BY model_id, priority, created_at`,
+      modelId ? [modelId] : [],
+    );
+    return result.rows.map(mappingFromRow);
+  }
+
+  async createModelMapping(input: Omit<ModelMapping, "id" | "createdAt" | "updatedAt">) {
+    const model = await this.pool.query("SELECT 1 FROM model_routes WHERE id = $1", [input.modelId]);
+    if (!model.rowCount) throw new Error("The selected internal model was not found.");
+    const result = await this.pool.query<Record<string, unknown>>(
+      `INSERT INTO model_mappings (id, model_id, provider, upstream_model, priority, enabled)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [`map_${randomUUID().slice(0, 12)}`, input.modelId, input.provider, input.upstreamModel, input.priority, input.enabled],
+    );
+    return mappingFromRow(result.rows[0]);
+  }
+
+  async updateModelMapping(id: string, patch: Partial<Omit<ModelMapping, "id" | "createdAt" | "updatedAt">>) {
+    const fields: string[] = ["updated_at = NOW()"]; const values: unknown[] = [];
+    if (patch.modelId !== undefined) { values.push(patch.modelId); fields.push(`model_id = $${values.length}`); }
+    if (patch.provider !== undefined) { values.push(patch.provider); fields.push(`provider = $${values.length}`); }
+    if (patch.upstreamModel !== undefined) { values.push(patch.upstreamModel); fields.push(`upstream_model = $${values.length}`); }
+    if (patch.priority !== undefined) { values.push(patch.priority); fields.push(`priority = $${values.length}`); }
+    if (patch.enabled !== undefined) { values.push(patch.enabled); fields.push(`enabled = $${values.length}`); }
+    values.push(id);
+    const result = await this.pool.query<Record<string, unknown>>(`UPDATE model_mappings SET ${fields.join(", ")} WHERE id = $${values.length} RETURNING *`, values);
+    return result.rows[0] ? mappingFromRow(result.rows[0]) : undefined;
+  }
+
+  async deleteModelMapping(id: string) {
+    const result = await this.pool.query("DELETE FROM model_mappings WHERE id = $1", [id]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
   private async policyForRoute(route: ModelRoute) {
     const result = await this.pool.query<Record<string, unknown>>(
       `SELECT * FROM routing_policies
@@ -977,59 +1115,65 @@ export class PostgresControlPlane implements ControlPlane {
   }
 
   async hasAvailableUpstream(route: ModelRoute) {
+    const mappings = (await this.listModelMappings(route.id)).filter((mapping) => mapping.enabled);
+    const providers = (mappings.length ? mappings : [{ provider: route.provider }]).map((mapping) => mapping.provider);
     const policy = await this.policyForRoute(route);
-    const result = policy
-      ? await this.pool.query<{ exists: boolean }>(
-        "SELECT EXISTS(SELECT 1 FROM provider_keys WHERE id = ANY($1::text[]) AND status = 'active') AS exists",
-        [policy.keyIds],
-      )
-      : await this.pool.query<{ exists: boolean }>(
-        "SELECT EXISTS(SELECT 1 FROM provider_keys WHERE provider = $1 AND status = 'active') AS exists",
-        [route.provider],
-      );
+    const result = await this.pool.query<{ exists: boolean }>(
+      `SELECT EXISTS(
+         SELECT 1 FROM provider_keys
+         WHERE status = 'active'
+           AND provider = ANY($1::text[])
+           ${policy ? "AND id = ANY($2::text[])" : ""}
+       ) AS exists`,
+      policy ? [providers, policy.keyIds] : [providers],
+    );
     return Boolean(result.rows[0]?.exists);
   }
 
   async selectUpstreams(route: ModelRoute) {
     const policy = await this.policyForRoute(route);
-    const [keys, strategy] = await Promise.all([
-      policy
-        ? this.pool.query<Record<string, unknown>>(
+    const strategy = await this.getRoutingStrategy();
+    const mappings = (await this.listModelMappings(route.id)).filter((mapping) => mapping.enabled);
+    const activeMappings = mappings.length ? mappings : [{ provider: route.provider, upstreamModel: route.upstreamModel, priority: 100 } as ModelMapping];
+    const ordered: Array<{ row: Record<string, unknown>; upstreamModel: string }> = [];
+    const seen = new Set<string>();
+    for (const mapping of activeMappings) {
+      const keys = policy
+        ? await this.pool.query<Record<string, unknown>>(
           `SELECT * FROM provider_keys
-           WHERE id = ANY($1::text[]) AND status = 'active'
+           WHERE id = ANY($1::text[]) AND provider = $2 AND status = 'active'
            ORDER BY array_position($1::text[], id)`,
-          [policy.keyIds],
+          [policy.keyIds, mapping.provider],
         )
-        : this.pool.query<Record<string, unknown>>(
+        : await this.pool.query<Record<string, unknown>>(
           "SELECT * FROM provider_keys WHERE provider = $1 AND status = 'active' ORDER BY priority ASC, created_at ASC",
-          [route.provider],
-        ),
-      this.getRoutingStrategy(),
-    ]);
-    const ordered: Record<string, unknown>[] = [];
-    const rows = keys.rows;
-    if (policy) {
-      ordered.push(...rows);
-    } else {
+          [mapping.provider],
+        );
+      const rows = keys.rows;
+      if (policy) {
+        for (const row of rows) if (!seen.has(String(row.id))) { seen.add(String(row.id)); ordered.push({ row, upstreamModel: mapping.upstreamModel }); }
+        continue;
+      }
       for (const priority of [...new Set(rows.map((row) => numberValue(row.priority)))]) {
         const tier = rows.filter((row) => numberValue(row.priority) === priority);
         if (strategy === "random") tier.sort(() => Math.random() - 0.5);
         else if (tier.length > 1) {
-          const count = await this.redis.incr(`routing:cursor:${route.provider}:${priority}`);
+          const count = await this.redis.incr(`routing:cursor:${mapping.provider}:${priority}`);
           const offset = (count - 1) % tier.length;
           tier.push(...tier.splice(0, offset));
         }
-        ordered.push(...tier);
+        for (const row of tier) if (!seen.has(String(row.id))) { seen.add(String(row.id)); ordered.push({ row, upstreamModel: mapping.upstreamModel }); }
       }
     }
     if (ordered.length) {
-      await this.pool.query("UPDATE provider_keys SET last_used_at = NOW() WHERE id = ANY($1::text[])", [ordered.map((row) => String(row.id))]);
+      await this.pool.query("UPDATE provider_keys SET last_used_at = NOW() WHERE id = ANY($1::text[])", [ordered.map(({ row }) => String(row.id))]);
     }
-    return ordered.map((row) => ({
+    return ordered.map(({ row, upstreamModel }) => ({
       endpoint: String(row.endpoint),
       secret: this.decrypt(String(row.encrypted_secret)),
       bypassAuth: Boolean(row.bypass_auth),
       keyId: String(row.id),
+      upstreamModel,
     }));
   }
 

@@ -140,6 +140,14 @@ const routingSchema = z.object({ strategy: z.enum(["round_robin", "random"]) });
 const routingPolicySchema = z.object({
   keyIds: z.array(z.string().trim().min(1).max(120)).min(1).max(32),
 });
+const modelMappingCreateSchema = z.object({
+  modelId: z.string().trim().min(2).max(120).regex(/^[a-z0-9][a-z0-9._-]*$/),
+  provider: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
+  upstreamModel: z.string().trim().min(1).max(256),
+  priority: z.coerce.number().int().min(0).max(100_000).default(100),
+  enabled: z.boolean().default(true),
+});
+const modelMappingPatchSchema = modelMappingCreateSchema.partial().refine((value) => Object.keys(value).length > 0);
 const loginSchema = z.object({
   email: z.email().max(320),
   password: z.string().min(1).max(200),
@@ -305,6 +313,7 @@ const buildSchema = z.object({
   versionCode: z.coerce.number().int().min(1).max(10_000_000),
   versionName: z.string().trim().min(1).max(80),
   releaseNotes: z.string().max(8_000).default(""),
+  timeoutSeconds: z.coerce.number().int().min(60).max(7_200).default(1_800),
 });
 const releasePublishSchema = z.object({
   artifactId: z.string().trim().min(1).max(120),
@@ -374,7 +383,23 @@ function chunks(value: string, size = 18): string[] {
   return result.length ? result : [""];
 }
 
-const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+const delay = (milliseconds: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) {
+    reject(signal?.reason ?? new DOMException("The request was aborted.", "AbortError"));
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout>;
+  const onAbort = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+    reject(signal?.reason ?? new DOMException("The request was aborted.", "AbortError"));
+  };
+  timer = setTimeout(() => {
+    signal?.removeEventListener("abort", onAbort);
+    resolve();
+  }, milliseconds);
+  signal?.addEventListener("abort", onAbort, { once: true });
+});
 
 const EDGE_TTS_TIMEOUT_MS = 12_000;
 const MAX_TTS_BYTES = 8 * 1024 * 1024;
@@ -497,7 +522,7 @@ function demoAnswer(request: ChatRequest, route: ModelRoute): { reasoning?: stri
   };
 }
 
-async function fetchUpstream(upstreams: SelectedUpstream[], body: Record<string, unknown>): Promise<Response> {
+async function fetchUpstream(upstreams: SelectedUpstream[], body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
   let lastError: unknown;
   for (const upstream of upstreams) {
     try {
@@ -510,11 +535,13 @@ async function fetchUpstream(upstreams: SelectedUpstream[], body: Record<string,
         method: "POST",
         headers,
         body: JSON.stringify(body),
+        signal,
       });
       if (response.ok || [400, 404, 422].includes(response.status)) return response;
       await response.body?.cancel().catch(() => undefined);
       lastError = new Error(`Upstream returned HTTP ${response.status}`);
     } catch (error) {
+      if (signal?.aborted) throw error;
       lastError = error;
     }
   }
@@ -532,13 +559,15 @@ async function prepareSearchRequest(
   upstreams: SelectedUpstream[],
   providers: SearchProviderExecutionConfig[],
   search: (providers: SearchProviderExecutionConfig[], query: string) => Promise<WebSearchResponse>,
+  signal?: AbortSignal,
 ): Promise<PreparedSearchRequest> {
   let toolCall;
   try {
-    const decision = await fetchUpstream(upstreams, buildSearchToolDecisionRequest(request, route.upstreamModel));
+    const decision = await fetchUpstream(upstreams, buildSearchToolDecisionRequest(request, route.upstreamModel), signal);
     if (decision.ok) toolCall = parseWebSearchToolCall(await decision.json().catch(() => undefined));
     else await decision.body?.cancel().catch(() => undefined);
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw error;
     // Tool support differs between OpenAI-compatible providers. Direct grounding below is the compatibility path.
   }
   const originalQuery = extractLatestUserQuery(request.messages);
@@ -571,16 +600,37 @@ async function fetchFinalUpstream(
   upstreams: SelectedUpstream[],
   route: ModelRoute,
   prepared: PreparedSearchRequest,
+  signal?: AbortSignal,
 ) {
-  const primaryBody = { ...prepared.primary, model: route.upstreamModel };
+  const forward = async (body: ChatRequest) => {
+    let lastResponse: Response | undefined;
+    let lastError: unknown;
+    for (const upstream of upstreams) {
+      try {
+        const response = await fetchUpstream([upstream], {
+          ...body,
+          model: upstream.upstreamModel ?? route.upstreamModel,
+        }, signal);
+        lastResponse = response;
+        if (response.ok || ![400, 404, 422].includes(response.status)) return response;
+        await response.body?.cancel().catch(() => undefined);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        lastError = error;
+      }
+    }
+    if (lastResponse) return lastResponse;
+    throw lastError instanceof Error ? lastError : new Error("No upstream provider responded");
+  };
   try {
-    const response = await fetchUpstream(upstreams, primaryBody);
+    const response = await forward(prepared.primary);
     if (!prepared.fallback || ![400, 404, 422].includes(response.status)) return response;
     await response.body?.cancel().catch(() => undefined);
   } catch (error) {
+    if (signal?.aborted) throw error;
     if (!prepared.fallback) throw error;
   }
-  return fetchUpstream(upstreams, { ...prepared.fallback, model: route.upstreamModel });
+  return forward(prepared.fallback!);
 }
 
 function completionContent(value: unknown) {
@@ -618,6 +668,7 @@ function completionJsonAsSse(body: string, model: string) {
 function finalizedSseStream(
   source: ReadableStream<Uint8Array>,
   finalize: (status: RequestMetric["status"]) => Promise<void>,
+  signal?: AbortSignal,
 ) {
   const reader = source.getReader();
   const decoder = new TextDecoder();
@@ -627,8 +678,14 @@ function finalizedSseStream(
   const settle = async (status: RequestMetric["status"]) => {
     if (finished) return;
     finished = true;
+    signal?.removeEventListener("abort", onAbort);
     await finalize(status);
   };
+  const onAbort = () => {
+    void reader.cancel(signal?.reason).catch(() => undefined);
+    void settle("failure");
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
@@ -1153,6 +1210,7 @@ export function createApp(options: CreateAppOptions = {}) {
     let request = parsed.data;
     const route = await controlPlane.findModelRoute(request.model);
     if (!route) return context.json({ error: { message: `Unknown or disabled model: ${request.model}` } }, 404);
+    const requestSignal = context.req.raw.signal;
     const requestStartedAt = Date.now();
     let promptTokens = estimateTokens(request.messages);
     const makeMetric = (status: RequestMetric["status"], completionTokens = 0): RequestMetric => ({
@@ -1188,7 +1246,7 @@ export function createApp(options: CreateAppOptions = {}) {
           };
           prepared = { primary: request };
         } else {
-          prepared = await prepareSearchRequest(request, route, upstreams, providers, search);
+          prepared = await prepareSearchRequest(request, route, upstreams, providers, search, requestSignal);
           request = prepared.primary;
         }
         promptTokens = estimateTokens(request.messages);
@@ -1228,12 +1286,12 @@ export function createApp(options: CreateAppOptions = {}) {
           if (answer.reasoning) {
             for (const piece of chunks(answer.reasoning)) {
               await stream.writeSSE({ data: ssePayload(route.id, { reasoning_content: piece }) });
-              await delay(streamDelay);
+              await delay(streamDelay, requestSignal);
             }
           }
           for (const piece of chunks(answer.content)) {
             await stream.writeSSE({ data: ssePayload(route.id, { content: piece }) });
-            await delay(streamDelay);
+            await delay(streamDelay, requestSignal);
           }
           await stream.writeSSE({ data: ssePayload(route.id, {}, "stop") });
           await stream.writeSSE({ data: "[DONE]" });
@@ -1248,7 +1306,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     try {
-      const response = await fetchFinalUpstream(upstreams, route, prepared);
+      const response = await fetchFinalUpstream(upstreams, route, prepared, requestSignal);
       if (!request.stream) {
         const contentType = response.headers.get("content-type") ?? "application/json";
         const body = await response.text();
@@ -1273,7 +1331,7 @@ export function createApp(options: CreateAppOptions = {}) {
         await controlPlane.changeActiveStreams(-1);
         await record(makeMetric(status));
       };
-      const body = finalizedSseStream(source, finalize);
+      const body = finalizedSseStream(source, finalize, requestSignal);
       return new Response(body, {
         status: response.status,
         headers: {
@@ -1504,6 +1562,39 @@ export function createApp(options: CreateAppOptions = {}) {
     const model = await controlPlane.updateModelRoute(context.req.param("id"), parsed.data);
     return model ? context.json({ data: model }) : context.json({ error: { message: "Model mapping was not found." } }, 404);
   });
+
+  const listModelMappings = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await controlPlane.listModelMappings(context.req.query("modelId")) });
+  };
+  const createModelMapping = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = modelMappingCreateSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid model provider mapping.", details: parsed.error.issues } }, 400);
+    try { return context.json({ data: await controlPlane.createModelMapping(parsed.data) }, 201); }
+    catch (error) { return context.json({ error: { message: error instanceof Error ? error.message : "Unable to create provider mapping." } }, 400); }
+  };
+  const updateModelMapping = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = modelMappingPatchSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid model provider mapping update.", details: parsed.error.issues } }, 400);
+    try {
+      const mapping = await controlPlane.updateModelMapping(context.req.param("id") ?? "", parsed.data);
+      return mapping ? context.json({ data: mapping }) : context.json({ error: { message: "Provider mapping was not found." } }, 404);
+    } catch (error) { return context.json({ error: { message: error instanceof Error ? error.message : "Unable to update provider mapping." } }, 400); }
+  };
+  const deleteModelMapping = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return await controlPlane.deleteModelMapping(context.req.param("id") ?? "")
+      ? context.body(null, 204)
+      : context.json({ error: { message: "Provider mapping was not found." } }, 404);
+  };
+  for (const prefix of ["/admin/model-mappings", "/v1/admin/model-mappings"] as const) {
+    app.get(prefix, listModelMappings);
+    app.post(prefix, createModelMapping);
+    app.patch(`${prefix}/:id`, updateModelMapping);
+    app.delete(`${prefix}/:id`, deleteModelMapping);
+  }
 
   app.get("/admin/routing", async (context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
@@ -1920,6 +2011,30 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
     return context.json({ data: await enterprise.listJobs() });
   });
+
+  const streamJobLogs = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const jobId = context.req.param("id") ?? "";
+    if (!(await enterprise.getJob(jobId))) return context.json({ error: { message: "Job was not found." } }, 404);
+    return streamSSE(context, async (stream) => {
+      let offset = 0;
+      let lastStatus = "";
+      while (!context.req.raw.signal.aborted) {
+        const job = await enterprise.getJob(jobId);
+        if (!job) break;
+        for (const line of job.logs.slice(offset)) await stream.writeSSE({ event: "log", data: line });
+        offset = job.logs.length;
+        if (job.status !== lastStatus) {
+          lastStatus = job.status;
+          await stream.writeSSE({ event: "status", data: JSON.stringify({ status: job.status, error: job.error, result: job.result }) });
+        }
+        if (["succeeded", "failed"].includes(job.status)) break;
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
+      }
+    });
+  };
+  app.get("/admin/jobs/:id/stream", streamJobLogs);
+  app.get("/v1/admin/jobs/:id/stream", streamJobLogs);
 
   app.notFound((context) => context.json({ error: { message: "Route not found." } }, 404));
   app.onError((error, context) => {

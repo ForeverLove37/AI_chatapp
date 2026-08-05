@@ -332,6 +332,9 @@ img { display: block; max-width: 100%; }
 .assistant-message .message-bubble { background: color-mix(in srgb, var(--channel-surface) 90%, transparent); border: 1px solid color-mix(in srgb, var(--channel-accent) 14%, var(--line)); border-radius: 2px 8px 8px 8px; }
 .channel-chatgpt .assistant-message .message-bubble { background: transparent; border-color: transparent; padding-left: 1px; }
 .channel-deepseek .assistant-message .message-bubble { border-left: 3px solid var(--channel-accent); }
+.channel-gemini .message-bubble,
+.channel-gemini .user-message .message-bubble,
+.channel-gemini .assistant-message .message-bubble { border-radius: 28px; }
 .user-identity { align-items: center; display: flex; gap: 7px; margin-bottom: 9px; min-width: 0; }
 .user-identity .user-avatar { border-color: rgba(255, 255, 255, 0.5); flex-basis: 23px; height: 23px; width: 23px; }
 .user-identity strong { font-size: calc(11px * var(--font-scale)); line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -379,6 +382,7 @@ img { display: block; max-width: 100%; }
   min-height: 54px;
   padding: 7px 7px 7px 13px;
 }
+.channel-gemini .composer { border-radius: 32px; }
 .composer:focus-within { border-color: var(--channel-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--channel-accent) 12%, transparent); }
 .composer textarea { align-self: center; background: transparent; border: 0; max-height: 140px; min-height: 37px; outline: none; overflow-y: auto; padding: 8px 6px 7px 0; resize: none; width: 100%; }
 .composer textarea::placeholder { color: var(--muted); }

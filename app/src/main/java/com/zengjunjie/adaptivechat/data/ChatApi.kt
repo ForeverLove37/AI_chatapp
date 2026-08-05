@@ -31,6 +31,21 @@ data class StreamChunk(
     val completed: Boolean = false,
 )
 
+/** Decode one OpenAI-compatible SSE payload without turning JSON null into the string "null". */
+internal fun parseStreamDelta(data: String): StreamChunk? {
+    val payload = runCatching { JSONObject(data) }.getOrNull() ?: return null
+    val delta = payload.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta") ?: return null
+    val content = if (delta.has("content") && !delta.isNull("content")) delta.optString("content") else ""
+    val reasoning = when {
+        delta.has("reasoning_content") && !delta.isNull("reasoning_content") -> delta.optString("reasoning_content")
+        delta.has("reasoning") && !delta.isNull("reasoning") -> delta.optString("reasoning")
+        else -> ""
+    }
+    return StreamChunk(content = content, reasoning = reasoning).takeIf {
+        it.content.isNotEmpty() || it.reasoning.isNotEmpty()
+    }
+}
+
 data class LoginResult(
     val accessToken: String,
     val email: String,
@@ -128,22 +143,7 @@ class ChatApi(baseUrl: String) {
                         return
                     }
 
-                    val payloadObject = runCatching { JSONObject(data) }.getOrNull() ?: return
-                    val delta = payloadObject
-                        .optJSONArray("choices")
-                        ?.optJSONObject(0)
-                        ?.optJSONObject("delta")
-                        ?: return
-                    val content = delta.optString("content")
-                    val reasoning = when {
-                        delta.has("reasoning_content") -> delta.optString("reasoning_content")
-                        delta.has("reasoning") -> delta.optString("reasoning")
-                        else -> ""
-                    }
-
-                    if (content.isNotEmpty() || reasoning.isNotEmpty()) {
-                        trySend(StreamChunk(content = content, reasoning = reasoning))
-                    }
+                    parseStreamDelta(data)?.let { trySend(it) }
                 }
 
                 override fun onClosed(eventSource: EventSource) {

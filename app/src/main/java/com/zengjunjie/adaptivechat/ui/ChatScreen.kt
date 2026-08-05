@@ -36,15 +36,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -122,7 +120,6 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -301,6 +298,7 @@ fun ChatScreen(
                         attachments = emptyList()
                         webSearchEnabled = false
                     },
+                    onStop = viewModel::stopGeneration,
                     onRedo = viewModel::redoAssistant,
                     onBranch = { messageId -> pendingMessageConfirmation = PendingMessageConfirmation(ConfirmedMessageAction.BRANCH, messageId) },
                     onListen = { markdown -> viewModel.listenToMessage(markdown, speechPlayer) },
@@ -618,6 +616,7 @@ private fun ChatContent(
     draft: String,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
+    onStop: () -> Unit,
     onRedo: (String) -> Unit,
     onBranch: (String) -> Unit,
     onListen: (String) -> Unit,
@@ -638,15 +637,16 @@ private fun ChatContent(
 ) {
     val copy = LocalAppCopy.current
     val listState = rememberLazyListState()
-    val density = LocalDensity.current
-    val imeBottom = WindowInsets.ime.getBottom(density)
     LaunchedEffect(
         state.messages.size,
         state.messages.lastOrNull()?.content?.length,
         state.messages.lastOrNull()?.reasoning?.length,
-        imeBottom,
     ) {
-        if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.lastIndex)
+        if (state.messages.isNotEmpty()) {
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+            val followingTail = state.messages.size <= 1 || lastVisible == null || lastVisible >= state.messages.lastIndex - 1
+            if (followingTail) listState.animateScrollToItem(state.messages.lastIndex)
+        }
     }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -687,6 +687,7 @@ private fun ChatContent(
             WelcomePanel(provider = state.provider, model = state.model, modifier = Modifier.weight(1f))
         } else {
             val terminalUserId = state.messages.lastOrNull { it.role == MessageRole.USER }?.id
+            val terminalAssistantId = state.messages.lastOrNull()?.takeIf { it.role == MessageRole.ASSISTANT }?.id
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f),
@@ -703,6 +704,7 @@ private fun ChatContent(
                         profileAvatarUrl = state.account.avatarUrl,
                         isWaitingForFirstToken = state.isWaitingForFirstToken && message.isStreaming,
                         isTerminalUser = message.role == MessageRole.USER && message.id == terminalUserId,
+                        isTerminalAssistant = message.role == MessageRole.ASSISTANT && message.id == terminalAssistantId,
                         interactionsLocked = state.isStreaming,
                         onRedo = onRedo,
                         onBranch = onBranch,
@@ -720,6 +722,7 @@ private fun ChatContent(
             isStreaming = state.isStreaming,
             onDraftChange = onDraftChange,
             onSend = onSend,
+            onStop = onStop,
             attachments = attachments,
             onRemoveAttachment = onRemoveAttachment,
             onAttachFile = onAttachFile,
@@ -730,7 +733,7 @@ private fun ChatContent(
             isEditing = editingMessageId != null,
             onCancelEdit = onCancelEdit,
             focusRequester = composerFocusRequester,
-            modifier = Modifier.imePadding(),
+            modifier = Modifier.navigationBarsPadding(),
         )
     }
 }
@@ -906,6 +909,7 @@ private fun MessageItem(
     profileAvatarUrl: String,
     isWaitingForFirstToken: Boolean,
     isTerminalUser: Boolean,
+    isTerminalAssistant: Boolean,
     interactionsLocked: Boolean,
     onRedo: (String) -> Unit,
     onBranch: (String) -> Unit,
@@ -925,13 +929,15 @@ private fun MessageItem(
             add(MessageAction.DELETE)
         }
     } else {
-        listOf(
-            MessageAction.REDO,
+        buildList {
+            if (isTerminalAssistant) add(MessageAction.REDO)
+            addAll(listOf(
             MessageAction.COPY,
             MessageAction.BRANCH,
             MessageAction.LISTEN,
             MessageAction.DELETE,
-        )
+            ))
+        }
     }
     val actionPayload = message.content.ifBlank { message.errorText }
     val isActionEnabled: (MessageAction) -> Boolean = { action ->
@@ -1350,6 +1356,7 @@ private fun Composer(
     isStreaming: Boolean,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
+    onStop: () -> Unit,
     attachments: List<ChatAttachment>,
     onRemoveAttachment: (ChatAttachment) -> Unit,
     onAttachFile: () -> Unit,
@@ -1484,11 +1491,14 @@ private fun Composer(
                     ),
                 )
                 IconButton(
-                    onClick = onSend,
-                    enabled = (draft.isNotBlank() || attachments.isNotEmpty()) && !isStreaming,
+                    onClick = if (isStreaming) onStop else onSend,
+                    enabled = isStreaming || (draft.isNotBlank() || attachments.isNotEmpty()),
                     modifier = Modifier.size(48.dp),
                 ) {
-                    Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = copy.sendFeedback)
+                    Icon(
+                        if (isStreaming) Icons.Outlined.Close else Icons.AutoMirrored.Outlined.Send,
+                        contentDescription = if (isStreaming) copy.stopGeneration else copy.sendFeedback,
+                    )
                 }
             }
         }

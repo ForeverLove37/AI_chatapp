@@ -5,6 +5,9 @@ import org.json.JSONObject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 class ChatRepository(
     private val chatDao: ChatDao,
@@ -122,6 +125,9 @@ class ChatRepository(
         val assistant = persistedMessages.getOrNull(assistantIndex)
             ?: throw IllegalArgumentException("The response was not found.")
         require(assistant.role == MessageRole.ASSISTANT.name) { "Only assistant responses can be redone." }
+        require(assistantIndex == persistedMessages.lastIndex) {
+            "Only the terminal assistant response can be redone."
+        }
         require(persistedMessages.take(assistantIndex).any { it.role == MessageRole.USER.name }) {
             "A preceding user message is required."
         }
@@ -144,20 +150,23 @@ class ChatRepository(
                 onFirstToken = onFirstToken,
             )
         } catch (error: Throwable) {
+            val cancelled = error is CancellationException
             val restoredTail = originalTail.mapIndexed { index, message ->
                 message.copy(
                     isStreaming = false,
-                    errorText = if (index == 0) error.persistedErrorText() else message.errorText,
+                    errorText = if (index == 0 && !cancelled) error.persistedErrorText() else message.errorText,
                     updatedAt = System.currentTimeMillis() + index,
                 )
             }
-            chatDao.restoreMessageTail(
-                sessionId = session.id,
-                createdAt = assistant.createdAt,
-                messages = restoredTail,
-                updatedAt = System.currentTimeMillis(),
-            )
-            runCatching { syncSession(session.id, accessToken) }
+            withContext(NonCancellable) {
+                chatDao.restoreMessageTail(
+                    sessionId = session.id,
+                    createdAt = assistant.createdAt,
+                    messages = restoredTail,
+                    updatedAt = System.currentTimeMillis(),
+                )
+                runCatching { syncSession(session.id, accessToken) }
+            }
             throw error
         }
     }
@@ -322,20 +331,25 @@ class ChatRepository(
                 )
             }
         } catch (error: Throwable) {
-            streamFailure = error
+            if (error !is CancellationException) {
+                streamFailure = error
+                throw error
+            }
             throw error
         } finally {
-            chatDao.updateAssistantMessage(
-                messageId = assistantMessageId,
-                content = response,
-                reasoning = reasoning,
-                model = session.model.wireName,
-                errorText = streamFailure?.persistedErrorText().orEmpty(),
-                isStreaming = false,
-                updatedAt = System.currentTimeMillis(),
-            )
-            chatDao.touchSession(session.id, System.currentTimeMillis())
-            runCatching { syncSession(session.id, accessToken) }
+            withContext(NonCancellable) {
+                chatDao.updateAssistantMessage(
+                    messageId = assistantMessageId,
+                    content = response,
+                    reasoning = reasoning,
+                    model = session.model.wireName,
+                    errorText = streamFailure?.persistedErrorText().orEmpty(),
+                    isStreaming = false,
+                    updatedAt = System.currentTimeMillis(),
+                )
+                chatDao.touchSession(session.id, System.currentTimeMillis())
+                runCatching { syncSession(session.id, accessToken) }
+            }
         }
     }
 

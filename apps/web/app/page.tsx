@@ -22,6 +22,7 @@ import {
   Save,
   Send,
   Settings,
+  Square,
   Sparkles,
   Sun,
   Trash2,
@@ -116,7 +117,7 @@ const COPY = {
     channel: "Channel", model: "Model", light: "Light", dark: "Dark", system: "System", language: "Language",
     settings: "Settings", settingsTitle: "Workspace settings", profile: "Profile", displayName: "Display name", avatar: "Avatar", chooseAvatar: "Choose avatar", removeAvatar: "Remove avatar", saveProfile: "Save profile", saving: "Saving", saved: "Saved", appearance: "Appearance", fontSize: "Font size", fontSizeDetail: "Adjust interface text", feedback: "Feedback", feedbackDetail: "Send a note to the product team", feedbackPrompt: "What would you like to share?", sendFeedback: "Send feedback", feedbackSent: "Feedback sent.", sendingFeedback: "Sending feedback",
     welcome: "How can I help?", welcomeDetail: "Choose a channel and start a synchronized conversation.",
-    placeholder: "Message Adaptive Chat", send: "Send", attach: "Attach image", voice: "Voice input",
+    placeholder: "Message Adaptive Chat", send: "Send", stop: "Stop generation", attach: "Attach image", voice: "Voice input",
     webSearch: "Web search", webSearchOn: "Web search enabled for this prompt", remove: "Remove attachment",
     copy: "Copy", edit: "Edit", delete: "Delete", redo: "Redo", branch: "Branch", listen: "Listen",
     reasoning: "Reasoning process", thinking: "Thinking", waiting: "Waiting for the first token",
@@ -134,7 +135,7 @@ const COPY = {
     channel: "频道", model: "模型", light: "浅色", dark: "深色", system: "跟随系统", language: "语言",
     settings: "设置", settingsTitle: "工作区设置", profile: "个人资料", displayName: "显示名称", avatar: "头像", chooseAvatar: "选择头像", removeAvatar: "移除头像", saveProfile: "保存资料", saving: "正在保存", saved: "已保存", appearance: "外观", fontSize: "文字大小", fontSizeDetail: "调整界面文字", feedback: "反馈", feedbackDetail: "向产品团队发送反馈", feedbackPrompt: "想和我们分享什么？", sendFeedback: "发送反馈", feedbackSent: "反馈已发送。", sendingFeedback: "正在发送反馈",
     welcome: "有什么可以帮你？", welcomeDetail: "选择频道并开始一段跨端同步的对话。",
-    placeholder: "发送消息给 Adaptive Chat", send: "发送", attach: "添加图片", voice: "语音输入",
+    placeholder: "发送消息给 Adaptive Chat", send: "发送", stop: "停止生成", attach: "添加图片", voice: "语音输入",
     webSearch: "网页搜索", webSearchOn: "本次提问已启用网页搜索", remove: "移除附件",
     copy: "复制", edit: "编辑", delete: "删除", redo: "重新生成", branch: "创建分支", listen: "朗读",
     reasoning: "推理过程", thinking: "正在思考", waiting: "正在等待首个响应片段",
@@ -342,6 +343,9 @@ export default function WebChat() {
   const avatarInput = useRef<HTMLInputElement>(null);
   const messageViewport = useRef<HTMLDivElement>(null);
   const autoScrollPaused = useRef(false);
+  const activeAbortController = useRef<AbortController | null>(null);
+  const pendingSelections = useRef(new Map<string, { channelId: string; modelId: string; updatedAt: number }>());
+  const selectionWrites = useRef(new Map<string, Promise<void>>());
   const effectiveTheme: Exclude<Theme, "system"> = theme === "system" ? (systemDark ? "dark" : "light") : theme;
   const effectiveLanguage: Language = language === "system" ? systemLanguage : language;
   const copy = COPY[effectiveLanguage];
@@ -354,10 +358,20 @@ export default function WebChat() {
   const loadSessions = useCallback(async (currentToken: string, quiet = false) => {
     try {
       const result = await api<{ data: ChatSession[] }>("/v1/sessions", currentToken);
-      setSessions(result.data);
-      setSelectedId((current) => result.data.some((session) => session.id === current)
+      const merged = result.data.map((session) => {
+        const pending = pendingSelections.current.get(session.id);
+        if (!pending) return session;
+        if (session.updatedAt >= pending.updatedAt
+          && session.channelId === pending.channelId && session.modelId === pending.modelId) {
+          pendingSelections.current.delete(session.id);
+          return session;
+        }
+        return { ...session, ...pending };
+      });
+      setSessions(merged);
+      setSelectedId((current) => merged.some((session) => session.id === current)
         ? current
-        : result.data[0]?.id ?? "");
+        : merged[0]?.id ?? "");
       if (!quiet) setError("");
     } catch (cause) {
       if (!quiet) setError(cause instanceof Error ? cause.message : copy.syncError);
@@ -637,8 +651,16 @@ export default function WebChat() {
       modelId: modelId && nextChannel.models.some((item) => item.id === modelId) ? modelId : nextChannel.models[0].id,
       updatedAt: Date.now(),
     };
+    pendingSelections.current.set(next.id, { channelId: next.channelId, modelId: next.modelId, updatedAt: next.updatedAt });
     replaceSession(next);
-    await persist(next);
+    const previous = selectionWrites.current.get(next.id) ?? Promise.resolve();
+    const write = previous.catch(() => undefined).then(() => persist(next)).then(() => {
+      const pending = pendingSelections.current.get(next.id);
+      if (pending?.updatedAt === next.updatedAt) pendingSelections.current.delete(next.id);
+    });
+    selectionWrites.current.set(next.id, write);
+    await write;
+    if (selectionWrites.current.get(next.id) === write) selectionWrites.current.delete(next.id);
   }
 
   async function streamAssistant(base: ChatSession, assistantId: string, source: ChatMessage[], searchEnabled: boolean) {
@@ -648,6 +670,8 @@ export default function WebChat() {
     let working = base;
     let rawContent = "";
     let explicitReasoning = "";
+    const controller = new AbortController();
+    activeAbortController.current = controller;
     try {
       const contextMessages = source
         .filter((message) => message.role !== "assistant" || message.content || message.reasoning)
@@ -669,6 +693,7 @@ export default function WebChat() {
             ...contextMessages,
           ],
         }),
+        signal: controller.signal,
       });
       if (!response.ok || !response.body) {
         const payload = await response.json().catch(() => ({})) as { error?: { message?: string } };
@@ -734,23 +759,29 @@ export default function WebChat() {
       if (buffer.trim()) processFrame(buffer);
       if (!completed) applyDelta("", "", true);
     } catch (cause) {
+      const aborted = controller.signal.aborted || (cause instanceof DOMException && cause.name === "AbortError");
       const message = cause instanceof Error ? cause.message : copy.requestError;
       const timestamp = Date.now();
       working = {
         ...working,
         updatedAt: timestamp,
         messages: working.messages.map((item) => item.id === assistantId
-          ? { ...item, isStreaming: false, errorText: message, updatedAt: timestamp }
+          ? { ...item, isStreaming: false, errorText: aborted ? "" : message, updatedAt: timestamp }
           : item),
       };
       replaceSession(working);
-      setError(message);
+      if (!aborted) setError(message);
     } finally {
       setWaiting(false);
       setStreaming(false);
+      if (activeAbortController.current === controller) activeAbortController.current = null;
       await persist(working).catch(() => setError(copy.syncError));
       setWebSearch(false);
     }
+  }
+
+  function stopGeneration() {
+    activeAbortController.current?.abort();
   }
 
   async function send() {
@@ -800,6 +831,7 @@ export default function WebChat() {
 
   async function redo(message: ChatMessage) {
     if (!selected || streaming) return;
+    if (selected.messages.at(-1)?.id !== message.id || message.role !== "assistant") return;
     const index = selected.messages.findIndex((item) => item.id === message.id);
     if (index < 0) return;
     const timestamp = Date.now();
@@ -936,6 +968,8 @@ export default function WebChat() {
     ...(channel ? channelVariables(channel, effectiveTheme) : {}),
     "--font-scale": String(fontScale),
   }) as CSSProperties, [channel, effectiveTheme, fontScale]);
+  const terminalMessage = selected?.messages.at(-1);
+  const terminalAssistantId = terminalMessage?.role === "assistant" ? terminalMessage.id : undefined;
   const terminalUserId = [...(selected?.messages ?? [])].reverse().find((message) => message.role === "user")?.id;
   const sidebarVisible = compactLayout ? sidebarOpen : !sidebarCollapsed;
   const sidebarToggleLabel = sidebarVisible
@@ -1053,7 +1087,6 @@ export default function WebChat() {
             <button className="icon-command quick-setting" title={effectiveTheme === "light" ? copy.dark : copy.light} aria-label={effectiveTheme === "light" ? copy.dark : copy.light} onClick={() => setTheme(effectiveTheme === "light" ? "dark" : "light")}>
               {effectiveTheme === "light" ? <Moon size={19} /> : <Sun size={19} />}
             </button>
-            <button className="icon-command" title={copy.settings} aria-label={copy.settings} onClick={openSettings}><Settings size={19} /></button>
           </div>
         </header>
 
@@ -1093,7 +1126,7 @@ export default function WebChat() {
                         </>
                       ) : (
                         <>
-                          <button title={copy.redo} disabled={streaming} onClick={() => void redo(message)}><RefreshCw size={15} />{copy.redo}</button>
+                          {message.id === terminalAssistantId && <button title={copy.redo} disabled={streaming} onClick={() => void redo(message)}><RefreshCw size={15} />{copy.redo}</button>}
                           <button title={copy.copy} disabled={!message.content} onClick={() => void navigator.clipboard.writeText(message.content)}><Clipboard size={15} />{copy.copy}</button>
                           <button title={copy.branch} disabled={streaming} onClick={() => confirmBranch(message)}><GitFork size={15} />{copy.branch}</button>
                           <button title={copy.listen} disabled={!message.content} onClick={() => void listen(message).catch(() => setError(copy.requestError))}><Volume2 size={15} />{copy.listen}</button>
@@ -1125,8 +1158,8 @@ export default function WebChat() {
               <button title={copy.attach} aria-label={copy.attach} onClick={() => fileInput.current?.click()}><FileImage size={19} /></button>
               <button title={copy.voice} aria-label={copy.voice} onClick={voiceInput}><Mic size={19} /></button>
               {config?.featureFlags.webSearch && <button className={webSearch ? "tool-active" : ""} title={webSearch ? copy.webSearchOn : copy.webSearch} aria-label={copy.webSearch} onClick={() => setWebSearch((value) => !value)}><Globe2 size={19} /></button>}
-              <button className="send-command" title={copy.send} aria-label={copy.send} disabled={streaming || (!draft.trim() && !attachments.length)} onClick={() => void send()}>
-                {streaming ? <RefreshCw className="spin" size={19} /> : <Send size={19} />}
+              <button className="send-command" title={streaming ? copy.stop : copy.send} aria-label={streaming ? copy.stop : copy.send} disabled={!streaming && (!draft.trim() && !attachments.length)} onClick={() => streaming ? stopGeneration() : void send()}>
+                {streaming ? <Square size={16} fill="currentColor" /> : <Send size={19} />}
               </button>
             </div>
           </div>

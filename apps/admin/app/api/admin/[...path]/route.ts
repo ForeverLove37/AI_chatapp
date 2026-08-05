@@ -13,7 +13,8 @@ async function proxy(request: NextRequest, context: RouteContext) {
   target.search = request.nextUrl.search;
   const controller = new AbortController();
   let timedOut = false;
-  const timeout = setTimeout(() => {
+  const streaming = path.at(-1) === "stream";
+  const timeout = streaming ? undefined : setTimeout(() => {
     timedOut = true;
     controller.abort();
   }, 10_000);
@@ -33,8 +34,10 @@ async function proxy(request: NextRequest, context: RouteContext) {
       signal: controller.signal,
     });
     const responseHeaders = new Headers();
-    const responseContentType = response.headers.get("content-type");
-    if (responseContentType) responseHeaders.set("content-type", responseContentType);
+    for (const name of ["content-type", "cache-control", "connection", "x-accel-buffering"]) {
+      const value = response.headers.get(name);
+      if (value) responseHeaders.set(name, value);
+    }
     return new Response(response.body, { status: response.status, headers: responseHeaders });
   } catch {
     return Response.json(
@@ -48,7 +51,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
       { status: timedOut ? 504 : 502 },
     );
   } finally {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
   }
 }
 
