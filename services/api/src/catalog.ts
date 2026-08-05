@@ -4,8 +4,6 @@ export type LoadBalanceStrategy = "round_robin" | "random";
 
 export type ModelRoute = {
   id: string;
-  provider: Provider;
-  upstreamModel: string;
   label: string;
   description: string;
   uiMode: string;
@@ -13,16 +11,22 @@ export type ModelRoute = {
   enabled?: boolean;
 };
 
+export type CatalogModel = ModelRoute & {
+  defaultMapping: {
+    provider: Provider;
+    upstreamModel: string;
+  };
+};
+
 const openAiModel = "gpt-4.1-mini";
 const geminiModel = "gemini-2.5-flash";
 const deepSeekModel = "deepseek-chat";
 
 /** Default mappings are persisted on first PostgreSQL startup and remain editable in the console. */
-export const modelCatalog: ModelRoute[] = [
+export const modelCatalog: CatalogModel[] = [
   {
     id: "chatgpt-lite",
-    provider: "openai",
-    upstreamModel: openAiModel,
+    defaultMapping: { provider: "openai", upstreamModel: openAiModel },
     label: "Lite",
     description: "Fast, focused ChatGPT conversations",
     uiMode: "chatgpt",
@@ -30,8 +34,7 @@ export const modelCatalog: ModelRoute[] = [
   },
   {
     id: "chatgpt-standard",
-    provider: "openai",
-    upstreamModel: openAiModel,
+    defaultMapping: { provider: "openai", upstreamModel: openAiModel },
     label: "Standard",
     description: "Balanced ChatGPT responses",
     uiMode: "chatgpt",
@@ -39,8 +42,7 @@ export const modelCatalog: ModelRoute[] = [
   },
   {
     id: "chatgpt-pro",
-    provider: "openai",
-    upstreamModel: "gpt-4.1",
+    defaultMapping: { provider: "openai", upstreamModel: "gpt-4.1" },
     label: "Pro",
     description: "Expanded ChatGPT capability",
     uiMode: "chatgpt",
@@ -48,8 +50,7 @@ export const modelCatalog: ModelRoute[] = [
   },
   {
     id: "gemini-flash",
-    provider: "gemini",
-    upstreamModel: geminiModel,
+    defaultMapping: { provider: "gemini", upstreamModel: geminiModel },
     label: "Flash",
     description: "Fast Gemini responses",
     uiMode: "gemini",
@@ -57,8 +58,7 @@ export const modelCatalog: ModelRoute[] = [
   },
   {
     id: "gemini-standard",
-    provider: "gemini",
-    upstreamModel: geminiModel,
+    defaultMapping: { provider: "gemini", upstreamModel: geminiModel },
     label: "Standard",
     description: "Balanced Gemini reasoning",
     uiMode: "gemini",
@@ -66,8 +66,7 @@ export const modelCatalog: ModelRoute[] = [
   },
   {
     id: "gemini-extended",
-    provider: "gemini",
-    upstreamModel: geminiModel,
+    defaultMapping: { provider: "gemini", upstreamModel: geminiModel },
     label: "Extended",
     description: "Longer Gemini responses",
     uiMode: "gemini",
@@ -75,8 +74,7 @@ export const modelCatalog: ModelRoute[] = [
   },
   {
     id: "deepseek-flash",
-    provider: "deepseek",
-    upstreamModel: deepSeekModel,
+    defaultMapping: { provider: "deepseek", upstreamModel: deepSeekModel },
     label: "Flash",
     description: "Fast DeepSeek responses",
     uiMode: "deepseek",
@@ -84,8 +82,7 @@ export const modelCatalog: ModelRoute[] = [
   },
   {
     id: "deepseek-expert",
-    provider: "deepseek",
-    upstreamModel: deepSeekModel,
+    defaultMapping: { provider: "deepseek", upstreamModel: deepSeekModel },
     label: "Expert",
     description: "DeepSeek reasoning-focused responses",
     uiMode: "deepseek",
@@ -140,7 +137,9 @@ const builtInChannels: Array<Omit<RemoteChannel, "models">> = [
   },
 ];
 
-export function publicRemoteConfig(routes: ModelRoute[] = modelCatalog, dynamicChannels: RemoteChannel[] = []) {
+type PublicRoute = ModelRoute & { defaultMapping?: CatalogModel["defaultMapping"] };
+
+export function publicRemoteConfig(routes: PublicRoute[] = modelCatalog, dynamicChannels: RemoteChannel[] = []) {
   const enabledRoutes = routes.filter((model) => model.enabled !== false);
   const channels = [
     ...builtInChannels.map((channel) => ({
@@ -162,6 +161,6 @@ export function publicRemoteConfig(routes: ModelRoute[] = modelCatalog, dynamicC
     },
     channels,
     models: enabledRoutes
-      .map(({ aliases: _aliases, upstreamModel: _upstreamModel, enabled: _enabled, ...model }) => model),
+      .map(({ aliases: _aliases, defaultMapping: _defaultMapping, enabled: _enabled, ...model }) => model),
   };
 }

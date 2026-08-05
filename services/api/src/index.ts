@@ -121,33 +121,26 @@ const providerKeyPatchSchema = z.object({
   status: z.enum(["active", "disabled"]).optional(),
 }).refine((value) => Object.keys(value).length > 0);
 
-const modelRouteCreateSchema = z.object({
-  id: z.string().trim().min(2).max(120).regex(/^[a-z0-9][a-z0-9._-]*$/),
-  provider: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
-  upstreamModel: z.string().trim().min(1).max(256),
-  label: z.string().trim().min(1).max(80),
-  description: z.string().trim().min(1).max(300),
-  uiMode: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
-  aliases: z.array(z.string().trim().min(1).max(120)).max(24).default([]),
-  enabled: z.boolean().default(true),
-});
-
-const modelRoutePatchSchema = modelRouteCreateSchema.omit({ id: true, uiMode: true }).partial().extend({
-  enabled: z.boolean().optional(),
-}).refine((value) => Object.keys(value).length > 0);
-
 const routingSchema = z.object({ strategy: z.enum(["round_robin", "random"]) });
 const routingPolicySchema = z.object({
   keyIds: z.array(z.string().trim().min(1).max(120)).min(1).max(32),
 });
-const modelMappingCreateSchema = z.object({
-  modelId: z.string().trim().min(2).max(120).regex(/^[a-z0-9][a-z0-9._-]*$/),
+const modelMappingTargetSchema = z.object({
   provider: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
   upstreamModel: z.string().trim().min(1).max(256),
   priority: z.coerce.number().int().min(0).max(100_000).default(100),
   enabled: z.boolean().default(true),
 });
-const modelMappingPatchSchema = modelMappingCreateSchema.partial().refine((value) => Object.keys(value).length > 0);
+const modelMappingsReplaceSchema = z.object({
+  mappings: z.array(modelMappingTargetSchema).min(1).max(32),
+}).superRefine(({ mappings }, context) => {
+  const targets = new Set<string>();
+  mappings.forEach((mapping, index) => {
+    const target = `${mapping.provider}\u0000${mapping.upstreamModel}`;
+    if (targets.has(target)) context.addIssue({ code: "custom", path: ["mappings", index], message: "Provider and upstream model targets must be unique." });
+    targets.add(target);
+  });
+});
 const loginSchema = z.object({
   email: z.email().max(320),
   password: z.string().min(1).max(200),
@@ -204,11 +197,13 @@ const announcementSchema = z.object({
   groupId: z.string().trim().min(1).max(120).optional(),
 });
 const colorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
-const dynamicModelSchema = z.object({
+const dynamicModelIdentitySchema = z.object({
   id: z.string().trim().min(2).max(120).regex(/^[a-z0-9][a-z0-9._-]*$/),
   label: z.string().trim().min(1).max(80),
   description: z.string().trim().max(300).default(""),
-  upstreamModel: z.string().trim().min(1).max(256),
+});
+const dynamicModelProvisionSchema = dynamicModelIdentitySchema.extend({
+  initialUpstreamModel: z.string().trim().min(1).max(256).optional(),
 });
 const dynamicChannelSchema = z.object({
   slug: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
@@ -227,7 +222,7 @@ const dynamicChannelSchema = z.object({
   surfaceColor: colorSchema,
   typography: z.enum(["sans", "serif", "mono"]).default("sans"),
   animatedGradient: z.boolean().default(false),
-  models: z.array(dynamicModelSchema).min(1).max(12)
+  models: z.array(dynamicModelProvisionSchema).min(1).max(12)
     .refine((models) => new Set(models.map((model) => model.id)).size === models.length, "Model ids must be unique within a channel."),
   enabled: z.boolean().default(true),
   sortOrder: z.number().int().min(0).max(10_000).default(100),
@@ -511,14 +506,14 @@ function demoAnswer(request: ChatRequest, route: ModelRoute): { reasoning?: stri
   const message = [...request.messages].reverse().find((candidate) => candidate.role === "user");
   const prompt = textContent(message?.content).trim() || "your request";
   const concisePrompt = prompt.replace(/\s+/g, " ").slice(0, 180);
-  if (route.provider === "deepseek") {
+  if (route.uiMode === "deepseek") {
     return {
       reasoning: `I will identify the useful part of the request, keep the response scoped, and state the result clearly for: ${concisePrompt}.`,
       content: `Here is a concise DeepSeek-style response to: ${concisePrompt}\n\nThe local demo stream is working. Configure a persistent upstream key pool to route this request to a production model.`,
     };
   }
   return {
-    content: `${route.provider === "gemini" ? "Gemini-style" : "ChatGPT-style"} response to: ${concisePrompt}\n\nThe API relay is streaming this response locally.`,
+    content: `${route.uiMode === "gemini" ? "Gemini-style" : "ChatGPT-style"} response to: ${concisePrompt}\n\nThe API relay is streaming this response locally.`,
   };
 }
 
@@ -555,7 +550,6 @@ type PreparedSearchRequest = {
 
 async function prepareSearchRequest(
   request: ChatRequest,
-  route: ModelRoute,
   upstreams: SelectedUpstream[],
   providers: SearchProviderExecutionConfig[],
   search: (providers: SearchProviderExecutionConfig[], query: string) => Promise<WebSearchResponse>,
@@ -563,7 +557,7 @@ async function prepareSearchRequest(
 ): Promise<PreparedSearchRequest> {
   let toolCall;
   try {
-    const decision = await fetchUpstream(upstreams, buildSearchToolDecisionRequest(request, route.upstreamModel), signal);
+    const decision = await fetchUpstream(upstreams, buildSearchToolDecisionRequest(request, upstreams[0].upstreamModel), signal);
     if (decision.ok) toolCall = parseWebSearchToolCall(await decision.json().catch(() => undefined));
     else await decision.body?.cancel().catch(() => undefined);
   } catch (error) {
@@ -598,7 +592,6 @@ async function prepareSearchRequest(
 
 async function fetchFinalUpstream(
   upstreams: SelectedUpstream[],
-  route: ModelRoute,
   prepared: PreparedSearchRequest,
   signal?: AbortSignal,
 ) {
@@ -609,7 +602,7 @@ async function fetchFinalUpstream(
       try {
         const response = await fetchUpstream([upstream], {
           ...body,
-          model: upstream.upstreamModel ?? route.upstreamModel,
+          model: upstream.upstreamModel,
         }, signal);
         lastResponse = response;
         if (response.ok || ![400, 404, 422].includes(response.status)) return response;
@@ -910,16 +903,22 @@ export function createApp(options: CreateAppOptions = {}) {
   };
 
   app.get("/health", async (context) => {
-    const models = await controlPlane.getModels();
-    const configured = await Promise.all(models.map(async (model) => (await canUseRoute(model) ? model.provider : undefined)));
-    const overview = await controlPlane.getOverview();
+    const [models, mappings, providerKeys, overview] = await Promise.all([
+      controlPlane.getModels(),
+      controlPlane.listModelMappings(),
+      controlPlane.listProviderKeys(),
+      controlPlane.getOverview(),
+    ]);
+    const modelIds = new Set(models.map((model) => model.id));
+    const activeProviders = new Set(providerKeys.filter((key) => key.status === "active").map((key) => key.provider));
+    const configured = mappings.filter((mapping) => mapping.enabled && modelIds.has(mapping.modelId) && activeProviders.has(mapping.provider));
     return context.json({
       status: "ok",
       mode: demoMode() ? "demo" : "relay",
       storage: overview.storage,
       uptimeSeconds: Math.floor((Date.now() - startedAt) / 1_000),
       activeStreams: overview.activeStreams,
-      configuredProviders: [...new Set(configured.filter(Boolean))],
+      configuredProviders: [...new Set(configured.map((mapping) => mapping.provider))],
     });
   });
 
@@ -927,7 +926,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const models = await controlPlane.getModels();
     return context.json({
       object: "list",
-      data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.provider })),
+      data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.uiMode })),
     });
   });
 
@@ -1213,9 +1212,10 @@ export function createApp(options: CreateAppOptions = {}) {
     const requestSignal = context.req.raw.signal;
     const requestStartedAt = Date.now();
     let promptTokens = estimateTokens(request.messages);
+    let metricProvider = route.uiMode;
     const makeMetric = (status: RequestMetric["status"], completionTokens = 0): RequestMetric => ({
       model: route.id,
-      provider: route.provider,
+      provider: metricProvider,
       clientKeyId: policy.clientKeyId,
       userId: policy.userId,
       status,
@@ -1229,9 +1229,10 @@ export function createApp(options: CreateAppOptions = {}) {
     let prepared: PreparedSearchRequest = { primary: request };
     if (!isDemo) {
       upstreams = await resolveUpstreams(route);
+      metricProvider = upstreams[0]?.provider ?? metricProvider;
       if (!upstreams.length) {
         await record(makeMetric("failure"));
-        return context.json({ error: { message: `No ${route.provider} upstream is configured. Add an active provider key and routing policy in the admin console.` } }, 503);
+        return context.json({ error: { message: `No upstream target is configured for ${route.id}. Add an enabled mapping and provider key in the admin console.` } }, 503);
       }
     }
     if (webSearchEnabled) {
@@ -1246,7 +1247,7 @@ export function createApp(options: CreateAppOptions = {}) {
           };
           prepared = { primary: request };
         } else {
-          prepared = await prepareSearchRequest(request, route, upstreams, providers, search, requestSignal);
+          prepared = await prepareSearchRequest(request, upstreams, providers, search, requestSignal);
           request = prepared.primary;
         }
         promptTokens = estimateTokens(request.messages);
@@ -1306,7 +1307,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     try {
-      const response = await fetchFinalUpstream(upstreams, route, prepared, requestSignal);
+      const response = await fetchFinalUpstream(upstreams, prepared, requestSignal);
       if (!request.stream) {
         const contentType = response.headers.get("content-type") ?? "application/json";
         const body = await response.text();
@@ -1539,61 +1540,34 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.get("/admin/models", async (context) => {
+  const mappingGroups = async () => {
+    const [models, mappings] = await Promise.all([controlPlane.listModelRoutes(), controlPlane.listModelMappings()]);
+    return models.map((model) => ({
+      model,
+      mappings: mappings.filter((mapping) => mapping.modelId === model.id),
+    }));
+  };
+  const listMappings = async (context: Context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
-    return context.json({ data: await controlPlane.listModelRoutes() });
-  });
-
-  app.post("/admin/models", async (context) => {
+    return context.json({ data: await mappingGroups() });
+  };
+  const replaceMappings = async (context: Context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
-    const parsed = modelRouteCreateSchema.safeParse(await context.req.json().catch(() => undefined));
-    if (!parsed.success) return context.json({ error: { message: "Invalid model mapping.", details: parsed.error.issues } }, 400);
+    const modelId = context.req.param("modelId") ?? "";
+    const model = (await controlPlane.listModelRoutes()).find((candidate) => candidate.id === modelId);
+    if (!model) return context.json({ error: { message: "Internal model was not found." } }, 404);
+    const parsed = modelMappingsReplaceSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid model mappings array.", details: parsed.error.issues } }, 400);
     try {
-      return context.json({ data: await controlPlane.createModelRoute(parsed.data) }, 201);
+      const mappings = await controlPlane.replaceModelMappings(model.id, parsed.data.mappings);
+      return context.json({ data: { model, mappings } });
     } catch (error) {
-      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to create model mapping." } }, 400);
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to replace model mappings." } }, 400);
     }
-  });
-
-  app.patch("/admin/models/:id", async (context) => {
-    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
-    const parsed = modelRoutePatchSchema.safeParse(await context.req.json().catch(() => undefined));
-    if (!parsed.success) return context.json({ error: { message: "Invalid model mapping update.", details: parsed.error.issues } }, 400);
-    const model = await controlPlane.updateModelRoute(context.req.param("id"), parsed.data);
-    return model ? context.json({ data: model }) : context.json({ error: { message: "Model mapping was not found." } }, 404);
-  });
-
-  const listModelMappings = async (context: Context) => {
-    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
-    return context.json({ data: await controlPlane.listModelMappings(context.req.query("modelId")) });
   };
-  const createModelMapping = async (context: Context) => {
-    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
-    const parsed = modelMappingCreateSchema.safeParse(await context.req.json().catch(() => undefined));
-    if (!parsed.success) return context.json({ error: { message: "Invalid model provider mapping.", details: parsed.error.issues } }, 400);
-    try { return context.json({ data: await controlPlane.createModelMapping(parsed.data) }, 201); }
-    catch (error) { return context.json({ error: { message: error instanceof Error ? error.message : "Unable to create provider mapping." } }, 400); }
-  };
-  const updateModelMapping = async (context: Context) => {
-    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
-    const parsed = modelMappingPatchSchema.safeParse(await context.req.json().catch(() => undefined));
-    if (!parsed.success) return context.json({ error: { message: "Invalid model provider mapping update.", details: parsed.error.issues } }, 400);
-    try {
-      const mapping = await controlPlane.updateModelMapping(context.req.param("id") ?? "", parsed.data);
-      return mapping ? context.json({ data: mapping }) : context.json({ error: { message: "Provider mapping was not found." } }, 404);
-    } catch (error) { return context.json({ error: { message: error instanceof Error ? error.message : "Unable to update provider mapping." } }, 400); }
-  };
-  const deleteModelMapping = async (context: Context) => {
-    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
-    return await controlPlane.deleteModelMapping(context.req.param("id") ?? "")
-      ? context.body(null, 204)
-      : context.json({ error: { message: "Provider mapping was not found." } }, 404);
-  };
-  for (const prefix of ["/admin/model-mappings", "/v1/admin/model-mappings"] as const) {
-    app.get(prefix, listModelMappings);
-    app.post(prefix, createModelMapping);
-    app.patch(`${prefix}/:id`, updateModelMapping);
-    app.delete(`${prefix}/:id`, deleteModelMapping);
+  for (const prefix of ["/admin/mappings", "/v1/admin/mappings"] as const) {
+    app.get(prefix, listMappings);
+    app.put(`${prefix}/:modelId`, replaceMappings);
   }
 
   app.get("/admin/routing", async (context) => {
@@ -1738,9 +1712,9 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/admin/dynamic-channels", async (context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
     const parsed = dynamicChannelSchema.safeParse(await context.req.json().catch(() => undefined));
-    if (!parsed.success || !parsed.data.endpoint || !parsed.data.secret) {
-      return context.json({ error: { message: "A valid channel, upstream endpoint, and API key are required.", details: parsed.success ? undefined : parsed.error.issues } }, 400);
-    }
+    if (!parsed.success) return context.json({ error: { message: "A valid channel configuration is required.", details: parsed.error.issues } }, 400);
+    if (!parsed.data.endpoint || !parsed.data.secret) return context.json({ error: { message: "An upstream endpoint and API key are required." } }, 400);
+    if (parsed.data.models.some((model) => !model.initialUpstreamModel)) return context.json({ error: { message: "Every new internal model requires an initial upstream target." } }, 400);
     try {
       const input = parsed.data;
       const existingRoutes = await controlPlane.listModelRoutes();
@@ -1755,11 +1729,25 @@ export function createApp(options: CreateAppOptions = {}) {
         bypassAuth: false,
       });
       for (const model of input.models) {
-        await controlPlane.createModelRoute({ ...model, provider: input.provider, uiMode: input.slug, aliases: [], enabled: input.enabled });
+        await controlPlane.createModelRoute({
+          id: model.id,
+          label: model.label,
+          description: model.description,
+          uiMode: input.slug,
+          aliases: [],
+          enabled: input.enabled,
+        });
+        await controlPlane.replaceModelMappings(model.id, [{
+          provider: input.provider,
+          upstreamModel: model.initialUpstreamModel!,
+          priority: input.priority,
+          enabled: input.enabled,
+        }]);
       }
       await controlPlane.setRoutingPolicy("channel", input.slug, [key.id]);
-      const { endpoint: _endpoint, secret: _secret, priority: _priority, ...channelInput } = input;
-      const channel = await enterprise.createDynamicChannel({ ...channelInput, providerKeyId: key.id });
+      const channelModels = input.models.map(({ initialUpstreamModel: _initialUpstreamModel, ...model }) => model);
+      const { endpoint: _endpoint, secret: _secret, priority: _priority, models: _models, ...channelInput } = input;
+      const channel = await enterprise.createDynamicChannel({ ...channelInput, models: channelModels, providerKeyId: key.id });
       return context.json({ data: channel }, 201);
     } catch (error) {
       return context.json({ error: { message: error instanceof Error ? error.message : "Unable to create dynamic channel." } }, 400);
@@ -1786,6 +1774,11 @@ export function createApp(options: CreateAppOptions = {}) {
       }
       if (input.models) {
         const routes = await controlPlane.listModelRoutes();
+        const providerKey = existing.providerKeyId
+          ? (await controlPlane.listProviderKeys()).find((key) => key.id === existing.providerKeyId)
+          : undefined;
+        const mappingPriority = input.priority ?? providerKey?.priority ?? 100;
+        const mappingEnabled = input.enabled ?? existing.enabled;
         for (const model of input.models) {
           const route = routes.find((item) => item.id === model.id);
           if (route && route.uiMode !== existing.slug) throw new Error(`Model id ${model.id} is already owned by another channel.`);
@@ -1798,27 +1791,37 @@ export function createApp(options: CreateAppOptions = {}) {
           const route = routes.find((item) => item.id === model.id);
           if (route) {
             await controlPlane.updateModelRoute(model.id, {
-              provider: existing.provider,
-              upstreamModel: model.upstreamModel,
               label: model.label,
               description: model.description,
-              enabled: input.enabled ?? existing.enabled,
+              enabled: mappingEnabled,
             });
           } else {
+            if (!model.initialUpstreamModel) throw new Error(`An initial upstream model is required for new model ${model.id}.`);
             await controlPlane.createModelRoute({
-              ...model,
-              provider: existing.provider,
+              id: model.id,
+              label: model.label,
+              description: model.description,
               uiMode: existing.slug,
               aliases: [],
-              enabled: input.enabled ?? existing.enabled,
+              enabled: mappingEnabled,
             });
+            await controlPlane.replaceModelMappings(model.id, [{
+              provider: existing.provider,
+              upstreamModel: model.initialUpstreamModel,
+              priority: mappingPriority,
+              enabled: mappingEnabled,
+            }]);
           }
         }
       } else if (input.enabled !== undefined) {
         await Promise.all(existing.models.map((model) => controlPlane.updateModelRoute(model.id, { enabled: input.enabled })));
       }
-      const { endpoint: _endpoint, secret: _secret, priority: _priority, ...channelPatch } = input;
-      const channel = await enterprise.updateDynamicChannel(existing.id, channelPatch);
+      const { endpoint: _endpoint, secret: _secret, priority: _priority, models, ...channelPatch } = input;
+      const channelModels = models?.map(({ initialUpstreamModel: _initialUpstreamModel, ...model }) => model);
+      const channel = await enterprise.updateDynamicChannel(existing.id, {
+        ...channelPatch,
+        ...(channelModels ? { models: channelModels } : {}),
+      });
       return context.json({ data: channel });
     } catch (error) {
       return context.json({ error: { message: error instanceof Error ? error.message : "Unable to update dynamic channel." } }, 400);

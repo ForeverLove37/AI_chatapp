@@ -117,7 +117,7 @@ export type ProviderKeyPatch = Partial<Pick<ProviderKeyInput, "label" | "endpoin
   status?: "active" | "disabled";
 };
 
-export type ModelRoutePatch = Partial<Pick<ModelRoute, "provider" | "upstreamModel" | "label" | "description" | "aliases">> & {
+export type ModelRoutePatch = Partial<Pick<ModelRoute, "label" | "description" | "aliases">> & {
   enabled?: boolean;
 };
 
@@ -131,6 +131,8 @@ export type ModelMapping = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type ModelMappingTarget = Pick<ModelMapping, "provider" | "upstreamModel" | "priority" | "enabled">;
 
 export type RequestMetric = {
   model: string;
@@ -169,11 +171,12 @@ export type Overview = {
 };
 
 export type SelectedUpstream = {
+  provider: Provider;
   endpoint: string;
   secret: string;
   bypassAuth: boolean;
   keyId: string;
-  upstreamModel?: string;
+  upstreamModel: string;
 };
 
 export type ClientAuthorization =
@@ -213,9 +216,7 @@ export interface ControlPlane {
   createModelRoute(route: ModelRoute): Promise<ModelRoute>;
   updateModelRoute(id: string, patch: ModelRoutePatch): Promise<ModelRoute | undefined>;
   listModelMappings(modelId?: string): Promise<ModelMapping[]>;
-  createModelMapping(input: Omit<ModelMapping, "id" | "createdAt" | "updatedAt">): Promise<ModelMapping>;
-  updateModelMapping(id: string, patch: Partial<Omit<ModelMapping, "id" | "createdAt" | "updatedAt">>): Promise<ModelMapping | undefined>;
-  deleteModelMapping(id: string): Promise<boolean>;
+  replaceModelMappings(modelId: string, targets: ModelMappingTarget[]): Promise<ModelMapping[]>;
   getRoutingStrategy(): Promise<LoadBalanceStrategy>;
   setRoutingStrategy(strategy: LoadBalanceStrategy): Promise<LoadBalanceStrategy>;
   listRoutingPolicies(): Promise<RoutingPolicy[]>;
@@ -293,8 +294,6 @@ function isoValue(value: unknown) {
 function modelFromRow(row: Record<string, unknown>): ModelRoute {
   return {
     id: String(row.id),
-    provider: String(row.provider) as Provider,
-    upstreamModel: String(row.upstream_model),
     label: String(row.label),
     description: String(row.description),
     uiMode: String(row.ui_mode) as ModelRoute["uiMode"],
@@ -376,7 +375,7 @@ export class MemoryControlPlane implements ControlPlane {
   private readonly apiKeys = new Map<string, StoredClientKey>();
   private readonly users = new Map<string, StoredUser>();
   private readonly providerKeys = new Map<string, StoredProviderKey>();
-  private readonly models = new Map(modelCatalog.map((model) => [model.id, { ...model, enabled: true }]));
+  private readonly models = new Map(modelCatalog.map(({ defaultMapping: _defaultMapping, ...model }) => [model.id, { ...model, enabled: true }]));
   private readonly modelMappings = new Map<string, ModelMapping>();
   private readonly policies = new Map<string, RoutingPolicy>();
   private readonly userUsage = new Map<string, UsageWindow>();
@@ -423,8 +422,8 @@ export class MemoryControlPlane implements ControlPlane {
       this.modelMappings.set(`map_${model.id}`, {
         id: `map_${model.id}`,
         modelId: model.id,
-        provider: model.provider,
-        upstreamModel: model.upstreamModel,
+        provider: model.defaultMapping.provider,
+        upstreamModel: model.defaultMapping.upstreamModel,
         priority: 100,
         enabled: true,
         createdAt: timestamp,
@@ -446,7 +445,7 @@ export class MemoryControlPlane implements ControlPlane {
 
   async hasAvailableUpstream(route: ModelRoute) {
     const mappings = [...this.modelMappings.values()].filter((mapping) => mapping.modelId === route.id && mapping.enabled);
-    const providers = new Set((mappings.length ? mappings : [{ provider: route.provider }]).map((mapping) => mapping.provider));
+    const providers = new Set(mappings.map((mapping) => mapping.provider));
     const explicit = this.policies.get(policyKey("model", route.id))
       ?? this.policies.get(policyKey("channel", route.uiMode));
     return [...this.providerKeys.values()].some((key) => key.status === "active"
@@ -464,12 +463,14 @@ export class MemoryControlPlane implements ControlPlane {
       return explicit.keyIds
         .map((id) => this.providerKeys.get(id))
         .filter((key): key is StoredProviderKey => Boolean(key && key.status === "active"))
-        .map((key) => ({ endpoint: key.endpoint, secret: key.secret, bypassAuth: key.bypassAuth, keyId: key.id, upstreamModel: mappings.find((mapping) => mapping.provider === key.provider)?.upstreamModel ?? route.upstreamModel }));
+        .flatMap((key) => {
+          const mapping = mappings.find((candidate) => candidate.provider === key.provider);
+          return mapping ? [{ provider: key.provider, endpoint: key.endpoint, secret: key.secret, bypassAuth: key.bypassAuth, keyId: key.id, upstreamModel: mapping.upstreamModel }] : [];
+        });
     }
-    const activeMappings = mappings.length ? mappings : [{ provider: route.provider, upstreamModel: route.upstreamModel, priority: 100 } as ModelMapping];
     const ordered: StoredProviderKey[] = [];
     const modelsByKey = new Map<string, string>();
-    for (const mapping of activeMappings) {
+    for (const mapping of mappings) {
       const sorted = [...this.providerKeys.values()]
         .filter((key) => key.provider === mapping.provider && key.status === "active")
         .sort((left, right) => left.priority - right.priority || left.createdAt.localeCompare(right.createdAt));
@@ -489,7 +490,7 @@ export class MemoryControlPlane implements ControlPlane {
         }
       }
     }
-    return ordered.map((key) => ({ endpoint: key.endpoint, secret: key.secret, bypassAuth: key.bypassAuth, keyId: key.id, upstreamModel: modelsByKey.get(key.id) ?? route.upstreamModel }));
+    return ordered.map((key) => ({ provider: key.provider, endpoint: key.endpoint, secret: key.secret, bypassAuth: key.bypassAuth, keyId: key.id, upstreamModel: modelsByKey.get(key.id)! }));
   }
 
   async authorizeClient(secret: string): Promise<ClientAuthorization> {
@@ -740,7 +741,7 @@ export class MemoryControlPlane implements ControlPlane {
   }
 
   async createModelRoute(route: ModelRoute) {
-    if (this.models.has(route.id)) throw new Error("A model mapping with that internal name already exists.");
+    if (this.models.has(route.id)) throw new Error("An internal model with that name already exists.");
     const normalized = { ...route, id: route.id.toLowerCase(), aliases: route.aliases.map((alias) => alias.toLowerCase()), enabled: route.enabled ?? true };
     this.models.set(normalized.id, normalized);
     return normalized;
@@ -759,24 +760,20 @@ export class MemoryControlPlane implements ControlPlane {
       .sort((left, right) => left.modelId.localeCompare(right.modelId) || left.priority - right.priority);
   }
 
-  async createModelMapping(input: Omit<ModelMapping, "id" | "createdAt" | "updatedAt">) {
-    if (!this.models.has(input.modelId)) throw new Error("The selected internal model was not found.");
+  async replaceModelMappings(modelId: string, targets: ModelMappingTarget[]) {
+    if (!this.models.has(modelId)) throw new Error("The selected internal model was not found.");
+    if (!targets.length) throw new Error("At least one upstream target is required.");
+    for (const [id, mapping] of this.modelMappings) if (mapping.modelId === modelId) this.modelMappings.delete(id);
     const timestamp = nowIso();
-    const mapping: ModelMapping = { ...input, id: `map_${randomUUID().slice(0, 12)}`, createdAt: timestamp, updatedAt: timestamp };
-    this.modelMappings.set(mapping.id, mapping);
-    return mapping;
-  }
-
-  async updateModelMapping(id: string, patch: Partial<Omit<ModelMapping, "id" | "createdAt" | "updatedAt">>) {
-    const current = this.modelMappings.get(id);
-    if (!current) return undefined;
-    const next = { ...current, ...patch, updatedAt: nowIso() };
-    this.modelMappings.set(id, next);
-    return next;
-  }
-
-  async deleteModelMapping(id: string) {
-    return this.modelMappings.delete(id);
+    const mappings = targets.map((target) => ({
+      ...target,
+      id: `map_${randomUUID().slice(0, 12)}`,
+      modelId,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }));
+    for (const mapping of mappings) this.modelMappings.set(mapping.id, mapping);
+    return mappings;
   }
 
   async getRoutingStrategy() {
@@ -794,7 +791,7 @@ export class MemoryControlPlane implements ControlPlane {
 
   async setRoutingPolicy(scope: RoutingScope, scopeId: string, keyIds: string[]) {
     const target = normalizePolicyScope(scope, scopeId);
-    if (scope === "model" && !this.models.has(target)) throw new Error("The selected model mapping was not found.");
+    if (scope === "model" && !this.models.has(target)) throw new Error("The selected internal model was not found.");
     const normalizedIds = [...new Set(keyIds.map((id) => id.trim()).filter(Boolean))];
     if (!normalizedIds.length) return undefined;
     if (normalizedIds.some((id) => !this.providerKeys.has(id))) throw new Error("One or more selected provider keys were not found.");
@@ -928,11 +925,9 @@ export class PostgresControlPlane implements ControlPlane {
       ALTER TABLE provider_keys ADD COLUMN IF NOT EXISTS bypass_auth BOOLEAN NOT NULL DEFAULT FALSE;
       CREATE TABLE IF NOT EXISTS model_routes (
         id TEXT PRIMARY KEY,
-        provider TEXT NOT NULL CHECK (provider IN ('openai', 'gemini', 'deepseek')),
-        upstream_model TEXT NOT NULL,
         label TEXT NOT NULL,
         description TEXT NOT NULL,
-        ui_mode TEXT NOT NULL CHECK (ui_mode IN ('chatgpt', 'gemini', 'deepseek')),
+        ui_mode TEXT NOT NULL,
         aliases TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
         enabled BOOLEAN NOT NULL DEFAULT TRUE,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -1001,8 +996,23 @@ export class PostgresControlPlane implements ControlPlane {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
       ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
       ALTER TABLE provider_keys DROP CONSTRAINT IF EXISTS provider_keys_provider_check;
-      ALTER TABLE model_routes DROP CONSTRAINT IF EXISTS model_routes_provider_check;
       ALTER TABLE model_routes DROP CONSTRAINT IF EXISTS model_routes_ui_mode_check;
+      DO $legacy_route_migration$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'model_routes' AND column_name = 'provider')
+          AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'model_routes' AND column_name = 'upstream_model') THEN
+          EXECUTE $migrate$
+            INSERT INTO model_mappings (id, model_id, provider, upstream_model, priority, enabled)
+            SELECT 'map_migrated_' || SUBSTRING(md5(route.id), 1, 16), route.id, route.provider, route.upstream_model, 100, route.enabled
+            FROM model_routes AS route
+            WHERE NOT EXISTS (SELECT 1 FROM model_mappings AS mapping WHERE mapping.model_id = route.id)
+            ON CONFLICT (id) DO NOTHING
+          $migrate$;
+        END IF;
+      END
+      $legacy_route_migration$;
+      ALTER TABLE model_routes DROP COLUMN IF EXISTS provider;
+      ALTER TABLE model_routes DROP COLUMN IF EXISTS upstream_model;
       UPDATE provider_keys
       SET endpoint = regexp_replace(endpoint, '/v1/?$', '/v1/chat/completions')
       WHERE endpoint ~ '/v1/?$';
@@ -1013,15 +1023,17 @@ export class PostgresControlPlane implements ControlPlane {
     await this.pool.query("INSERT INTO routing_settings (id, strategy) VALUES (1, 'round_robin') ON CONFLICT (id) DO NOTHING");
     for (const model of modelCatalog) {
       await this.pool.query(
-        `INSERT INTO model_routes (id, provider, upstream_model, label, description, ui_mode, aliases, enabled)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+        `INSERT INTO model_routes (id, label, description, ui_mode, aliases, enabled)
+         VALUES ($1, $2, $3, $4, $5, TRUE)
          ON CONFLICT (id) DO NOTHING`,
-        [model.id, model.provider, model.upstreamModel, model.label, model.description, model.uiMode, model.aliases],
+        [model.id, model.label, model.description, model.uiMode, model.aliases],
       );
       await this.pool.query(
         `INSERT INTO model_mappings (id, model_id, provider, upstream_model, priority)
-         VALUES ($1, $2, $3, $4, 100) ON CONFLICT (id) DO NOTHING`,
-        [`map_${model.id}`, model.id, model.provider, model.upstreamModel],
+         SELECT $1, $2, $3, $4, 100
+         WHERE NOT EXISTS (SELECT 1 FROM model_mappings WHERE model_id = $2)
+         ON CONFLICT (id) DO NOTHING`,
+        [`map_${model.id}`, model.id, model.defaultMapping.provider, model.defaultMapping.upstreamModel],
       );
     }
   }
@@ -1068,32 +1080,31 @@ export class PostgresControlPlane implements ControlPlane {
     return result.rows.map(mappingFromRow);
   }
 
-  async createModelMapping(input: Omit<ModelMapping, "id" | "createdAt" | "updatedAt">) {
-    const model = await this.pool.query("SELECT 1 FROM model_routes WHERE id = $1", [input.modelId]);
-    if (!model.rowCount) throw new Error("The selected internal model was not found.");
-    const result = await this.pool.query<Record<string, unknown>>(
-      `INSERT INTO model_mappings (id, model_id, provider, upstream_model, priority, enabled)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [`map_${randomUUID().slice(0, 12)}`, input.modelId, input.provider, input.upstreamModel, input.priority, input.enabled],
-    );
-    return mappingFromRow(result.rows[0]);
-  }
-
-  async updateModelMapping(id: string, patch: Partial<Omit<ModelMapping, "id" | "createdAt" | "updatedAt">>) {
-    const fields: string[] = ["updated_at = NOW()"]; const values: unknown[] = [];
-    if (patch.modelId !== undefined) { values.push(patch.modelId); fields.push(`model_id = $${values.length}`); }
-    if (patch.provider !== undefined) { values.push(patch.provider); fields.push(`provider = $${values.length}`); }
-    if (patch.upstreamModel !== undefined) { values.push(patch.upstreamModel); fields.push(`upstream_model = $${values.length}`); }
-    if (patch.priority !== undefined) { values.push(patch.priority); fields.push(`priority = $${values.length}`); }
-    if (patch.enabled !== undefined) { values.push(patch.enabled); fields.push(`enabled = $${values.length}`); }
-    values.push(id);
-    const result = await this.pool.query<Record<string, unknown>>(`UPDATE model_mappings SET ${fields.join(", ")} WHERE id = $${values.length} RETURNING *`, values);
-    return result.rows[0] ? mappingFromRow(result.rows[0]) : undefined;
-  }
-
-  async deleteModelMapping(id: string) {
-    const result = await this.pool.query("DELETE FROM model_mappings WHERE id = $1", [id]);
-    return (result.rowCount ?? 0) > 0;
+  async replaceModelMappings(modelId: string, targets: ModelMappingTarget[]) {
+    if (!targets.length) throw new Error("At least one upstream target is required.");
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const model = await client.query("SELECT 1 FROM model_routes WHERE id = $1 FOR UPDATE", [modelId]);
+      if (!model.rowCount) throw new Error("The selected internal model was not found.");
+      await client.query("DELETE FROM model_mappings WHERE model_id = $1", [modelId]);
+      const mappings: ModelMapping[] = [];
+      for (const target of targets) {
+        const result = await client.query<Record<string, unknown>>(
+          `INSERT INTO model_mappings (id, model_id, provider, upstream_model, priority, enabled)
+           VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+          [`map_${randomUUID().slice(0, 12)}`, modelId, target.provider, target.upstreamModel, target.priority, target.enabled],
+        );
+        mappings.push(mappingFromRow(result.rows[0]));
+      }
+      await client.query("COMMIT");
+      return mappings;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   private async policyForRoute(route: ModelRoute) {
@@ -1116,7 +1127,7 @@ export class PostgresControlPlane implements ControlPlane {
 
   async hasAvailableUpstream(route: ModelRoute) {
     const mappings = (await this.listModelMappings(route.id)).filter((mapping) => mapping.enabled);
-    const providers = (mappings.length ? mappings : [{ provider: route.provider }]).map((mapping) => mapping.provider);
+    const providers = mappings.map((mapping) => mapping.provider);
     const policy = await this.policyForRoute(route);
     const result = await this.pool.query<{ exists: boolean }>(
       `SELECT EXISTS(
@@ -1134,10 +1145,9 @@ export class PostgresControlPlane implements ControlPlane {
     const policy = await this.policyForRoute(route);
     const strategy = await this.getRoutingStrategy();
     const mappings = (await this.listModelMappings(route.id)).filter((mapping) => mapping.enabled);
-    const activeMappings = mappings.length ? mappings : [{ provider: route.provider, upstreamModel: route.upstreamModel, priority: 100 } as ModelMapping];
     const ordered: Array<{ row: Record<string, unknown>; upstreamModel: string }> = [];
     const seen = new Set<string>();
-    for (const mapping of activeMappings) {
+    for (const mapping of mappings) {
       const keys = policy
         ? await this.pool.query<Record<string, unknown>>(
           `SELECT * FROM provider_keys
@@ -1169,6 +1179,7 @@ export class PostgresControlPlane implements ControlPlane {
       await this.pool.query("UPDATE provider_keys SET last_used_at = NOW() WHERE id = ANY($1::text[])", [ordered.map(({ row }) => String(row.id))]);
     }
     return ordered.map(({ row, upstreamModel }) => ({
+      provider: String(row.provider),
       endpoint: String(row.endpoint),
       secret: this.decrypt(String(row.encrypted_secret)),
       bypassAuth: Boolean(row.bypass_auth),
@@ -1468,9 +1479,9 @@ export class PostgresControlPlane implements ControlPlane {
 
   async createModelRoute(route: ModelRoute) {
     const result = await this.pool.query<Record<string, unknown>>(
-      `INSERT INTO model_routes (id, provider, upstream_model, label, description, ui_mode, aliases, enabled)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [route.id.toLowerCase(), route.provider, route.upstreamModel, route.label, route.description, route.uiMode, route.aliases.map((alias) => alias.toLowerCase()), route.enabled ?? true],
+      `INSERT INTO model_routes (id, label, description, ui_mode, aliases, enabled)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [route.id.toLowerCase(), route.label, route.description, route.uiMode, route.aliases.map((alias) => alias.toLowerCase()), route.enabled ?? true],
     );
     return modelFromRow(result.rows[0]);
   }
@@ -1478,8 +1489,6 @@ export class PostgresControlPlane implements ControlPlane {
   async updateModelRoute(id: string, patch: ModelRoutePatch) {
     const fields: string[] = ["updated_at = NOW()"];
     const values: unknown[] = [];
-    if (patch.provider !== undefined) { values.push(patch.provider); fields.push(`provider = $${values.length}`); }
-    if (patch.upstreamModel !== undefined) { values.push(patch.upstreamModel); fields.push(`upstream_model = $${values.length}`); }
     if (patch.label !== undefined) { values.push(patch.label); fields.push(`label = $${values.length}`); }
     if (patch.description !== undefined) { values.push(patch.description); fields.push(`description = $${values.length}`); }
     if (patch.aliases !== undefined) { values.push(patch.aliases.map((alias) => alias.toLowerCase())); fields.push(`aliases = $${values.length}`); }
@@ -1515,7 +1524,7 @@ export class PostgresControlPlane implements ControlPlane {
     const target = normalizePolicyScope(scope, scopeId);
     if (scope === "model") {
       const model = await this.pool.query("SELECT 1 FROM model_routes WHERE id = $1", [target]);
-      if (!model.rowCount) throw new Error("The selected model mapping was not found.");
+      if (!model.rowCount) throw new Error("The selected internal model was not found.");
     }
     const normalizedIds = [...new Set(keyIds.map((id) => id.trim()).filter(Boolean))];
     if (!normalizedIds.length) return undefined;

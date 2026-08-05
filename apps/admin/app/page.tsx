@@ -78,11 +78,9 @@ type UserEditForm = {
 
 type Model = {
   id: string;
-  provider: Provider;
-  upstreamModel: string;
   label: string;
   description: string;
-  uiMode: "chatgpt" | "gemini" | "deepseek";
+  uiMode: string;
   aliases: string[];
   enabled: boolean;
   upstreamConfigured: boolean;
@@ -97,6 +95,19 @@ type ModelMapping = {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+type ModelMappingGroup = {
+  model: Omit<Model, "upstreamConfigured">;
+  mappings: ModelMapping[];
+};
+
+type ModelMappingDraft = {
+  clientId: string;
+  provider: Provider;
+  upstreamModel: string;
+  priority: string;
+  enabled: boolean;
 };
 
 type ProviderKey = {
@@ -244,11 +255,11 @@ const englishCopy: AdminCopy = {
   createUser: "Create user", accountsAdminOnly: "Accounts are created only by an administrator", email: "Email", password: "Password", role: "Role", standard: "Standard", admin: "Admin", rpm: "RPM", dailyQuota: "Daily quota", userAccess: "User access", statusRoleQuota: "Status, role, and quotas", identity: "Identity", limits: "Limits", monthlyTokens: "Monthly tokens", status: "Status", suspend: "Suspend", restore: "Restore", edit: "Edit", editUser: "Edit user", resetPassword: "Reset password", leavePasswordBlank: "Leave blank to keep the current password", saveChanges: "Save changes", cancel: "Cancel",
   issueClientKey: "Issue client key", secretHashed: "A secret is shown once and stored as a hash", name: "Name", user: "User", unassigned: "Unassigned", issueKey: "Issue key", newClientKey: "New client key", dismiss: "Dismiss", keyPoolClient: "Rate and daily quota usage are sourced from Redis", prefix: "Prefix", usage: "Usage", revoke: "Revoke",
   addProviderKey: "Add provider key", editProvider: "Edit provider", encryptedPostgres: "Secrets are encrypted before PostgreSQL storage", provider: "Provider", openAiCompatible: "OpenAI-compatible", label: "Label", endpoint: "Endpoint", secret: "Secret", priority: "Priority", addProvider: "Add provider key", keyPool: "Key pool", priorityDetail: "Lowest numeric priority is selected first; tied tiers use the routing strategy", lastUsed: "Last used", never: "Never", disable: "Disable", enable: "Enable", bypassAuth: "Bypass Authentication (Keyless)", bypassAuthDetail: "Send requests without an Authorization header; use only with an IP-whitelisted upstream.", keyless: "Keyless", noProviderKeys: "No provider keys are configured.", deleteProviderTitle: "Delete provider key?", deleteProviderPrompt: "The provider endpoint and stored secret will be permanently removed.", saveProvider: "Save provider", cancelEdit: "Cancel edit",
-  channelDefaults: "Channel defaults", channelDefaultsDetail: "Each ordered list is an explicit fallback chain. The first available key is used first.", modelOverrides: "Model overrides", modelOverridesDetail: "A model override takes precedence over its channel chain. Clear it to inherit the channel default.", customChain: "Custom chain", inheritsChannel: "Inherits channel", usesPriority: "Uses provider priority", noExplicitOrder: "No explicit key order.", addProviderKeyOption: "Add provider key", add: "Add", saveOrder: "Save order", clear: "Clear", priorityBalancing: "Priority-tier balancing", priorityBalancingDetail: "Used only when no explicit channel or model chain is configured.", roundRobin: "Round robin", randomized: "Randomized", current: "Current", modelMappings: "Model mappings", mappingDetail: "Internal names sent by clients are translated before upstream dispatch", upstreamModel: "Upstream model", addMapping: "Add mapping", addMappingDetail: "Expose a new internal model name without changing the mobile client", internalName: "Internal name", description: "Description", aliases: "Aliases", providerMappings: "Provider mappings (1-to-N)", providerMappingsDetail: "Route one internal model to several provider endpoints by priority.", mappingPriority: "Mapping priority", mappingEnabled: "Mapping enabled", saveMapping: "Save provider mapping", deleteMappingTitle: "Delete provider mapping?", deleteMappingPrompt: "This provider endpoint mapping will be removed from the routing chain.", noProviderMappings: "No provider mappings yet.",
+  channelDefaults: "Channel defaults", channelDefaultsDetail: "Each ordered list is an explicit fallback chain. The first available key is used first.", modelOverrides: "Model overrides", modelOverridesDetail: "A model override takes precedence over its channel chain. Clear it to inherit the channel default.", customChain: "Custom chain", inheritsChannel: "Inherits channel", usesPriority: "Uses provider priority", noExplicitOrder: "No explicit key order.", addProviderKeyOption: "Add provider key", add: "Add", saveOrder: "Save order", clear: "Clear", priorityBalancing: "Priority-tier balancing", priorityBalancingDetail: "Used only when no explicit channel or model chain is configured.", roundRobin: "Round robin", randomized: "Randomized", current: "Current", routingMappings: "Model routing mappings", routingMappingsDetail: "The array-based 1-to-N target list is the single source of truth for upstream dispatch.", upstreamModel: "Upstream model", internalName: "Internal model", description: "Description", channel: "Channel", upstreamTargets: "Upstream targets", loadingMappings: "Loading model mappings", noInternalModels: "No internal models are configured.", noDescription: "No description", noUpstreamTargets: "No upstream targets", configure: "Configure", configureRouting: "Configure routing", mappingModalDetail: "Manage every upstream target in one atomic change.", priorityOrderDetail: "Lower priorities run first. Reordering normalizes priorities in steps of 10.", addTarget: "Add target", atLeastOneTarget: "Add at least one upstream target before saving.", invalidMappingTarget: "Every target requires a provider, upstream model, and integer priority from 0 to 100000.", duplicateMappingTarget: "Each provider and upstream model pair must be unique.", saveMappings: "Save mappings",
   feedbackInbox: "Feedback inbox", feedbackDetail: "Messages are submitted by authenticated Android accounts and persisted in PostgreSQL.", message: "Message", account: "Account", context: "Context", received: "Received", noFeedback: "No feedback has been submitted.", unknown: "Unknown", new: "New", reviewed: "Reviewed", resolved: "Resolved",
   publishVersion: "Publish app version", publishVersionDetail: "The active release is returned by the Android update-check endpoint.", versionCode: "Version code", versionName: "Version name", apkUrl: "APK URL", releaseNotes: "Release notes", setActive: "Set active", publishRelease: "Publish release", publishedVersions: "Published versions", oneActiveVersion: "Only one version is active at a time.", version: "Version", download: "Download", notes: "Notes", published: "Published", apkLink: "APK link", activate: "Activate", active: "Active", noVersions: "No app versions have been published.", code: "Code",
   liveSse: "Live SSE", connectionsFlight: "Connections in flight", persistedSuccess: "Persisted successes", providerFailure: "Provider or relay failures", currentProcess: "Current process lifetime",
-  smtpTitle: "SMTP email", smtpDetail: "Security alerts and announcements are delivered asynchronously", templates: "HTML templates", preview: "Sandboxed preview", sendTest: "Send test", channelBuilder: "No-code channel builder", channelBuilderDetail: "Publish native channel styling and upstream mappings without an Android release", livePreview: "Native live preview", groupsTitle: "User groups", groupsDetail: "Control beta and production OTA audiences", buildPipeline: "Android deployment pipeline", buildBeta: "Build Beta", publishProduction: "Publish Production", backupDestinations: "Backup destinations", backupDetail: "Encrypted PostgreSQL snapshots to local, WebDAV, or S3 storage", recoveryGuide: "Restoration guide", workerJobs: "Background jobs", workerDetail: "Redis-backed execution history and logs", trigger: "Run now", save: "Save", delete: "Delete", enabled: "Enabled", disabled: "Disabled",
+  smtpTitle: "SMTP email", smtpDetail: "Security alerts and announcements are delivered asynchronously", templates: "HTML templates", preview: "Sandboxed preview", sendTest: "Send test", channelBuilder: "No-code channel builder", channelBuilderDetail: "Publish native channel presentation and model identities; routing targets are managed centrally in Routing.", livePreview: "Native live preview", groupsTitle: "User groups", groupsDetail: "Control beta and production OTA audiences", buildPipeline: "Android deployment pipeline", buildBeta: "Build Beta", publishProduction: "Publish Production", backupDestinations: "Backup destinations", backupDetail: "Encrypted PostgreSQL snapshots to local, WebDAV, or S3 storage", recoveryGuide: "Restoration guide", workerJobs: "Background jobs", workerDetail: "Redis-backed execution history and logs", trigger: "Run now", save: "Save", delete: "Delete", enabled: "Enabled", disabled: "Disabled", initialUpstreamTarget: "Initial upstream target", initialUpstreamDetail: "New models require one initial target. After creation, all targets are managed in the Routing modal.", managedInRouting: "Managed in Routing",
   language: "Language", navSearchProviders: "Search providers", confirm: "Confirm", confirmationTitle: "Confirm destructive action", confirmationDetail: "This operation cannot be undone.", deleteUserTitle: "Delete user?", deleteUserPrompt: "The account and its persisted account data will be permanently removed.", deleteChannelTitle: "Delete channel?", deleteChannelPrompt: "The channel will be removed and its model routes will be disabled.", deleteBackupTitle: "Delete backup destination?", deleteBackupPrompt: "The destination configuration will be permanently removed.", revokeKeyTitle: "Revoke client key?", revokeKeyPrompt: "The client key will stop working immediately.", clearRouteTitle: "Clear routing policy?", clearRoutePrompt: "The explicit fallback chain will be removed.",
   searchProvidersTitle: "Web search providers", searchProvidersDetail: "Prioritized grounding sources used when a client enables Web Search", addSearchProvider: "Add search provider", editSearchProvider: "Edit search provider", providerKind: "Integration", providerId: "Provider ID", maxResults: "Maximum results", apiKey: "API key", configured: "Configured", notConfigured: "Not configured", searchPriorityDetail: "Lower priorities run first; an empty result or provider failure advances to the next enabled integration.", updateProvider: "Update provider", createProvider: "Create provider", deleteSearchTitle: "Delete search provider?", deleteSearchPrompt: "This grounding integration and its encrypted key will be permanently removed.", leaveApiKeyBlank: "Leave blank to keep the current key", apiKeyRequired: "A key is required for Tavily and SerpApi", noSearchProviders: "No search providers are configured.",
   appIcon: "App launcher icon", appIconDetail: "One global brand asset is bundled into the next Beta or Production APK.", appIconManagement: "Launcher icon management", appIconManagementDetail: "Update build branding independently from channels and model routing.", currentAppIcon: "Current launcher icon", noAppIcon: "Default project icon", saveAppIcon: "Save launcher icon", removeAppIcon: "Use default icon", appIconSaved: "Launcher icon saved.", customCss: "Native background CSS", customCssDetail: "Supported colors, linear gradients, animation duration, and font family are parsed into native Compose styling.", iconTooLarge: "Images must be PNG, JPEG, or WebP and smaller than 3 MB.", channelIcon: "Channel icon", animatedGradient: "Animated gradient", models: "Models", internalModelId: "Internal model ID", modelLabel: "Model label", removeModel: "Remove model", addModel: "Add model", updateChannel: "Update channel", publishChannel: "Publish channel", previewStyleDetail: "The Android client consumes these exact native style tokens", newChannel: "New channel", model: "Model", previewGreeting: "How can I help?", messageChannel: "Message channel", publishedChannels: "Published dynamic channels", publishedChannelsDetail: "Android and Web clients display these channel presentation settings after configuration refresh.",
@@ -271,11 +282,11 @@ const chineseCopy: AdminCopy = {
   createUser: "创建用户", accountsAdminOnly: "账户只能由管理员创建", email: "邮箱", password: "密码", role: "角色", standard: "普通用户", admin: "管理员", rpm: "每分钟请求", dailyQuota: "每日配额", userAccess: "用户权限", statusRoleQuota: "状态、角色与配额", identity: "身份", limits: "限制", monthlyTokens: "月度令牌", status: "状态", suspend: "停用", restore: "恢复", edit: "编辑", editUser: "编辑用户", resetPassword: "重置密码", leavePasswordBlank: "留空则保留当前密码", saveChanges: "保存更改", cancel: "取消",
   issueClientKey: "签发客户端密钥", secretHashed: "密钥只显示一次，数据库仅保存哈希", name: "名称", user: "用户", unassigned: "未分配", issueKey: "签发密钥", newClientKey: "新的客户端密钥", dismiss: "关闭", keyPoolClient: "每分钟和每日用量由 Redis 提供", prefix: "前缀", usage: "用量", revoke: "撤销",
   addProviderKey: "添加上游密钥", editProvider: "编辑上游提供商", encryptedPostgres: "密钥在写入 PostgreSQL 前会加密", provider: "提供商", openAiCompatible: "OpenAI 兼容", label: "标签", endpoint: "端点", secret: "密钥", priority: "优先级", addProvider: "添加上游密钥", keyPool: "密钥池", priorityDetail: "数值更小的优先级先使用；相同优先级由路由策略决定", lastUsed: "最近使用", never: "从未", disable: "禁用", enable: "启用", bypassAuth: "绕过认证（无密钥）", bypassAuthDetail: "不发送 Authorization 请求头；仅用于已加入 IP 白名单的上游。", keyless: "无密钥", noProviderKeys: "尚未配置上游密钥。", deleteProviderTitle: "删除上游密钥？", deleteProviderPrompt: "上游端点及已保存的密钥将被永久删除。", saveProvider: "保存上游提供商", cancelEdit: "取消编辑",
-  channelDefaults: "频道默认路由", channelDefaultsDetail: "每个有序列表都是明确的回退链，会先使用第一个可用密钥。", modelOverrides: "模型覆盖", modelOverridesDetail: "模型覆盖优先于频道链，清除后继承频道默认值。", customChain: "自定义链", inheritsChannel: "继承频道", usesPriority: "使用提供商优先级", noExplicitOrder: "没有明确的密钥顺序。", addProviderKeyOption: "添加上游密钥", add: "添加", saveOrder: "保存顺序", clear: "清除", priorityBalancing: "优先级分层均衡", priorityBalancingDetail: "仅在未配置明确频道或模型链时使用。", roundRobin: "轮询", randomized: "随机", current: "当前", modelMappings: "模型映射", mappingDetail: "客户端发送的内部名称会在上游转发前进行转换", upstreamModel: "上游模型", addMapping: "添加映射", addMappingDetail: "无需变更移动端即可暴露新的内部模型名称", internalName: "内部名称", description: "描述", aliases: "别名", providerMappings: "提供商映射（1 对多）", providerMappingsDetail: "按优先级将一个内部模型路由到多个提供商端点。", mappingPriority: "映射优先级", mappingEnabled: "启用映射", saveMapping: "保存提供商映射", deleteMappingTitle: "删除提供商映射？", deleteMappingPrompt: "该提供商端点映射将从路由链中移除。", noProviderMappings: "尚未配置提供商映射。",
+  channelDefaults: "频道默认路由", channelDefaultsDetail: "每个有序列表都是明确的回退链，会先使用第一个可用密钥。", modelOverrides: "模型覆盖", modelOverridesDetail: "模型覆盖优先于频道链，清除后继承频道默认值。", customChain: "自定义链", inheritsChannel: "继承频道", usesPriority: "使用提供商优先级", noExplicitOrder: "没有明确的密钥顺序。", addProviderKeyOption: "添加上游密钥", add: "添加", saveOrder: "保存顺序", clear: "清除", priorityBalancing: "优先级分层均衡", priorityBalancingDetail: "仅在未配置明确频道或模型链时使用。", roundRobin: "轮询", randomized: "随机", current: "当前", routingMappings: "模型路由映射", routingMappingsDetail: "基于数组的一对多目标列表是上游转发的唯一数据源。", upstreamModel: "上游模型", internalName: "内部模型", description: "描述", channel: "频道", upstreamTargets: "上游目标", loadingMappings: "正在加载模型映射", noInternalModels: "尚未配置内部模型。", noDescription: "无描述", noUpstreamTargets: "无上游目标", configure: "配置", configureRouting: "配置路由", mappingModalDetail: "在一次原子变更中管理全部上游目标。", priorityOrderDetail: "优先级数值越低越先执行；重新排序会按 10 的步长重设优先级。", addTarget: "添加目标", atLeastOneTarget: "保存前请至少添加一个上游目标。", invalidMappingTarget: "每个目标都需要提供商、上游模型以及 0 到 100000 之间的整数优先级。", duplicateMappingTarget: "提供商与上游模型的组合不得重复。", saveMappings: "保存映射",
   feedbackInbox: "反馈收件箱", feedbackDetail: "消息由已认证的 Android 账户提交并持久化到 PostgreSQL。", message: "内容", account: "账户", context: "上下文", received: "收到时间", noFeedback: "尚未收到反馈。", unknown: "未知", new: "新建", reviewed: "已查看", resolved: "已解决",
   publishVersion: "发布应用版本", publishVersionDetail: "Android 更新检查接口将返回当前激活的版本。", versionCode: "版本代码", versionName: "版本名称", apkUrl: "APK 地址", releaseNotes: "发布说明", setActive: "设为激活", publishRelease: "发布版本", publishedVersions: "已发布版本", oneActiveVersion: "任一时间只有一个激活版本。", version: "版本", download: "下载", notes: "说明", published: "发布时间", apkLink: "APK 链接", activate: "激活", active: "已激活", noVersions: "尚未发布应用版本。", code: "代码",
   liveSse: "实时 SSE", connectionsFlight: "传输中的连接", persistedSuccess: "已持久化成功请求", providerFailure: "提供商或中继失败", currentProcess: "当前进程运行时间",
-  smtpTitle: "SMTP 邮件", smtpDetail: "安全提醒和公告通过异步队列发送", templates: "HTML 模板", preview: "沙箱预览", sendTest: "发送测试", channelBuilder: "无代码频道构建器", channelBuilderDetail: "无需发布 Android 版本即可配置原生样式与上游映射", livePreview: "原生实时预览", groupsTitle: "用户组", groupsDetail: "控制 Beta 与生产 OTA 受众", buildPipeline: "Android 部署流水线", buildBeta: "构建 Beta", publishProduction: "发布生产版", backupDestinations: "备份目标", backupDetail: "将加密 PostgreSQL 快照保存到本地、WebDAV 或 S3", recoveryGuide: "恢复指南", workerJobs: "后台任务", workerDetail: "Redis 队列执行历史与日志", trigger: "立即运行", save: "保存", delete: "删除", enabled: "启用", disabled: "禁用",
+  smtpTitle: "SMTP 邮件", smtpDetail: "安全提醒和公告通过异步队列发送", templates: "HTML 模板", preview: "沙箱预览", sendTest: "发送测试", channelBuilder: "无代码频道构建器", channelBuilderDetail: "发布原生频道外观与模型身份；路由目标统一在“路由”页面管理。", livePreview: "原生实时预览", groupsTitle: "用户组", groupsDetail: "控制 Beta 与生产 OTA 受众", buildPipeline: "Android 部署流水线", buildBeta: "构建 Beta", publishProduction: "发布生产版", backupDestinations: "备份目标", backupDetail: "将加密 PostgreSQL 快照保存到本地、WebDAV 或 S3", recoveryGuide: "恢复指南", workerJobs: "后台任务", workerDetail: "Redis 队列执行历史与日志", trigger: "立即运行", save: "保存", delete: "删除", enabled: "启用", disabled: "禁用", initialUpstreamTarget: "初始上游目标", initialUpstreamDetail: "新模型需要一个初始目标；创建后全部目标都在路由弹窗中管理。", managedInRouting: "在路由页面管理",
   language: "语言", navSearchProviders: "搜索提供商", confirm: "确认", confirmationTitle: "确认危险操作", confirmationDetail: "此操作无法撤销。", deleteUserTitle: "删除用户？", deleteUserPrompt: "该账户及其持久化账户数据将被永久删除。", deleteChannelTitle: "删除频道？", deleteChannelPrompt: "该频道将被删除，其模型路由将被禁用。", deleteBackupTitle: "删除备份目标？", deleteBackupPrompt: "该目标配置将被永久删除。", revokeKeyTitle: "撤销客户端密钥？", revokeKeyPrompt: "该客户端密钥将立即失效。", clearRouteTitle: "清除路由策略？", clearRoutePrompt: "明确配置的回退链将被删除。",
   searchProvidersTitle: "网页搜索提供商", searchProvidersDetail: "客户端启用网页搜索时使用的优先级事实来源", addSearchProvider: "添加搜索提供商", editSearchProvider: "编辑搜索提供商", providerKind: "集成类型", providerId: "提供商 ID", maxResults: "最大结果数", apiKey: "API 密钥", configured: "已配置", notConfigured: "未配置", searchPriorityDetail: "优先级数值越小越先执行；结果为空或请求失败时会继续使用下一个已启用集成。", updateProvider: "更新提供商", createProvider: "创建提供商", deleteSearchTitle: "删除搜索提供商？", deleteSearchPrompt: "该事实检索集成及其加密密钥将被永久删除。", leaveApiKeyBlank: "留空则保留当前密钥", apiKeyRequired: "Tavily 和 SerpApi 必须配置密钥", noSearchProviders: "尚未配置搜索提供商。",
   appIcon: "应用启动图标", appIconDetail: "一个全局品牌资源将打包进下一次 Beta 或生产 APK。", appIconManagement: "启动图标管理", appIconManagementDetail: "独立于频道和模型路由更新构建品牌资源。", currentAppIcon: "当前启动图标", noAppIcon: "项目默认图标", saveAppIcon: "保存启动图标", removeAppIcon: "使用默认图标", appIconSaved: "启动图标已保存。", customCss: "原生背景 CSS", customCssDetail: "支持的颜色、线性渐变、动画时长和字体系列会转换为原生 Compose 样式。", iconTooLarge: "图片必须是 PNG、JPEG 或 WebP，且小于 3 MB。", channelIcon: "频道图标", animatedGradient: "渐变动画", models: "模型", internalModelId: "内部模型 ID", modelLabel: "模型标签", removeModel: "移除模型", addModel: "添加模型", updateChannel: "更新频道", publishChannel: "发布频道", previewStyleDetail: "Android 客户端使用这些原生样式令牌", newChannel: "新频道", model: "模型", previewGreeting: "需要我做什么？", messageChannel: "发送消息", publishedChannels: "已发布动态频道", publishedChannelsDetail: "Android 与 Web 客户端刷新配置后会显示这些频道外观设置。",
@@ -413,7 +424,6 @@ export default function AdminPage() {
   const [clientKeyForm, setClientKeyForm] = useState({ name: "", userId: "", rpmLimit: "60", dailyLimit: "100000" });
   const [providerForm, setProviderForm] = useState({ provider: "openai" as Provider, label: "", endpoint: "", secret: "", priority: "100", bypassAuth: false });
   const [editingProviderKey, setEditingProviderKey] = useState<ProviderKey | null>(null);
-  const [mappingForm, setMappingForm] = useState({ id: "", provider: "openai" as Provider, upstreamModel: "", label: "", description: "", uiMode: "chatgpt", aliases: "" });
   const [appVersionForm, setAppVersionForm] = useState({ versionCode: "", versionName: "", downloadUrl: "", releaseNotes: "", isActive: true });
   const copy = locale === "zh-CN" ? chineseCopy : englishCopy;
   const activeSectionLabel = sections.find((item) => item.name === section)?.label ?? "navOverview";
@@ -595,24 +605,6 @@ export default function AdminPage() {
     });
   }
 
-  function submitMapping(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    void mutate(async () => {
-      await request("models", {
-        method: "POST",
-        body: JSON.stringify({
-          ...mappingForm,
-          id: mappingForm.id.trim().toLowerCase(),
-          upstreamModel: mappingForm.upstreamModel.trim(),
-          label: mappingForm.label.trim(),
-          description: mappingForm.description.trim(),
-          aliases: mappingForm.aliases.split(",").map((value) => value.trim()).filter(Boolean),
-        }),
-      });
-      setMappingForm({ id: "", provider: "openai", upstreamModel: "", label: "", description: "", uiMode: "chatgpt", aliases: "" });
-    });
-  }
-
   function submitAppVersion(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     void mutate(async () => {
@@ -671,17 +663,13 @@ export default function AdminPage() {
           {overview && section === "Provider keys" && <ProviderKeysPanel editing={editingProviderKey} form={providerForm} keys={overview.providerKeys} onChange={setProviderForm} onCancel={resetProviderEditor} onDelete={(key) => void mutate(() => request(`provider-keys/${key.id}`, { method: "DELETE" }))} onEdit={openProviderEditor} onSubmit={submitProviderKey} onToggle={(key) => void mutate(() => request(`provider-keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ status: key.status === "active" ? "disabled" : "active" }) }))} submitting={submitting} />}
           {overview && section === "Search providers" && <SearchProvidersPanel />}
           {overview && section === "Routing" && <RoutingPanel
-            form={mappingForm}
             models={overview.models}
             keys={overview.providerKeys}
             channelPolicies={overview.routing.channelPolicies}
             modelPolicies={overview.routing.modelPolicies}
-            onChange={setMappingForm}
-            onSave={(id, patch) => void mutate(() => request(`models/${id}`, { method: "PATCH", body: JSON.stringify(patch) }))}
             onSetStrategy={(strategy) => void mutate(() => request("routing", { method: "PATCH", body: JSON.stringify({ strategy }) }))}
             onSavePolicy={(scope, scopeId, keyIds) => void mutate(() => request(`routing/${scope}/${encodeURIComponent(scopeId)}`, { method: "PATCH", body: JSON.stringify({ keyIds }) }))}
             onDeletePolicy={(scope, scopeId) => void mutate(() => request(`routing/${scope}/${encodeURIComponent(scopeId)}`, { method: "DELETE" }))}
-            onSubmit={submitMapping}
             strategy={overview.routing.strategy}
             submitting={submitting}
           />}
@@ -714,7 +702,7 @@ function OverviewPanel({ overview, modelTraffic }: { overview: Overview; modelTr
     </div>
     <div className="two-column">
       <section className="data-section"><SectionHeading title={copy.modelTraffic} detail={copy.requestVolume} /><div className="traffic-list">{modelTraffic.map((model) => <div className="traffic-row" key={model.id}><div className="traffic-label"><span>{model.id}</span><strong>{formatNumber(model.calls, copy)}</strong></div><div className="bar-track"><div className="bar-fill" style={{ width: model.width }} /></div></div>)}</div></section>
-      <section className="data-section"><SectionHeading title={copy.routingState} detail={copy.upstreamAvailability} /><div className="routing-summary">{modelTraffic.map((model) => <div className="routing-line" key={model.id}><div><strong>{model.label}</strong><span>{model.upstreamModel}</span></div><span className={model.upstreamConfigured ? "status status-good" : "status status-muted"}>{model.upstreamConfigured ? <CircleCheck size={14} /> : <CirclePause size={14} />}{model.upstreamConfigured ? copy.ready : copy.unconfigured}</span></div>)}</div></section>
+      <section className="data-section"><SectionHeading title={copy.routingState} detail={copy.upstreamAvailability} /><div className="routing-summary">{modelTraffic.map((model) => <div className="routing-line" key={model.id}><div><strong>{model.label}</strong><span>{model.id}</span></div><span className={model.upstreamConfigured ? "status status-good" : "status status-muted"}>{model.upstreamConfigured ? <CircleCheck size={14} /> : <CirclePause size={14} />}{model.upstreamConfigured ? copy.ready : copy.unconfigured}</span></div>)}</div></section>
     </div>
     <section className="data-section"><SectionHeading title={copy.serviceState} detail={`${copy.lastSampled} ${formatDate(overview.generatedAt, copy, true)}`} /><div className="state-grid"><div><span>{copy.providerKeys}</span><strong>{overview.providerKeys.filter((key) => key.status === "active").length}</strong></div><div><span>{copy.clientKeys}</span><strong>{overview.keys.filter((key) => key.status === "active").length}</strong></div><div><span>{copy.activeUsers}</span><strong>{overview.users.filter((user) => user.status === "active").length}</strong></div><div><span>{copy.failures}</span><strong>{formatNumber(overview.metrics.failedRequests, copy)}</strong></div></div></section>
   </>;
@@ -846,7 +834,7 @@ function SearchProvidersPanel() {
   </div>;
 }
 
-function RoutingPanel({ channelPolicies, form, keys, modelPolicies, models, onChange, onDeletePolicy, onSave, onSavePolicy, onSetStrategy, onSubmit, strategy, submitting }: { channelPolicies: RoutingPolicy[]; form: { id: string; provider: Provider; upstreamModel: string; label: string; description: string; uiMode: string; aliases: string }; keys: ProviderKey[]; modelPolicies: RoutingPolicy[]; models: Model[]; onChange: (value: { id: string; provider: Provider; upstreamModel: string; label: string; description: string; uiMode: string; aliases: string }) => void; onDeletePolicy: (scope: RoutingPolicy["scope"], scopeId: string) => void; onSave: (id: string, patch: Partial<Pick<Model, "upstreamModel" | "enabled">>) => void; onSavePolicy: (scope: RoutingPolicy["scope"], scopeId: string, keyIds: string[]) => void; onSetStrategy: (strategy: Strategy) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; strategy: Strategy; submitting: boolean }) {
+function RoutingPanel({ channelPolicies, keys, modelPolicies, models, onDeletePolicy, onSavePolicy, onSetStrategy, strategy, submitting }: { channelPolicies: RoutingPolicy[]; keys: ProviderKey[]; modelPolicies: RoutingPolicy[]; models: Model[]; onDeletePolicy: (scope: RoutingPolicy["scope"], scopeId: string) => void; onSavePolicy: (scope: RoutingPolicy["scope"], scopeId: string, keyIds: string[]) => void; onSetStrategy: (strategy: Strategy) => void; strategy: Strategy; submitting: boolean }) {
   const copy = useCopy();
   const channelNames: Array<{ id: "chatgpt" | "gemini" | "deepseek"; label: string }> = [
     { id: "chatgpt", label: "ChatGPT" },
@@ -855,61 +843,164 @@ function RoutingPanel({ channelPolicies, form, keys, modelPolicies, models, onCh
   ];
   const policyFor = (policies: RoutingPolicy[], scopeId: string) => policies.find((policy) => policy.scopeId === scopeId);
   return <>
+    <ModelMappingsPanel keys={keys} />
     <section className="data-section"><SectionHeading title={copy.channelDefaults} detail={copy.channelDefaultsDetail} /><div className="policy-grid">{channelNames.map((channel) => <RoutingPolicyEditor key={channel.id} label={channel.label} scope="channel" scopeId={channel.id} policy={policyFor(channelPolicies, channel.id)} keys={keys} onSave={onSavePolicy} onDelete={onDeletePolicy} disabled={submitting} />)}</div></section>
     <section className="data-section"><SectionHeading title={copy.modelOverrides} detail={copy.modelOverridesDetail} /><div className="policy-grid model-policy-grid">{models.map((model) => <RoutingPolicyEditor key={model.id} label={`${model.id} (${model.label})`} scope="model" scopeId={model.id} policy={policyFor(modelPolicies, model.id)} keys={keys} onSave={onSavePolicy} onDelete={onDeletePolicy} disabled={submitting} />)}</div></section>
     <section className="data-section"><SectionHeading title={copy.priorityBalancing} detail={copy.priorityBalancingDetail} /><div className="strategy-row"><div className="segmented" role="group" aria-label={copy.navRouting}><button className={strategy === "round_robin" ? "segment-active" : ""} disabled={submitting} onClick={() => onSetStrategy("round_robin")} type="button"><ArrowRightLeft size={16} />{copy.roundRobin}</button><button className={strategy === "random" ? "segment-active" : ""} disabled={submitting} onClick={() => onSetStrategy("random")} type="button">{copy.randomized}</button></div><span className="strategy-note">{copy.current}: {strategy === "round_robin" ? copy.roundRobin : copy.randomized}</span></div></section>
-    <section className="data-section"><SectionHeading title={copy.modelMappings} detail={copy.mappingDetail} /><div className="mapping-list">{models.map((model) => <article className="mapping-row" key={model.id}><div className={`provider-swatch provider-${model.uiMode}`}>{model.label.slice(0, 1)}</div><div className="mapping-copy"><strong>{model.id}</strong><span>{model.provider} · {model.label}</span></div><label className="mapping-input"><span>{copy.upstreamModel}</span><input defaultValue={model.upstreamModel} key={`${model.id}-${model.upstreamModel}`} onBlur={(event) => { if (event.target.value !== model.upstreamModel) onSave(model.id, { upstreamModel: event.target.value }); }} /></label><button className={`small-button ${model.enabled ? "" : "button-muted"}`} onClick={() => onSave(model.id, { enabled: !model.enabled })} type="button">{model.enabled ? copy.disable : copy.enable}</button></article>)}</div></section>
-    <section className="data-section"><SectionHeading title={copy.addMapping} detail={copy.addMappingDetail} /><form className="form-grid mapping-form" onSubmit={onSubmit}><label>{copy.internalName}<input required placeholder="gemini-fast" value={form.id} onChange={(event) => onChange({ ...form, id: event.target.value })} /></label><label>{copy.provider}<select value={form.provider} onChange={(event) => { const provider = event.target.value as Provider; onChange({ ...form, provider, uiMode: provider === "openai" ? "chatgpt" : provider }); }}><option value="openai">{copy.openAiCompatible}</option><option value="gemini">Gemini</option><option value="deepseek">DeepSeek</option></select></label><label>{copy.upstreamModel}<input required value={form.upstreamModel} onChange={(event) => onChange({ ...form, upstreamModel: event.target.value })} /></label><label>{copy.label}<input required value={form.label} onChange={(event) => onChange({ ...form, label: event.target.value })} /></label><label className="wide-field">{copy.description}<input required value={form.description} onChange={(event) => onChange({ ...form, description: event.target.value })} /></label><label>{copy.aliases}<input placeholder="alias-one, alias-two" value={form.aliases} onChange={(event) => onChange({ ...form, aliases: event.target.value })} /></label><button className="primary-button form-action" disabled={submitting} type="submit"><Plus size={16} />{copy.addMapping}</button></form></section>
-    <ModelMappingsPanel models={models} keys={keys} />
   </>;
 }
 
-function ModelMappingsPanel({ models, keys }: { models: Model[]; keys: ProviderKey[] }) {
+function ModelMappingsPanel({ keys }: { keys: ProviderKey[] }) {
   const copy = useCopy();
-  const confirm = useConfirmation();
-  const providers = [...new Set(["openai", "gemini", "deepseek", ...keys.map((key) => key.provider)])];
-  const empty = { modelId: models[0]?.id ?? "", provider: providers[0] ?? "openai", upstreamModel: "", priority: "100", enabled: true };
-  const [mappings, setMappings] = useState<ModelMapping[]>([]);
-  const [form, setForm] = useState(empty);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const providers = useMemo(() => [...new Set(["openai", "gemini", "deepseek", ...keys.map((key) => key.provider)])], [keys]);
+  const [groups, setGroups] = useState<ModelMappingGroup[]>([]);
+  const [selected, setSelected] = useState<ModelMappingGroup | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
-    try { setMappings((await request<{ data: ModelMapping[] }>("model-mappings", { cache: "no-store" })).data); setError(null); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : copy.operationFailed); }
+    setLoading(true);
+    try {
+      setGroups((await request<{ data: ModelMappingGroup[] }>("mappings", { cache: "no-store" })).data);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.operationFailed);
+    } finally {
+      setLoading(false);
+    }
   }, [copy.operationFailed]);
   useEffect(() => { void load(); }, [load]);
-  function edit(mapping: ModelMapping) {
-    setEditingId(mapping.id);
-    setForm({ modelId: mapping.modelId, provider: mapping.provider, upstreamModel: mapping.upstreamModel, priority: String(mapping.priority), enabled: mapping.enabled });
-  }
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setBusy(true); setError(null);
-    try {
-      const payload = { ...form, priority: Number(form.priority) };
-      await request(editingId ? `model-mappings/${editingId}` : "model-mappings", { method: editingId ? "PATCH" : "POST", body: JSON.stringify(payload) });
-      setEditingId(null); setForm(empty); await load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : copy.operationFailed); }
-    finally { setBusy(false); }
-  }
-  async function remove(mapping: ModelMapping) {
-    if (!await confirm({ title: copy.deleteMappingTitle, message: `${mapping.modelId} -> ${mapping.provider}/${mapping.upstreamModel}. ${copy.deleteMappingPrompt}`, confirmLabel: copy.delete })) return;
-    setBusy(true);
-    try { await request(`model-mappings/${mapping.id}`, { method: "DELETE" }); await load(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : copy.operationFailed); }
-    finally { setBusy(false); }
-  }
-  return <section className="data-section"><InlineError message={error} /><SectionHeading title={copy.providerMappings} detail={copy.providerMappingsDetail} />
-    <form className="form-grid mapping-form" onSubmit={submit}>
-      <label>{copy.internalName}<select required value={form.modelId} onChange={(event) => setForm({ ...form, modelId: event.target.value })}>{models.map((model) => <option key={model.id} value={model.id}>{model.id} ({model.label})</option>)}</select></label>
-      <label>{copy.provider}<select value={form.provider} onChange={(event) => setForm({ ...form, provider: event.target.value })}>{providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></label>
-      <label>{copy.upstreamModel}<input required value={form.upstreamModel} onChange={(event) => setForm({ ...form, upstreamModel: event.target.value })} /></label>
-      <label>{copy.mappingPriority}<input min="0" type="number" value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })} /></label>
-      <label className="checkbox-label"><input checked={form.enabled} type="checkbox" onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />{copy.mappingEnabled}</label>
-      <div className="form-actions"><button className="primary-button" disabled={busy || !form.modelId} type="submit"><Save size={16} />{editingId ? copy.saveChanges : copy.saveMapping}</button>{editingId && <button className="small-button" type="button" onClick={() => { setEditingId(null); setForm(empty); }}>{copy.cancel}</button>}</div>
-    </form>
-    <div className="table-wrap"><table><thead><tr><th>{copy.internalName}</th><th>{copy.provider}</th><th>{copy.upstreamModel}</th><th>{copy.mappingPriority}</th><th>{copy.status}</th><th /></tr></thead><tbody>{mappings.length ? mappings.map((mapping) => <tr key={mapping.id}><td><strong>{mapping.modelId}</strong></td><td>{mapping.provider}</td><td><code>{mapping.upstreamModel}</code></td><td>{mapping.priority}</td><td><span className={mapping.enabled ? "status status-good" : "status status-muted"}>{mapping.enabled ? copy.enabled : copy.disabled}</span></td><td><div className="table-actions"><button className="small-button" type="button" onClick={() => edit(mapping)}><Pencil size={14} />{copy.edit}</button><button className="icon-button danger-button" type="button" aria-label={`${copy.delete} ${mapping.id}`} onClick={() => void remove(mapping)}><Trash2 size={16} /></button></div></td></tr>) : <tr><td className="empty-table" colSpan={6}>{copy.noProviderMappings}</td></tr>}</tbody></table></div>
+  const saved = (group: ModelMappingGroup) => {
+    setGroups((current) => current.map((candidate) => candidate.model.id === group.model.id ? group : candidate));
+    setSelected(null);
+  };
+  return <section className="data-section routing-mappings-section">
+    <InlineError message={error} />
+    <SectionHeading title={copy.routingMappings} detail={copy.routingMappingsDetail} />
+    <ModelMappingsList groups={groups} loading={loading} onEdit={setSelected} />
+    {selected && <ModelMappingsDialog group={selected} key={selected.model.id} onClose={() => setSelected(null)} onSaved={saved} providers={[...new Set([...providers, ...selected.mappings.map((mapping) => mapping.provider)])]} />}
   </section>;
+}
+
+function ModelMappingsList({ groups, loading, onEdit }: { groups: ModelMappingGroup[]; loading: boolean; onEdit: (group: ModelMappingGroup) => void }) {
+  const copy = useCopy();
+  return <div className="table-wrap"><table className="mapping-overview-table">
+    <thead><tr><th>{copy.internalName}</th><th>{copy.channel}</th><th>{copy.upstreamTargets}</th><th>{copy.status}</th><th /></tr></thead>
+    <tbody>{loading ? <tr><td className="empty-table" colSpan={5}><LoaderCircle className="spin" size={18} /> {copy.loadingMappings}</td></tr> : groups.length ? groups.map((group) => {
+      const mappings = [...group.mappings].sort((left, right) => left.priority - right.priority);
+      const activeCount = mappings.filter((mapping) => mapping.enabled).length;
+      return <tr key={group.model.id}>
+        <td><div className="mapping-model-cell"><div className={`provider-swatch provider-${group.model.uiMode}`}>{group.model.label.slice(0, 1)}</div><div><strong>{group.model.label}</strong><span>{group.model.id}</span></div></div></td>
+        <td><strong>{group.model.uiMode}</strong><span>{group.model.description || copy.noDescription}</span></td>
+        <td><div className="mapping-target-summary">{mappings.length ? mappings.slice(0, 3).map((mapping) => <div className="mapping-target-chip" key={mapping.id}><strong>{mapping.provider}</strong><code>{mapping.upstreamModel}</code><small>P{mapping.priority}</small></div>) : <span className="mapping-empty-target">{copy.noUpstreamTargets}</span>}{mappings.length > 3 && <span className="mapping-more-targets">+{mappings.length - 3}</span>}</div></td>
+        <td><span className={activeCount > 0 && group.model.enabled ? "status status-good" : "status status-muted"}>{activeCount}/{mappings.length} {copy.enabled}</span></td>
+        <td><button className="small-button" onClick={() => onEdit(group)} type="button"><Pencil size={14} />{copy.configure}</button></td>
+      </tr>;
+    }) : <tr><td className="empty-table" colSpan={5}>{copy.noInternalModels}</td></tr>}</tbody>
+  </table></div>;
+}
+
+function ModelMappingsDialog({ group, onClose, onSaved, providers }: { group: ModelMappingGroup; onClose: () => void; onSaved: (group: ModelMappingGroup) => void; providers: Provider[] }) {
+  const copy = useCopy();
+  const initialMappings = [...group.mappings].sort((left, right) => left.priority - right.priority);
+  const initialDrafts = initialMappings.map((mapping) => ({
+    clientId: mapping.id,
+    provider: mapping.provider,
+    upstreamModel: mapping.upstreamModel,
+    priority: String(mapping.priority),
+    enabled: mapping.enabled,
+  }));
+  const [drafts, setDrafts] = useState<ModelMappingDraft[]>(initialDrafts);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busy) onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [busy, onClose]);
+
+  const updateDraft = (index: number, patch: Partial<ModelMappingDraft>) => {
+    setDrafts((current) => current.map((draft, itemIndex) => itemIndex === index ? { ...draft, ...patch } : draft));
+  };
+  const addTarget = () => {
+    const highestPriority = drafts.reduce((highest, draft) => Math.max(highest, Number(draft.priority) || 0), 0);
+    setDrafts((current) => [...current, {
+      clientId: `draft-${Date.now()}-${current.length}`,
+      provider: providers[0] ?? "openai",
+      upstreamModel: "",
+      priority: String(highestPriority + 10 || 10),
+      enabled: true,
+    }]);
+  };
+  const moveTarget = (index: number, direction: -1 | 1) => {
+    const destination = index + direction;
+    if (destination < 0 || destination >= drafts.length) return;
+    const next = [...drafts];
+    const [moving] = next.splice(index, 1);
+    next.splice(destination, 0, moving);
+    setDrafts(next.map((draft, itemIndex) => ({ ...draft, priority: String((itemIndex + 1) * 10) })));
+  };
+  const removeTarget = (index: number) => setDrafts((current) => current.filter((_draft, itemIndex) => itemIndex !== index));
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    if (!drafts.length) {
+      setError(copy.atLeastOneTarget);
+      return;
+    }
+    const mappings = drafts.map((draft) => ({
+      provider: draft.provider.trim(),
+      upstreamModel: draft.upstreamModel.trim(),
+      priority: Number(draft.priority),
+      enabled: draft.enabled,
+    }));
+    if (mappings.some((mapping) => !mapping.provider || !mapping.upstreamModel || !Number.isInteger(mapping.priority) || mapping.priority < 0 || mapping.priority > 100_000)) {
+      setError(copy.invalidMappingTarget);
+      return;
+    }
+    const identities = mappings.map((mapping) => `${mapping.provider}\u0000${mapping.upstreamModel}`);
+    if (new Set(identities).size !== identities.length) {
+      setError(copy.duplicateMappingTarget);
+      return;
+    }
+    setBusy(true);
+    try {
+      const payload = await request<{ data: ModelMappingGroup }>(`mappings/${encodeURIComponent(group.model.id)}`, {
+        method: "PUT",
+        body: JSON.stringify({ mappings }),
+      });
+      onSaved(payload.data);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.operationFailed);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <div className="dialog-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target && !busy) onClose(); }}>
+    <form aria-labelledby="mapping-dialog-title" aria-modal="true" className="dialog-card mapping-dialog" onSubmit={save} role="dialog">
+      <div className="dialog-heading mapping-dialog-heading"><div><p className="eyebrow">{copy.internalName}</p><h2 id="mapping-dialog-title">{copy.configureRouting}: {group.model.label}</h2><p>{group.model.id} · {copy.mappingModalDetail}</p></div><button aria-label={copy.cancel} className="icon-button" disabled={busy} onClick={onClose} type="button"><CircleX size={19} /></button></div>
+      <InlineError message={error} />
+      <div className="mapping-dialog-toolbar"><div><strong>{copy.upstreamTargets}</strong><span>{copy.priorityOrderDetail}</span></div><button className="small-button" disabled={busy} onClick={addTarget} type="button"><Plus size={15} />{copy.addTarget}</button></div>
+      <div className="mapping-target-editors">{drafts.length ? drafts.map((draft, index) => <div className="mapping-target-editor" key={draft.clientId}>
+        <div className="mapping-target-order"><span>{index + 1}</span><div><button aria-label={`${copy.moveUp} ${index + 1}`} className="icon-button" disabled={busy || index === 0} onClick={() => moveTarget(index, -1)} type="button"><ChevronUp size={15} /></button><button aria-label={`${copy.moveDown} ${index + 1}`} className="icon-button" disabled={busy || index === drafts.length - 1} onClick={() => moveTarget(index, 1)} type="button"><ChevronDown size={15} /></button></div></div>
+        <label>{copy.provider}<select disabled={busy} value={draft.provider} onChange={(event) => updateDraft(index, { provider: event.target.value })}>{providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></label>
+        <label>{copy.upstreamModel}<input disabled={busy} maxLength={256} required value={draft.upstreamModel} onChange={(event) => updateDraft(index, { upstreamModel: event.target.value })} /></label>
+        <label>{copy.priority}<input disabled={busy} max="100000" min="0" required type="number" value={draft.priority} onChange={(event) => updateDraft(index, { priority: event.target.value })} /></label>
+        <label className="mapping-target-toggle"><input checked={draft.enabled} disabled={busy} type="checkbox" onChange={(event) => updateDraft(index, { enabled: event.target.checked })} /><span>{copy.enabled}</span></label>
+        <button aria-label={`${copy.remove} ${draft.provider} ${draft.upstreamModel}`} className="icon-button danger-button" disabled={busy} onClick={() => removeTarget(index)} type="button"><Trash2 size={16} /></button>
+      </div>) : <div className="mapping-empty-editor"><Link2 size={20} /><strong>{copy.noUpstreamTargets}</strong><span>{copy.atLeastOneTarget}</span></div>}</div>
+      <div className="dialog-actions mapping-dialog-actions"><button className="small-button" disabled={busy} onClick={onClose} type="button">{copy.cancel}</button><button className="primary-button" disabled={busy || drafts.length === 0} type="submit">{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}{copy.saveMappings}</button></div>
+    </form>
+  </div>;
 }
 
 function RoutingPolicyEditor({ disabled, keys, label, onDelete, onSave, policy, scope, scopeId }: { disabled: boolean; keys: ProviderKey[]; label: string; onDelete: (scope: RoutingPolicy["scope"], scopeId: string) => void; onSave: (scope: RoutingPolicy["scope"], scopeId: string, keyIds: string[]) => void; policy?: RoutingPolicy; scope: RoutingPolicy["scope"]; scopeId: string }) {
@@ -964,7 +1055,7 @@ function SectionHeading({ title, detail }: { title: string; detail: string }) {
 type EmailSettings = { host: string; port: number; secure: boolean; username: string; fromEmail: string; fromName: string; enabled: boolean; passwordConfigured: boolean; updatedAt: string };
 type EmailTemplate = { id: string; trigger: "suspicious_login" | "announcement" | "version_update"; name: string; subject: string; htmlBody: string; enabled: boolean; updatedAt: string };
 type DynamicChannel = { id: string; slug: string; displayName: string; description: string; provider: string; providerKeyId: string | null; iconDataUrl: string; customCss: string; backgroundStart: string; backgroundEnd: string; accentColor: string; textColor: string; surfaceColor: string; typography: "sans" | "serif" | "mono"; animatedGradient: boolean; models: DynamicModel[]; enabled: boolean; sortOrder: number; updatedAt: string };
-type DynamicModel = { id: string; label: string; description: string; upstreamModel: string };
+type DynamicModel = { id: string; label: string; description: string; initialUpstreamModel?: string };
 type LauncherIconAsset = { dataUrl: string; updatedAt: string };
 type UserGroup = { id: string; slug: string; name: string; description: string; releaseRing: "beta" | "production"; memberCount: number; createdAt: string; updatedAt: string };
 type BackgroundJob = { id: string; type: "email" | "backup" | "build" | "archive"; status: string; payload: Record<string, unknown>; result: Record<string, unknown> | null; error: string | null; attempts: number; maxAttempts: number; logs: string[]; createdAt: string; startedAt: string | null; finishedAt: string | null };
@@ -1097,7 +1188,7 @@ const emptyChannelForm = {
   slug: "", displayName: "", description: "", provider: "", endpoint: "", secret: "", priority: "100", iconDataUrl: "", customCss: "",
   backgroundStart: "#FFF3A6", backgroundEnd: "#FFE066", accentColor: "#B7791F", textColor: "#2D2600", surfaceColor: "#FFFFFF",
   typography: "sans" as DynamicChannel["typography"], animatedGradient: true, enabled: true, sortOrder: "100",
-  models: [{ id: "", label: "Standard", description: "", upstreamModel: "" }] as DynamicModel[],
+  models: [{ id: "", label: "Standard", description: "", initialUpstreamModel: "" }] as DynamicModel[],
 };
 
 function ChannelBuilderPanel() {
@@ -1109,6 +1200,7 @@ function ChannelBuilderPanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const previewStyle = useMemo(() => nativeCssPreview(form.customCss, form), [form]);
+  const persistedModelIds = useMemo(() => new Set(channels.find((channel) => channel.id === editingId)?.models.map((model) => model.id) ?? []), [channels, editingId]);
   const load = useCallback(async () => {
     try { setChannels((await request<{ data: DynamicChannel[] }>("dynamic-channels")).data); setError(null); }
     catch (reason) { setError(reason instanceof Error ? reason.message : copy.operationFailed); }
@@ -1128,14 +1220,18 @@ function ChannelBuilderPanel() {
 
   function edit(channel: DynamicChannel) {
     setEditingId(channel.id);
-    setForm({ ...channel, endpoint: "", secret: "", priority: "100", sortOrder: String(channel.sortOrder), models: channel.models.map((model) => ({ ...model })) });
+    setForm({ ...channel, endpoint: "", secret: "", priority: "100", sortOrder: String(channel.sortOrder), models: channel.models.map((model) => ({ ...model, initialUpstreamModel: "" })) });
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError(null);
     try {
-      const payload = { ...form, priority: Number(form.priority), sortOrder: Number(form.sortOrder), endpoint: form.endpoint || undefined, secret: form.secret || undefined };
+      const models = form.models.map(({ initialUpstreamModel, ...model }) => ({
+        ...model,
+        ...(initialUpstreamModel?.trim() ? { initialUpstreamModel: initialUpstreamModel.trim() } : {}),
+      }));
+      const payload = { ...form, models, priority: Number(form.priority), sortOrder: Number(form.sortOrder), endpoint: form.endpoint || undefined, secret: form.secret || undefined };
       await request(editingId ? `dynamic-channels/${editingId}` : "dynamic-channels", { method: editingId ? "PATCH" : "POST", body: JSON.stringify(payload) });
       setForm(emptyChannelForm); setEditingId(null); await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : copy.operationFailed); }
@@ -1151,7 +1247,15 @@ function ChannelBuilderPanel() {
           <div className="upload-grid"><label>{copy.channelIcon}<input accept="image/png,image/jpeg,image/webp" type="file" onChange={(event) => readImage(event.target.files?.[0])} /></label><div className="image-upload-preview">{form.iconDataUrl ? <img alt="" src={form.iconDataUrl} /> : <Bot size={22} />}<button className="small-button" disabled={!form.iconDataUrl} onClick={() => setForm({ ...form, iconDataUrl: "" })} type="button">{copy.removeImage}</button></div></div>
           <label>{copy.customCss}<span>{copy.customCssDetail}</span><textarea rows={7} spellCheck={false} value={form.customCss} onChange={(event) => setForm({ ...form, customCss: event.target.value })} /></label>
           <label className="checkbox-label"><input checked={form.animatedGradient} type="checkbox" onChange={(event) => setForm({ ...form, animatedGradient: event.target.checked })} />{copy.animatedGradient}</label>
-          <div className="model-builder"><strong>{copy.models}</strong>{form.models.map((model, index) => <div className="model-builder-row" key={index}><input aria-label={copy.internalModelId} placeholder="qwen-standard" required value={model.id} onChange={(event) => setForm({ ...form, models: form.models.map((item, itemIndex) => itemIndex === index ? { ...item, id: event.target.value.toLowerCase() } : item) })} /><input aria-label={copy.modelLabel} placeholder={copy.standard} required value={model.label} onChange={(event) => setForm({ ...form, models: form.models.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) })} /><input aria-label={copy.upstreamModel} placeholder="qwen-max" required value={model.upstreamModel} onChange={(event) => setForm({ ...form, models: form.models.map((item, itemIndex) => itemIndex === index ? { ...item, upstreamModel: event.target.value } : item) })} /><button aria-label={copy.removeModel} className="icon-button danger-button" disabled={form.models.length === 1} onClick={() => setForm({ ...form, models: form.models.filter((_item, itemIndex) => itemIndex !== index) })} type="button"><Trash2 size={16} /></button></div>)}<button className="small-button" onClick={() => setForm({ ...form, models: [...form.models, { id: "", label: "", description: "", upstreamModel: "" }] })} type="button"><Plus size={15} />{copy.addModel}</button></div>
+          <div className="model-builder"><strong>{copy.models}</strong><span className="model-builder-detail">{copy.initialUpstreamDetail}</span>{form.models.map((model, index) => {
+            const persisted = persistedModelIds.has(model.id);
+            return <div className="model-builder-row" key={index}>
+              <input aria-label={copy.internalModelId} placeholder="qwen-standard" required value={model.id} onChange={(event) => setForm({ ...form, models: form.models.map((item, itemIndex) => itemIndex === index ? { ...item, id: event.target.value.toLowerCase() } : item) })} />
+              <input aria-label={copy.modelLabel} placeholder={copy.standard} required value={model.label} onChange={(event) => setForm({ ...form, models: form.models.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) })} />
+              {persisted ? <div className="managed-routing-field"><Link2 size={14} />{copy.managedInRouting}</div> : <input aria-label={copy.initialUpstreamTarget} placeholder="qwen-max" required value={model.initialUpstreamModel ?? ""} onChange={(event) => setForm({ ...form, models: form.models.map((item, itemIndex) => itemIndex === index ? { ...item, initialUpstreamModel: event.target.value } : item) })} />}
+              <button aria-label={copy.removeModel} className="icon-button danger-button" disabled={form.models.length === 1} onClick={() => setForm({ ...form, models: form.models.filter((_item, itemIndex) => itemIndex !== index) })} type="button"><Trash2 size={16} /></button>
+            </div>;
+          })}<button className="small-button" onClick={() => setForm({ ...form, models: [...form.models, { id: "", label: "", description: "", initialUpstreamModel: "" }] })} type="button"><Plus size={15} />{copy.addModel}</button></div>
           <div className="form-actions"><button className="primary-button" disabled={busy} type="submit"><Save size={16} />{editingId ? copy.updateChannel : copy.publishChannel}</button>{editingId && <button className="small-button" onClick={() => { setEditingId(null); setForm(emptyChannelForm); }} type="button">{copy.cancel}</button>}</div>
         </form>
       </section>

@@ -15,14 +15,54 @@ describe("Adaptive Chat API", () => {
     const control = new MemoryControlPlane();
     const first = await control.createProviderKey({ provider: "openai", label: "Provider A", endpoint: "https://a.example.test/v1", secret: "a-secret", priority: 1, bypassAuth: false });
     const second = await control.createProviderKey({ provider: "gemini", label: "Provider B", endpoint: "https://b.example.test/v1", secret: "b-secret", priority: 1, bypassAuth: false });
-    await control.createModelMapping({ modelId: "deepseek-expert", provider: "openai", upstreamModel: "provider-a-expert", priority: 10, enabled: true });
-    await control.createModelMapping({ modelId: "deepseek-expert", provider: "gemini", upstreamModel: "provider-b-expert", priority: 20, enabled: true });
+    await control.replaceModelMappings("deepseek-expert", [
+      { provider: "openai", upstreamModel: "provider-a-expert", priority: 10, enabled: true },
+      { provider: "gemini", upstreamModel: "provider-b-expert", priority: 20, enabled: true },
+    ]);
     const route = await control.findModelRoute("deepseek-expert");
     expect(route).toBeDefined();
     const selected = await control.selectUpstreams(route!);
     expect(selected.map((item) => item.keyId)).toEqual([first.id, second.id]);
     expect(selected.map((item) => item.upstreamModel)).toEqual(["provider-a-expert", "provider-b-expert"]);
   });
+
+  it("exposes only grouped array-based mapping administration", async () => {
+    const app = createApp();
+    const headers = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    expect((await app.request("/v1/admin/mappings")).status).toBe(401);
+
+    const initial = await app.request("/v1/admin/mappings", { headers });
+    expect(initial.status).toBe(200);
+    const initialGroups = (await initial.json()).data as Array<{ model: { id: string }; mappings: Array<{ provider: string; upstreamModel: string }> }>;
+    expect(initialGroups.find((group) => group.model.id === "chatgpt-lite")?.mappings).toHaveLength(1);
+
+    const replaced = await app.request("/v1/admin/mappings/chatgpt-lite", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ mappings: [
+        { provider: "openai", upstreamModel: "gpt-primary", priority: 10, enabled: true },
+        { provider: "gemini", upstreamModel: "gemini-fallback", priority: 20, enabled: true },
+      ] }),
+    });
+    expect(replaced.status).toBe(200);
+    expect((await replaced.json()).data.mappings).toMatchObject([
+      { provider: "openai", upstreamModel: "gpt-primary", priority: 10 },
+      { provider: "gemini", upstreamModel: "gemini-fallback", priority: 20 },
+    ]);
+
+    const invalid = await app.request("/v1/admin/mappings/chatgpt-lite", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ mappings: [] }),
+    });
+    expect(invalid.status).toBe(400);
+    const unchanged = await app.request("/admin/mappings", { headers });
+    expect((await unchanged.json()).data.find((group: { model: { id: string }; mappings: unknown[] }) => group.model.id === "chatgpt-lite").mappings).toHaveLength(2);
+
+    expect((await app.request("/admin/models", { headers })).status).toBe(404);
+    expect((await app.request("/admin/model-mappings", { headers })).status).toBe(404);
+  });
+
   it("serves the advertised models and remote configuration", async () => {
     const app = createApp();
     const models = await app.request("/v1/models");
@@ -41,7 +81,10 @@ describe("Adaptive Chat API", () => {
       "deepseek-expert",
     ]));
     expect(config.status).toBe(200);
-    expect((await config.json()).featureFlags.reasoningBlocks).toBe(true);
+    const configPayload = await config.json();
+    expect(configPayload.featureFlags.reasoningBlocks).toBe(true);
+    expect(configPayload.models[0]).not.toHaveProperty("defaultMapping");
+    expect(configPayload.models[0]).not.toHaveProperty("upstreamModel");
   });
 
   it("publishes no-code channels through config without exposing upstream credentials", async () => {
@@ -66,7 +109,7 @@ describe("Adaptive Chat API", () => {
         surfaceColor: "#FFFFFF",
         typography: "sans",
         animatedGradient: true,
-        models: [{ id: "qwen-standard", label: "Standard", description: "Balanced", upstreamModel: "qwen-max" }],
+        models: [{ id: "qwen-standard", label: "Standard", description: "Balanced", initialUpstreamModel: "qwen-max" }],
         enabled: true,
         sortOrder: 40,
       }),
@@ -74,6 +117,7 @@ describe("Adaptive Chat API", () => {
     expect(create.status).toBe(201);
     const createText = await create.text();
     expect(createText).not.toContain("qwen-server-only-secret");
+    expect(createText).not.toContain("qwen-max");
     const channelId = JSON.parse(createText).data.id as string;
 
     const config = await app.request("/v1/config");
@@ -94,16 +138,37 @@ describe("Adaptive Chat API", () => {
     });
     expect(immutableProvider.status).toBe(409);
 
+    const configureMultiple = await app.request("/admin/mappings/qwen-standard", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ mappings: [
+        { provider: "qwen", upstreamModel: "qwen-max", priority: 10, enabled: true },
+        { provider: "qwen", upstreamModel: "qwen-fallback", priority: 20, enabled: true },
+      ] }),
+    });
+    expect(configureMultiple.status).toBe(200);
+    const styleUpdate = await app.request(`/admin/dynamic-channels/${channelId}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        accentColor: "#A16207",
+        models: [{ id: "qwen-standard", label: "Standard", description: "Balanced" }],
+      }),
+    });
+    expect(styleUpdate.status).toBe(200);
+    const preserved = await app.request("/admin/mappings", { headers });
+    expect((await preserved.json()).data.find((group: { model: { id: string }; mappings: unknown[] }) => group.model.id === "qwen-standard").mappings).toHaveLength(2);
+
     const replaceModel = await app.request(`/admin/dynamic-channels/${channelId}`, {
       method: "PATCH",
       headers,
       body: JSON.stringify({
-        models: [{ id: "qwen-expert", label: "Expert", description: "Deep analysis", upstreamModel: "qwen-max" }],
+        models: [{ id: "qwen-expert", label: "Expert", description: "Deep analysis", initialUpstreamModel: "qwen-max" }],
       }),
     });
     expect(replaceModel.status).toBe(200);
-    const routes = await app.request("/admin/models", { headers });
-    expect((await routes.json()).data.find((route: { id: string }) => route.id === "qwen-standard").enabled).toBe(false);
+    const mappings = await app.request("/admin/mappings", { headers });
+    expect((await mappings.json()).data.find((group: { model: { id: string; enabled: boolean } }) => group.model.id === "qwen-standard").model.enabled).toBe(false);
     const updatedConfig = await app.request("/v1/config");
     expect((await updatedConfig.json()).channels.find((channel: { id: string }) => channel.id === "qwen").models)
       .toEqual([{ id: "qwen-expert", label: "Expert", description: "Deep analysis" }]);

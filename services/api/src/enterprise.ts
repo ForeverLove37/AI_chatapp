@@ -45,7 +45,6 @@ export type DynamicModel = {
   id: string;
   label: string;
   description: string;
-  upstreamModel: string;
 };
 
 export type DynamicChannel = {
@@ -373,6 +372,11 @@ function emailTemplateFromRow(row: Record<string, unknown>): EmailTemplate {
 
 function dynamicChannelFromRow(row: Record<string, unknown>): DynamicChannel {
   const models = Array.isArray(row.models) ? row.models : [];
+  const normalizedModels = models.flatMap((model) => {
+    if (!model || typeof model !== "object" || Array.isArray(model)) return [];
+    const value = model as Record<string, unknown>;
+    return [{ id: String(value.id ?? ""), label: String(value.label ?? ""), description: String(value.description ?? "") }];
+  });
   return {
     id: String(row.id),
     slug: String(row.slug),
@@ -389,7 +393,7 @@ function dynamicChannelFromRow(row: Record<string, unknown>): DynamicChannel {
     surfaceColor: String(row.surface_color),
     typography: String(row.typography) as DynamicChannel["typography"],
     animatedGradient: Boolean(row.animated_gradient),
-    models: models as DynamicModel[],
+    models: normalizedModels,
     enabled: Boolean(row.enabled),
     sortOrder: numberValue(row.sort_order),
     updatedAt: isoValue(row.updated_at),
@@ -594,6 +598,16 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
       );
       ALTER TABLE dynamic_channels ADD COLUMN IF NOT EXISTS app_icon_data_url TEXT NOT NULL DEFAULT '';
       ALTER TABLE dynamic_channels ADD COLUMN IF NOT EXISTS custom_css TEXT NOT NULL DEFAULT '';
+      UPDATE dynamic_channels AS channel
+      SET models = COALESCE((
+        SELECT jsonb_agg(entry.item - 'upstreamModel')
+        FROM jsonb_array_elements(channel.models) AS entry(item)
+      ), '[]'::jsonb)
+      WHERE jsonb_typeof(channel.models) = 'array'
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(channel.models) AS entry(item)
+          WHERE entry.item ? 'upstreamModel'
+        );
       CREATE INDEX IF NOT EXISTS dynamic_channels_order_idx ON dynamic_channels(enabled, sort_order, slug);
       CREATE TABLE IF NOT EXISTS app_branding (
         id SMALLINT PRIMARY KEY CHECK (id = 1),
