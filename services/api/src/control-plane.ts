@@ -97,6 +97,7 @@ export type ProviderKeyView = {
   label: string;
   endpoint: string;
   priority: number;
+  bypassAuth: boolean;
   status: "active" | "disabled";
   createdAt: string;
   lastUsedAt: string | null;
@@ -108,9 +109,11 @@ export type ProviderKeyInput = {
   endpoint: string;
   secret: string;
   priority: number;
+  bypassAuth: boolean;
 };
 
-export type ProviderKeyPatch = Partial<Pick<ProviderKeyInput, "label" | "endpoint" | "secret" | "priority">> & {
+export type ProviderKeyPatch = Partial<Pick<ProviderKeyInput, "label" | "endpoint" | "priority" | "bypassAuth">> & {
+  secret?: string | null;
   status?: "active" | "disabled";
 };
 
@@ -157,6 +160,7 @@ export type Overview = {
 export type SelectedUpstream = {
   endpoint: string;
   secret: string;
+  bypassAuth: boolean;
   keyId: string;
 };
 
@@ -192,6 +196,7 @@ export interface ControlPlane {
   listProviderKeys(): Promise<ProviderKeyView[]>;
   createProviderKey(input: ProviderKeyInput): Promise<ProviderKeyView>;
   updateProviderKey(id: string, patch: ProviderKeyPatch): Promise<ProviderKeyView | undefined>;
+  deleteProviderKey(id: string): Promise<boolean>;
   listModelRoutes(): Promise<ModelRoute[]>;
   createModelRoute(route: ModelRoute): Promise<ModelRoute>;
   updateModelRoute(id: string, patch: ModelRoutePatch): Promise<ModelRoute | undefined>;
@@ -304,6 +309,7 @@ function providerKeyFromRow(row: Record<string, unknown>): ProviderKeyView {
     label: String(row.label),
     endpoint: String(row.endpoint),
     priority: numberValue(row.priority),
+    bypassAuth: Boolean(row.bypass_auth),
     status: String(row.status) as ProviderKeyView["status"],
     createdAt: isoValue(row.created_at),
     lastUsedAt: row.last_used_at ? isoValue(row.last_used_at) : null,
@@ -406,7 +412,7 @@ export class MemoryControlPlane implements ControlPlane {
       return explicit.keyIds
         .map((id) => this.providerKeys.get(id))
         .filter((key): key is StoredProviderKey => Boolean(key && key.status === "active"))
-        .map((key) => ({ endpoint: key.endpoint, secret: key.secret, keyId: key.id }));
+        .map((key) => ({ endpoint: key.endpoint, secret: key.secret, bypassAuth: key.bypassAuth, keyId: key.id }));
     }
     const provider = route.provider;
     const sorted = [...this.providerKeys.values()]
@@ -423,7 +429,7 @@ export class MemoryControlPlane implements ControlPlane {
       }
       ordered.push(...tier);
     }
-    return ordered.map((key) => ({ endpoint: key.endpoint, secret: key.secret, keyId: key.id }));
+    return ordered.map((key) => ({ endpoint: key.endpoint, secret: key.secret, bypassAuth: key.bypassAuth, keyId: key.id }));
   }
 
   async authorizeClient(secret: string): Promise<ClientAuthorization> {
@@ -623,6 +629,7 @@ export class MemoryControlPlane implements ControlPlane {
   }
 
   async createProviderKey(input: ProviderKeyInput) {
+    if (!input.bypassAuth && !input.secret.trim()) throw new Error("An API key is required unless Bypass Authentication is enabled.");
     const key: StoredProviderKey = {
       id: `upk_${randomUUID().slice(0, 12)}`,
       provider: input.provider,
@@ -630,6 +637,7 @@ export class MemoryControlPlane implements ControlPlane {
       endpoint: normalizeEndpoint(input.endpoint),
       secret: input.secret.trim(),
       priority: input.priority,
+      bypassAuth: input.bypassAuth,
       status: "active",
       createdAt: nowIso(),
       lastUsedAt: null,
@@ -642,13 +650,29 @@ export class MemoryControlPlane implements ControlPlane {
   async updateProviderKey(id: string, patch: ProviderKeyPatch) {
     const key = this.providerKeys.get(id);
     if (!key) return undefined;
-    if (patch.label !== undefined) key.label = patch.label;
-    if (patch.endpoint !== undefined) key.endpoint = normalizeEndpoint(patch.endpoint);
-    if (patch.secret !== undefined) key.secret = patch.secret.trim();
-    if (patch.priority !== undefined) key.priority = patch.priority;
-    if (patch.status !== undefined) key.status = patch.status;
-    const { secret: _secret, ...view } = key;
+    const updated: StoredProviderKey = {
+      ...key,
+      ...(patch.label !== undefined ? { label: patch.label } : {}),
+      ...(patch.endpoint !== undefined ? { endpoint: normalizeEndpoint(patch.endpoint) } : {}),
+      ...(patch.secret !== undefined ? { secret: patch.secret?.trim() ?? "" } : {}),
+      ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+      ...(patch.bypassAuth !== undefined ? { bypassAuth: patch.bypassAuth } : {}),
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+    };
+    if (!updated.bypassAuth && !updated.secret.trim()) throw new Error("An API key is required unless Bypass Authentication is enabled.");
+    this.providerKeys.set(id, updated);
+    const { secret: _secret, ...view } = updated;
     return view;
+  }
+
+  async deleteProviderKey(id: string) {
+    if (!this.providerKeys.delete(id)) return false;
+    for (const [key, policy] of this.policies) {
+      const keyIds = policy.keyIds.filter((candidate) => candidate !== id);
+      if (!keyIds.length) this.policies.delete(key);
+      else if (keyIds.length !== policy.keyIds.length) this.policies.set(key, { ...policy, keyIds, updatedAt: nowIso() });
+    }
+    return true;
   }
 
   async listModelRoutes() {
@@ -808,12 +832,14 @@ export class PostgresControlPlane implements ControlPlane {
         label TEXT NOT NULL,
         endpoint TEXT NOT NULL,
         encrypted_secret TEXT NOT NULL,
+        bypass_auth BOOLEAN NOT NULL DEFAULT FALSE,
         priority INTEGER NOT NULL DEFAULT 100 CHECK (priority >= 0 AND priority <= 100000),
         status TEXT NOT NULL CHECK (status IN ('active', 'disabled')) DEFAULT 'active',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         last_used_at TIMESTAMPTZ
       );
       CREATE INDEX IF NOT EXISTS provider_keys_available_idx ON provider_keys(provider, status, priority, created_at);
+      ALTER TABLE provider_keys ADD COLUMN IF NOT EXISTS bypass_auth BOOLEAN NOT NULL DEFAULT FALSE;
       CREATE TABLE IF NOT EXISTS model_routes (
         id TEXT PRIMARY KEY,
         provider TEXT NOT NULL CHECK (provider IN ('openai', 'gemini', 'deepseek')),
@@ -1002,6 +1028,7 @@ export class PostgresControlPlane implements ControlPlane {
     return ordered.map((row) => ({
       endpoint: String(row.endpoint),
       secret: this.decrypt(String(row.encrypted_secret)),
+      bypassAuth: Boolean(row.bypass_auth),
       keyId: String(row.id),
     }));
   }
@@ -1230,15 +1257,17 @@ export class PostgresControlPlane implements ControlPlane {
   }
 
   async createProviderKey(input: ProviderKeyInput) {
+    if (!input.bypassAuth && !input.secret.trim()) throw new Error("An API key is required unless Bypass Authentication is enabled.");
     const result = await this.pool.query<Record<string, unknown>>(
-      `INSERT INTO provider_keys (id, provider, label, endpoint, encrypted_secret, priority)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      `INSERT INTO provider_keys (id, provider, label, endpoint, encrypted_secret, bypass_auth, priority)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
       [
         `upk_${randomUUID().slice(0, 12)}`,
         input.provider,
         input.label,
         normalizeEndpoint(input.endpoint),
         this.encrypt(input.secret.trim()),
+        input.bypassAuth,
         input.priority,
       ],
     );
@@ -1250,7 +1279,8 @@ export class PostgresControlPlane implements ControlPlane {
     const values: unknown[] = [];
     if (patch.label !== undefined) { values.push(patch.label); fields.push(`label = $${values.length}`); }
     if (patch.endpoint !== undefined) { values.push(normalizeEndpoint(patch.endpoint)); fields.push(`endpoint = $${values.length}`); }
-    if (patch.secret !== undefined) { values.push(this.encrypt(patch.secret.trim())); fields.push(`encrypted_secret = $${values.length}`); }
+    if (patch.secret !== undefined) { values.push(this.encrypt(patch.secret?.trim() ?? "")); fields.push(`encrypted_secret = $${values.length}`); }
+    if (patch.bypassAuth !== undefined) { values.push(patch.bypassAuth); fields.push(`bypass_auth = $${values.length}`); }
     if (patch.priority !== undefined) { values.push(patch.priority); fields.push(`priority = $${values.length}`); }
     if (patch.status !== undefined) { values.push(patch.status); fields.push(`status = $${values.length}`); }
     if (!fields.length) {
@@ -1258,8 +1288,38 @@ export class PostgresControlPlane implements ControlPlane {
       return result.rows[0] ? providerKeyFromRow(result.rows[0]) : undefined;
     }
     values.push(id);
+    const existing = await this.pool.query<Record<string, unknown>>("SELECT * FROM provider_keys WHERE id = $1", [id]);
+    if (!existing.rows[0]) return undefined;
+    const current = existing.rows[0];
+    const nextBypass = patch.bypassAuth ?? Boolean(current.bypass_auth);
+    const nextSecret = patch.secret !== undefined ? (patch.secret?.trim() ?? "") : this.decrypt(String(current.encrypted_secret));
+    if (!nextBypass && !nextSecret) throw new Error("An API key is required unless Bypass Authentication is enabled.");
     const result = await this.pool.query<Record<string, unknown>>(`UPDATE provider_keys SET ${fields.join(", ")} WHERE id = $${values.length} RETURNING *`, values);
     return result.rows[0] ? providerKeyFromRow(result.rows[0]) : undefined;
+  }
+
+  async deleteProviderKey(id: string) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const deleted = await client.query("DELETE FROM provider_keys WHERE id = $1", [id]);
+      if (deleted.rowCount !== 1) {
+        await client.query("ROLLBACK");
+        return false;
+      }
+      await client.query(
+        "UPDATE routing_policies SET key_ids = array_remove(key_ids, $1), updated_at = NOW() WHERE $1 = ANY(key_ids)",
+        [id],
+      );
+      await client.query("DELETE FROM routing_policies WHERE cardinality(key_ids) = 0");
+      await client.query("COMMIT");
+      return true;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async createModelRoute(route: ModelRoute) {

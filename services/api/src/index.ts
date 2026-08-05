@@ -104,15 +104,20 @@ const providerKeySchema = z.object({
   provider: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
   label: z.string().trim().min(2).max(120),
   endpoint: z.url().max(1_000),
-  secret: z.string().trim().min(1).max(8_000),
+  secret: z.union([z.string().trim().max(8_000), z.null()]).optional().default(""),
   priority: z.number().int().min(0).max(100_000).default(100),
+  bypassAuth: z.boolean().default(false),
+}).refine((value) => value.bypassAuth || Boolean(value.secret?.trim()), {
+  message: "An API key is required unless Bypass Authentication is enabled.",
+  path: ["secret"],
 });
 
 const providerKeyPatchSchema = z.object({
   label: z.string().trim().min(2).max(120).optional(),
   endpoint: z.url().max(1_000).optional(),
-  secret: z.string().trim().min(1).max(8_000).optional(),
+  secret: z.union([z.string().trim().max(8_000), z.null()]).optional(),
   priority: z.number().int().min(0).max(100_000).optional(),
+  bypassAuth: z.boolean().optional(),
   status: z.enum(["active", "disabled"]).optional(),
 }).refine((value) => Object.keys(value).length > 0);
 
@@ -297,10 +302,16 @@ const backupSchema = z.object({
   credentials: backupCredentialsSchema.optional(),
 });
 const buildSchema = z.object({
-  versionCode: z.number().int().min(1).max(10_000_000),
+  versionCode: z.coerce.number().int().min(1).max(10_000_000),
   versionName: z.string().trim().min(1).max(80),
   releaseNotes: z.string().max(8_000).default(""),
 });
+const releasePublishSchema = z.object({
+  artifactId: z.string().trim().min(1).max(120),
+  releaseRing: z.enum(["beta", "production"]).optional(),
+  ring: z.enum(["beta", "production"]).optional(),
+  audienceGroupId: z.string().trim().min(1).max(120).nullable().optional(),
+}).refine((value) => value.releaseRing ?? value.ring, { message: "A deployment ring is required.", path: ["releaseRing"] });
 
 function backupValidationError(input: z.infer<typeof backupSchema>) {
   try { CronExpressionParser.parse(input.scheduleCron); }
@@ -490,13 +501,14 @@ async function fetchUpstream(upstreams: SelectedUpstream[], body: Record<string,
   let lastError: unknown;
   for (const upstream of upstreams) {
     try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Accept: body.stream ? "text/event-stream" : "application/json",
+      };
+      if (!upstream.bypassAuth && upstream.secret) headers.Authorization = `Bearer ${upstream.secret}`;
       const response = await fetch(upstream.endpoint, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${upstream.secret}`,
-          "Content-Type": "application/json",
-          Accept: body.stream ? "text/event-stream" : "application/json",
-        },
+        headers,
         body: JSON.stringify(body),
       });
       if (response.ok || [400, 404, 422].includes(response.status)) return response;
@@ -1400,10 +1412,12 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post("/admin/provider-keys", async (context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
-    const parsed = providerKeySchema.safeParse(await context.req.json().catch(() => undefined));
+    const body = await context.req.json().catch(() => undefined) as Record<string, unknown> | undefined;
+    if (body && body.bypass_auth !== undefined && body.bypassAuth === undefined) body.bypassAuth = body.bypass_auth;
+    const parsed = providerKeySchema.safeParse(body);
     if (!parsed.success) return context.json({ error: { message: "Invalid provider key request.", details: parsed.error.issues } }, 400);
     try {
-      return context.json({ data: await controlPlane.createProviderKey(parsed.data) }, 201);
+      return context.json({ data: await controlPlane.createProviderKey({ ...parsed.data, secret: parsed.data.secret ?? "" }) }, 201);
     } catch (error) {
       return context.json({ error: { message: error instanceof Error ? error.message : "Unable to save provider key." } }, 400);
     }
@@ -1411,13 +1425,59 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.patch("/admin/provider-keys/:id", async (context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
-    const parsed = providerKeyPatchSchema.safeParse(await context.req.json().catch(() => undefined));
+    const body = await context.req.json().catch(() => undefined) as Record<string, unknown> | undefined;
+    if (body && body.bypass_auth !== undefined && body.bypassAuth === undefined) body.bypassAuth = body.bypass_auth;
+    const parsed = providerKeyPatchSchema.safeParse(body);
     if (!parsed.success) return context.json({ error: { message: "Invalid provider key update.", details: parsed.error.issues } }, 400);
     try {
-      const key = await controlPlane.updateProviderKey(context.req.param("id"), parsed.data);
+      const key = await controlPlane.updateProviderKey(context.req.param("id"), { ...parsed.data, ...(parsed.data.secret === null ? { secret: "" } : {}) });
       return key ? context.json({ data: key }) : context.json({ error: { message: "Provider key was not found." } }, 404);
     } catch (error) {
       return context.json({ error: { message: error instanceof Error ? error.message : "Unable to update provider key." } }, 400);
+    }
+  });
+  app.put("/admin/provider-keys/:id", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const body = await context.req.json().catch(() => undefined) as Record<string, unknown> | undefined;
+    if (body && body.bypass_auth !== undefined && body.bypassAuth === undefined) body.bypassAuth = body.bypass_auth;
+    const parsed = providerKeyPatchSchema.safeParse(body);
+    if (!parsed.success) return context.json({ error: { message: "Invalid provider key update.", details: parsed.error.issues } }, 400);
+    try {
+      const key = await controlPlane.updateProviderKey(context.req.param("id"), { ...parsed.data, ...(parsed.data.secret === null ? { secret: "" } : {}) });
+      return key ? context.json({ data: key }) : context.json({ error: { message: "Provider key was not found." } }, 404);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to update provider key." } }, 400);
+    }
+  });
+  app.delete("/admin/provider-keys/:id", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    try {
+      const deleted = await controlPlane.deleteProviderKey(context.req.param("id"));
+      return deleted ? context.body(null, 204) : context.json({ error: { message: "Provider key was not found." } }, 404);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to delete provider key." } }, 409);
+    }
+  });
+  app.put("/v1/admin/keys/:id", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const body = await context.req.json().catch(() => undefined) as Record<string, unknown> | undefined;
+    if (body && body.bypass_auth !== undefined && body.bypassAuth === undefined) body.bypassAuth = body.bypass_auth;
+    const parsed = providerKeyPatchSchema.safeParse(body);
+    if (!parsed.success) return context.json({ error: { message: "Invalid provider key update.", details: parsed.error.issues } }, 400);
+    try {
+      const key = await controlPlane.updateProviderKey(context.req.param("id"), { ...parsed.data, ...(parsed.data.secret === null ? { secret: "" } : {}) });
+      return key ? context.json({ data: key }) : context.json({ error: { message: "Provider key was not found." } }, 404);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to update provider key." } }, 400);
+    }
+  });
+  app.delete("/v1/admin/keys/:id", async (context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    try {
+      const deleted = await controlPlane.deleteProviderKey(context.req.param("id"));
+      return deleted ? context.body(null, 204) : context.json({ error: { message: "Provider key was not found." } }, 404);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to delete provider key." } }, 409);
     }
   });
 
@@ -1601,6 +1661,7 @@ export function createApp(options: CreateAppOptions = {}) {
         endpoint: input.endpoint!,
         secret: input.secret!,
         priority: input.priority,
+        bypassAuth: false,
       });
       for (const model of input.models) {
         await controlPlane.createModelRoute({ ...model, provider: input.provider, uiMode: input.slug, aliases: [], enabled: input.enabled });
@@ -1760,24 +1821,100 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/admin/backups/trigger", triggerBackup);
   app.post("/v1/admin/backups/trigger", triggerBackup);
 
-  const queueBuild = (ring: "beta" | "production") => async (context: Context) => {
+  const enqueueBuild = async (context: Context, legacyRing?: "beta" | "production") => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
     const parsed = buildSchema.safeParse(await context.req.json().catch(() => undefined));
-    if (!parsed.success) return context.json({ error: { message: "Invalid Android build request." } }, 400);
-    const betaGroup = ring === "beta" ? (await enterprise.listUserGroups()).find((group) => group.releaseRing === "beta") : undefined;
-    const job = await enterprise.enqueueJob("build", {
-      ...parsed.data,
-      ring,
-      audienceGroupId: betaGroup?.id ?? null,
-    }, 1);
-    return context.json({ data: job }, 202);
+    if (!parsed.success) return context.json({ error: { message: "Invalid Android build request.", details: parsed.error.issues } }, 400);
+    try {
+      const artifact = await enterprise.createArtifact(parsed.data);
+      const betaGroup = legacyRing === "beta" ? (await enterprise.listUserGroups()).find((group) => group.releaseRing === "beta") : undefined;
+      const job = await enterprise.enqueueJob("build", {
+        artifactId: artifact.id,
+        ...parsed.data,
+        ...(legacyRing ? { ring: legacyRing, audienceGroupId: betaGroup?.id ?? null } : {}),
+      }, 1);
+      const tracked = await enterprise.attachArtifactBuildJob(artifact.id, job.id);
+      return context.json({ data: { artifactId: artifact.id, jobId: job.id, artifact: tracked ?? artifact, job, payload: job.payload } }, 202);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to queue Android build." } }, 400);
+    }
   };
-  const queueBetaBuild = queueBuild("beta");
-  const queueProductionBuild = queueBuild("production");
-  app.post("/admin/builds/beta", queueBetaBuild);
-  app.post("/v1/admin/builds/beta", queueBetaBuild);
-  app.post("/admin/builds/production", queueProductionBuild);
-  app.post("/v1/admin/builds/production", queueProductionBuild);
+  const queueBuild = (ring: "beta" | "production") => (context: Context) => enqueueBuild(context, ring);
+  app.post("/admin/builds", (context) => enqueueBuild(context));
+  app.post("/v1/admin/builds", (context) => enqueueBuild(context));
+  app.post("/admin/builds/beta", queueBuild("beta"));
+  app.post("/v1/admin/builds/beta", queueBuild("beta"));
+  app.post("/admin/builds/production", queueBuild("production"));
+  app.post("/v1/admin/builds/production", queueBuild("production"));
+
+  const listArtifacts = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await enterprise.listArtifacts() });
+  };
+  app.get("/admin/artifacts", listArtifacts);
+  app.get("/v1/admin/artifacts", listArtifacts);
+
+  const listPipelineReleases = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await enterprise.listReleases() });
+  };
+  app.get("/admin/releases", listPipelineReleases);
+  app.get("/v1/admin/releases", listPipelineReleases);
+
+  const publishArtifact = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = releasePublishSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid release request.", details: parsed.error.issues } }, 400);
+    const releaseRing = parsed.data.releaseRing ?? parsed.data.ring!;
+    const betaGroup = releaseRing === "beta"
+      ? (await enterprise.listUserGroups()).find((group) => group.id === parsed.data.audienceGroupId || group.releaseRing === "beta")
+      : undefined;
+    try {
+      const alreadyPublished = (await enterprise.listReleases()).some((release) => release.artifactId === parsed.data.artifactId && release.releaseRing === releaseRing);
+      const release = await enterprise.publishArtifact(parsed.data.artifactId, releaseRing, betaGroup?.id ?? null);
+      if (!alreadyPublished) {
+        try {
+          const [template, smtp] = await Promise.all([
+            enterprise.getEmailTemplate("version_update"),
+            enterprise.getSmtpDeliveryConfig(),
+          ]);
+          if (template?.enabled && smtp.enabled) {
+            const recipients = releaseRing === "beta"
+              ? (betaGroup ? await enterprise.listGroupEmails(betaGroup.id) : [])
+              : await enterprise.listGroupEmails();
+            const rendered = renderEmailTemplate(template, {
+              versionName: release.versionName,
+              releaseNotes: release.releaseNotes,
+              downloadUrl: release.downloadUrl,
+            });
+            await Promise.all(recipients.map((to) => enterprise.enqueueJob("email", { to, ...rendered })));
+          }
+        } catch (error) {
+          console.error("Unable to queue release notifications", error);
+        }
+      }
+      return context.json({ data: release }, alreadyPublished ? 200 : 201);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to publish artifact." } }, 409);
+    }
+  };
+  app.post("/admin/releases", publishArtifact);
+  app.post("/v1/admin/releases", publishArtifact);
+
+  const archiveRelease = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const release = await enterprise.getRelease(context.req.param("id") ?? "");
+    if (!release) return context.json({ error: { message: "Release was not found." } }, 404);
+    if (release.status === "archived") return context.json({ data: release });
+    try {
+      const job = await enterprise.enqueueJob("archive", { releaseId: release.id }, 1);
+      return context.json({ data: { release, job } }, 202);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to queue release archive." } }, 400);
+    }
+  };
+  app.post("/admin/releases/:id/archive", archiveRelease);
+  app.post("/v1/admin/releases/:id/archive", archiveRelease);
 
   app.get("/admin/jobs", async (context) => {
     if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);

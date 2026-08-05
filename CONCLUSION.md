@@ -220,3 +220,63 @@ This iteration does not alter Android code or produce a new APK. Final visual
 review is available at `https://chat.zengjunjie.com`; the referenced Iteration
 11 screenshots and a browser executable were not present on the server, so
 automated pixel comparison was not possible.
+
+# Iteration 12 Conclusion
+
+Iteration 12 is implemented and deployed as Android version `1.8.0` (version
+code `11`). Gemini message bubbles now use a `36dp` radius and its composer uses
+a `48dp` radius. Both changes are selected only by `provider.isGemini`; the
+existing ChatGPT and DeepSeek geometry branches are unchanged.
+
+The provider pool now supports create, edit, enable/disable, and confirmed
+deletion from the Admin Console. PostgreSQL persists `bypass_auth`; when the
+explicit "Bypass Authentication (Keyless)" state is enabled, an empty secret is
+valid and the Gateway does not add an `Authorization` header. Nullable secrets
+and snake-case `bypass_auth` are accepted by `PUT /v1/admin/keys/:id`, while
+provider secrets remain absent from all response objects.
+
+Android releases now use three separate persisted states. `POST
+/v1/admin/builds` creates an artifact record and queues compilation, `POST
+/v1/admin/releases` publishes a completed artifact to a Beta or Production ring,
+and `POST /v1/admin/releases/:id/archive` queues GitHub offloading. PostgreSQL
+tracks artifacts, ring releases, local paths, checksums, GitHub URLs, and state
+timestamps. The Redis worker records logs and failure state, verifies the APK
+size before upload, tolerates retrying an already-created GitHub release/asset,
+and removes the local file only after the GitHub asset URL is confirmed.
+
+Verification completed:
+
+- API TypeScript compilation passed; all 4 test files and 32 tests passed. The
+  suite covers keyless CRUD and header omission, three-stage API transitions,
+  and a mocked GitHub Release upload followed by verified local-file removal.
+- Admin Console TypeScript checking, optimized compilation, and static page
+  generation passed with the provider editor and artifact/release tables.
+- Android's 15 unit tests passed. A real worker build completed successfully in
+  4m 11s and produced a 20,375,261-byte APK with SHA-256
+  `aa7349a819c7563ec329432757f3c3f21a309f70007566be9ca16271b9439c60`.
+- The artifact is persisted as `art_07afd2d8-181`; publishing it created Beta
+  release `rel_06b5962f-1dd` for `grp_beta`. A disposable Beta account checking
+  from version code `10` received version `1.8.0`, and the account was removed.
+- API, worker, Admin, PostgreSQL, Redis, and Web containers are running. The API
+  reports relay mode, the public APK returns HTTPS 200 with the expected byte
+  length, the Web Client returns HTTPS 200, and the Console returns its immediate
+  HTTP Basic Auth challenge.
+
+The supplied `.env` does not contain `GITHUB_TOKEN`, and neither the process
+environment nor Git credential configuration provides a GitHub API token. SSH
+repository access can push Git objects but cannot authenticate the GitHub
+Releases REST upload. The live archive job therefore failed with the explicit
+credential error and correctly retained the local APK. To complete the one
+externally blocked operation, add a fine-grained token with Contents read/write
+permission as `GITHUB_TOKEN`, recreate the worker, and retry Archive in the
+Admin Console.
+
+Artifacts and access:
+
+- Local APK: `app/build/outputs/apk/debug/app-debug.apk`
+- Beta APK: `https://chatapi.zengjunjie.com/downloads/adaptive-chat-1.8.0-art_07afd2d8-181.apk`
+- Admin Console: `https://console.zengjunjie.com`
+- API Gateway: `https://chatapi.zengjunjie.com`
+
+Android visual validation remains with the Product Owner. No emulator, Xvfb,
+noVNC, Lavapipe, or other headless Android UI tooling was used.

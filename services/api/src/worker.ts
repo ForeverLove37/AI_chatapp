@@ -1,6 +1,6 @@
 import { createHash, randomBytes, scryptSync, createCipheriv } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { copyFile, mkdir, rename, stat, unlink } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, stat, unlink } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { pipeline } from "node:stream/promises";
@@ -12,7 +12,6 @@ import { Client } from "pg";
 import { installBuildAppIcon } from "./app-icon.js";
 import {
   createPostgresEnterpriseStore,
-  renderEmailTemplate,
   type BackgroundJob,
   type BackupExecutionConfig,
   type EnterpriseStore,
@@ -327,63 +326,144 @@ async function executeBackup(store: EnterpriseStore, job: BackgroundJob) {
 async function executeBuild(store: EnterpriseStore, job: BackgroundJob) {
   const versionCode = Number(job.payload.versionCode);
   const versionName = String(job.payload.versionName ?? "");
-  const releaseNotes = String(job.payload.releaseNotes ?? "");
-  const ring = job.payload.ring === "beta" ? "beta" : "production";
-  const audienceGroupId = typeof job.payload.audienceGroupId === "string" ? job.payload.audienceGroupId : null;
+  const ring = job.payload.ring === "beta" || job.payload.ring === "production" ? job.payload.ring : undefined;
+  const artifactId = String(job.payload.artifactId ?? "");
   if (!Number.isInteger(versionCode) || !versionName) throw new Error("Build job version is invalid.");
+  const artifact = artifactId ? await store.getArtifact(artifactId) : undefined;
+  if (!artifact) throw new Error("Build artifact tracking record was not found.");
   const projectRoot = resolve(process.env.ANDROID_PROJECT_ROOT ?? "/workspace");
-  await store.appendJobLog(job.id, `Compiling Android ${versionName} for the ${ring} ring`);
-  const launcherIcon = await store.getLauncherIcon();
-  const restoreIcon = launcherIcon.dataUrl
-    ? await installBuildAppIcon(projectRoot, launcherIcon.dataUrl)
-    : undefined;
-  if (launcherIcon.dataUrl) await store.appendJobLog(job.id, "Bundled the global launcher icon");
+  let restoreIcon: (() => Promise<void>) | undefined;
   try {
-    await runCommand("./gradlew", [
+    await store.appendJobLog(job.id, `Compiling Android ${versionName}${ring ? ` (requested ${ring} ring)` : ""}`);
+    const launcherIcon = await store.getLauncherIcon();
+    if (launcherIcon.dataUrl) {
+      restoreIcon = await installBuildAppIcon(projectRoot, launcherIcon.dataUrl);
+      await store.appendJobLog(job.id, "Bundled the global launcher icon");
+    }
+    const gradleArgs = [
       ":app:assembleDebug",
       `-PadaptiveVersionCode=${versionCode}`,
       `-PadaptiveVersionName=${versionName}`,
-      `-PadaptiveReleaseRing=${ring}`,
+      ...(ring ? [`-PadaptiveReleaseRing=${ring}`] : []),
       "--no-daemon",
       "--max-workers=1",
       "-Pkotlin.compiler.execution.strategy=in-process",
       "--console=plain",
-    ], { cwd: projectRoot }, (line) => store.appendJobLog(job.id, line));
+    ];
+    await runCommand("./gradlew", gradleArgs, { cwd: projectRoot }, (line) => store.appendJobLog(job.id, line));
+
+    const source = join(projectRoot, "app/build/outputs/apk/debug/app-debug.apk");
+    const outputRoot = resolve(process.env.APK_OUTPUT_DIR ?? "/artifacts");
+    await mkdir(outputRoot, { recursive: true, mode: 0o755 });
+    const filename = `adaptive-chat-${versionName}-${artifact.id}.apk`.replace(/[^a-zA-Z0-9._-]/g, "-");
+    const target = join(outputRoot, filename);
+    await copyFile(source, target);
+    const checksum = await sha256File(target);
+    const publicBase = (process.env.PUBLIC_API_BASE_URL ?? "https://chatapi.zengjunjie.com").replace(/\/$/, "");
+    const downloadUrl = `${publicBase}/downloads/${basename(target)}`;
+    const bytes = (await stat(target)).size;
+    const tracked = await store.markArtifactBuilt(artifact.id, { fileName: filename, localPath: target, downloadUrl, sha256: checksum, bytes });
+    if (!tracked) throw new Error("Build artifact disappeared before it could be finalized.");
+    await store.appendJobLog(job.id, `Artifact ${artifact.id} stored at ${filename}; awaiting Publish stage`);
+    return { artifactId: artifact.id, downloadUrl, sha256: checksum, bytes, status: tracked.status };
+  } catch (error) {
+    await store.markArtifactFailed(artifact.id, error instanceof Error ? error.message : "Android compilation failed.").catch(() => undefined);
+    throw error;
   } finally {
-    await restoreIcon?.();
+    await restoreIcon?.().catch(() => undefined);
   }
+}
 
-  const source = join(projectRoot, "app/build/outputs/apk/debug/app-debug.apk");
-  const outputRoot = resolve(process.env.APK_OUTPUT_DIR ?? "/artifacts");
-  await mkdir(outputRoot, { recursive: true, mode: 0o755 });
-  const filename = `adaptive-chat-${versionName}-${ring}.apk`.replace(/[^a-zA-Z0-9._-]/g, "-");
-  const target = join(outputRoot, filename);
-  await copyFile(source, target);
-  const checksum = await sha256File(target);
-  const publicBase = (process.env.PUBLIC_API_BASE_URL ?? "https://chatapi.zengjunjie.com").replace(/\/$/, "");
-  const downloadUrl = `${publicBase}/downloads/${basename(target)}`;
-  const release = await store.createRelease({
-    versionCode,
-    versionName,
-    downloadUrl,
-    releaseNotes,
-    isActive: true,
-    releaseRing: ring,
-    audienceGroupId: ring === "beta" ? audienceGroupId : null,
+type GitHubReleaseResponse = { id: number; html_url: string; upload_url: string; tag_name: string };
+type GitHubAssetResponse = { browser_download_url: string; id: number; name: string; size: number; state: string };
+
+async function githubRequest(input: string | URL, init: RequestInit, token: string) {
+  const response = await fetch(input, {
+    ...init,
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "adaptive-chat-worker",
+      ...init.headers,
+    },
   });
-
-  const [template, smtp] = await Promise.all([
-    store.getEmailTemplate("version_update"),
-    store.getSmtpDeliveryConfig(),
-  ]);
-  if (template?.enabled && smtp.enabled) {
-    const rendered = renderEmailTemplate(template, { versionName, releaseNotes, downloadUrl });
-    const recipients = await store.listGroupEmails(ring === "beta" ? audienceGroupId ?? undefined : undefined);
-    await Promise.all(recipients.map((to) => store.enqueueJob("email", { to, ...rendered })));
-  } else if (template?.enabled) {
-    await store.appendJobLog(job.id, "SMTP is disabled; release notification fan-out was skipped");
+  const body = await response.text();
+  let payload: unknown = {};
+  try { payload = body ? JSON.parse(body) : {}; } catch { payload = { message: body }; }
+  if (!response.ok) {
+    const message = payload && typeof payload === "object" && "message" in payload ? String((payload as Record<string, unknown>).message) : `GitHub returned HTTP ${response.status}`;
+    const details = payload && typeof payload === "object" && "errors" in payload ? `: ${JSON.stringify((payload as Record<string, unknown>).errors)}` : "";
+    throw new Error(`${message}${details}`);
   }
-  return { releaseId: release.id, ring, downloadUrl, sha256: checksum };
+  return payload as Record<string, unknown>;
+}
+
+export async function executeArchive(store: EnterpriseStore, job: BackgroundJob) {
+  const releaseId = String(job.payload.releaseId ?? "");
+  const release = releaseId ? await store.getRelease(releaseId) : undefined;
+  if (!release) throw new Error("Release was not found for archive.");
+  const artifact = await store.getArtifact(release.artifactId);
+  if (release.status === "archived") {
+    if (artifact?.status === "archived" && artifact.localPath) {
+      const artifactRoot = resolve(process.env.APK_OUTPUT_DIR ?? "/artifacts");
+      const artifactPath = resolve(artifact.localPath);
+      const relativePath = relative(artifactRoot, artifactPath);
+      if (relativePath.startsWith("..") || relativePath.includes(`..${process.platform === "win32" ? "\\" : "/"}`)) throw new Error("Artifact path is outside the configured APK output directory.");
+      await unlink(artifactPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+    }
+    return { releaseId, status: "archived", localFileRemoved: artifact?.status === "archived" };
+  }
+  if (!artifact || !artifact.localPath || !artifact.fileName) throw new Error("The published artifact has no local file to archive.");
+  const token = process.env.GITHUB_TOKEN?.trim();
+  if (!token) throw new Error("GITHUB_TOKEN is required before an artifact can be archived.");
+  const repository = (process.env.GITHUB_REPOSITORY ?? "ForeverLove37/AI_chatapp").trim();
+  if (!/^[^/]+\/[^/]+$/.test(repository)) throw new Error("GITHUB_REPOSITORY must use owner/name format.");
+  const apiBase = (process.env.GITHUB_API_URL ?? "https://api.github.com").replace(/\/$/, "");
+  const artifactRoot = resolve(process.env.APK_OUTPUT_DIR ?? "/artifacts");
+  const artifactPath = resolve(artifact.localPath);
+  const relativePath = relative(artifactRoot, artifactPath);
+  if (relativePath.startsWith("..") || relativePath.includes(`..${process.platform === "win32" ? "\\" : "/"}`)) throw new Error("Artifact path is outside the configured APK output directory.");
+  const file = await readFile(artifactPath);
+  if (file.length !== artifact.bytes) throw new Error("Artifact size changed before GitHub upload.");
+  const tag = `android-v${release.versionName}-${release.id}`.replace(/[^a-zA-Z0-9._-]/g, "-");
+  await store.appendJobLog(job.id, `Creating GitHub release ${tag}`);
+  let githubRelease: GitHubReleaseResponse;
+  try {
+    githubRelease = await githubRequest(`${apiBase}/repos/${repository}/releases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag_name: tag, name: `Adaptive Chat ${release.versionName}`, body: release.releaseNotes, draft: false, prerelease: release.releaseRing === "beta" }),
+    }, token) as unknown as GitHubReleaseResponse;
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (!message.includes("already_exists") && !message.includes("already exists")) throw error;
+    githubRelease = await githubRequest(`${apiBase}/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, { method: "GET" }, token) as unknown as GitHubReleaseResponse;
+  }
+  const uploadUrl = githubRelease.upload_url.replace(/\{\?name,label\}$/, "");
+  let asset: GitHubAssetResponse;
+  try {
+    asset = await githubRequest(`${uploadUrl}?name=${encodeURIComponent(artifact.fileName)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/vnd.android.package-archive", "Content-Length": String(file.length) },
+      body: file,
+    }, token) as unknown as GitHubAssetResponse;
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (!message.includes("already_exists") && !message.includes("already exists")) throw error;
+    const assets = await githubRequest(`${apiBase}/repos/${repository}/releases/${githubRelease.id}/assets`, { method: "GET" }, token) as unknown as GitHubAssetResponse[];
+    const existing = Array.isArray(assets) ? assets.find((candidate) => candidate?.name === artifact.fileName) : undefined;
+    if (!existing) throw error;
+    asset = existing;
+  }
+  if (!asset.browser_download_url) throw new Error("GitHub did not return a browser download URL for the uploaded APK.");
+  if (asset.state !== "uploaded" || asset.size !== file.length) throw new Error("GitHub asset verification failed: upload state or byte length does not match the local APK.");
+  const archived = await store.markReleaseArchived(release.id, { tag, releaseUrl: githubRelease.html_url, assetUrl: asset.browser_download_url });
+  if (archived.deleteLocalFile) await unlink(artifactPath);
+  await store.appendJobLog(job.id, `Uploaded ${artifact.fileName} to GitHub and ${archived.deleteLocalFile ? "removed the local artifact" : "retained the local artifact for another published ring"}`);
+  return { releaseId: release.id, tag, githubReleaseUrl: githubRelease.html_url, githubAssetUrl: asset.browser_download_url, localFileRemoved: archived.deleteLocalFile };
 }
 
 async function scheduleBackups(store: EnterpriseStore) {
@@ -412,7 +492,9 @@ async function processJob(store: EnterpriseStore, id: string) {
       ? await executeEmail(store, job)
       : job.type === "backup"
         ? await executeBackup(store, job)
-        : await executeBuild(store, job);
+        : job.type === "build"
+          ? await executeBuild(store, job)
+          : await executeArchive(store, job);
     await store.completeJob(job.id, result);
     console.log(`[${logTime()}] Completed ${job.type} job ${job.id}`);
   } catch (error) {

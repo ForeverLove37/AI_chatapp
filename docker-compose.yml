@@ -77,6 +77,9 @@ services:
       APK_OUTPUT_DIR: /artifacts
       BACKUP_LOCAL_ROOT: /backups
       PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-https://chatapi.zengjunjie.com}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-ForeverLove37/AI_chatapp}
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
     volumes:
       - ./app:/workspace/app
       - ./.tooling:/workspace/.tooling

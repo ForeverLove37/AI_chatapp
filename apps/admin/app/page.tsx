@@ -93,6 +93,7 @@ type ProviderKey = {
   provider: Provider;
   label: string;
   endpoint: string;
+  bypassAuth: boolean;
   priority: number;
   status: "active" | "disabled";
   createdAt: string;
@@ -140,6 +141,42 @@ type AppVersion = {
   releaseNotes: string;
   isActive: boolean;
   publishedAt: string;
+};
+
+type BuildArtifact = {
+  id: string;
+  versionCode: number;
+  versionName: string;
+  releaseNotes: string;
+  fileName: string;
+  localPath: string;
+  downloadUrl: string;
+  sha256: string;
+  bytes: number;
+  status: "queued" | "building" | "built" | "published" | "archived" | "failed";
+  buildJobId: string | null;
+  error: string | null;
+  createdAt: string;
+  builtAt: string | null;
+  archivedAt: string | null;
+};
+
+type PipelineRelease = {
+  id: string;
+  artifactId: string;
+  appVersionId: string;
+  versionCode: number;
+  versionName: string;
+  releaseNotes: string;
+  releaseRing: "beta" | "production";
+  audienceGroupId: string | null;
+  downloadUrl: string;
+  status: "published" | "archived";
+  githubTag: string | null;
+  githubReleaseUrl: string | null;
+  githubAssetUrl: string | null;
+  publishedAt: string;
+  archivedAt: string | null;
 };
 
 type Overview = {
@@ -195,7 +232,7 @@ const englishCopy: AdminCopy = {
   modelTraffic: "Model traffic", requestVolume: "Request volume by internal model name", routingState: "Routing state", upstreamAvailability: "Configured upstream availability", ready: "Ready", unconfigured: "Unconfigured", serviceState: "Service state", lastSampled: "Last sampled", providerKeys: "Provider keys", clientKeys: "Client keys", activeUsers: "Active users", failures: "Failures",
   createUser: "Create user", accountsAdminOnly: "Accounts are created only by an administrator", email: "Email", password: "Password", role: "Role", standard: "Standard", admin: "Admin", rpm: "RPM", dailyQuota: "Daily quota", userAccess: "User access", statusRoleQuota: "Status, role, and quotas", identity: "Identity", limits: "Limits", monthlyTokens: "Monthly tokens", status: "Status", suspend: "Suspend", restore: "Restore", edit: "Edit", editUser: "Edit user", resetPassword: "Reset password", leavePasswordBlank: "Leave blank to keep the current password", saveChanges: "Save changes", cancel: "Cancel",
   issueClientKey: "Issue client key", secretHashed: "A secret is shown once and stored as a hash", name: "Name", user: "User", unassigned: "Unassigned", issueKey: "Issue key", newClientKey: "New client key", dismiss: "Dismiss", keyPoolClient: "Rate and daily quota usage are sourced from Redis", prefix: "Prefix", usage: "Usage", revoke: "Revoke",
-  addProviderKey: "Add provider key", encryptedPostgres: "Secrets are encrypted before PostgreSQL storage", provider: "Provider", openAiCompatible: "OpenAI-compatible", label: "Label", endpoint: "Endpoint", secret: "Secret", priority: "Priority", addProvider: "Add provider key", keyPool: "Key pool", priorityDetail: "Lowest numeric priority is selected first; tied tiers use the routing strategy", lastUsed: "Last used", never: "Never", disable: "Disable", enable: "Enable",
+  addProviderKey: "Add provider key", editProvider: "Edit provider", encryptedPostgres: "Secrets are encrypted before PostgreSQL storage", provider: "Provider", openAiCompatible: "OpenAI-compatible", label: "Label", endpoint: "Endpoint", secret: "Secret", priority: "Priority", addProvider: "Add provider key", keyPool: "Key pool", priorityDetail: "Lowest numeric priority is selected first; tied tiers use the routing strategy", lastUsed: "Last used", never: "Never", disable: "Disable", enable: "Enable", bypassAuth: "Bypass Authentication (Keyless)", bypassAuthDetail: "Send requests without an Authorization header; use only with an IP-whitelisted upstream.", keyless: "Keyless", noProviderKeys: "No provider keys are configured.", deleteProviderTitle: "Delete provider key?", deleteProviderPrompt: "The provider endpoint and stored secret will be permanently removed.", saveProvider: "Save provider", cancelEdit: "Cancel edit",
   channelDefaults: "Channel defaults", channelDefaultsDetail: "Each ordered list is an explicit fallback chain. The first available key is used first.", modelOverrides: "Model overrides", modelOverridesDetail: "A model override takes precedence over its channel chain. Clear it to inherit the channel default.", customChain: "Custom chain", inheritsChannel: "Inherits channel", usesPriority: "Uses provider priority", noExplicitOrder: "No explicit key order.", addProviderKeyOption: "Add provider key", add: "Add", saveOrder: "Save order", clear: "Clear", priorityBalancing: "Priority-tier balancing", priorityBalancingDetail: "Used only when no explicit channel or model chain is configured.", roundRobin: "Round robin", randomized: "Randomized", current: "Current", modelMappings: "Model mappings", mappingDetail: "Internal names sent by clients are translated before upstream dispatch", upstreamModel: "Upstream model", addMapping: "Add mapping", addMappingDetail: "Expose a new internal model name without changing the mobile client", internalName: "Internal name", description: "Description", aliases: "Aliases",
   feedbackInbox: "Feedback inbox", feedbackDetail: "Messages are submitted by authenticated Android accounts and persisted in PostgreSQL.", message: "Message", account: "Account", context: "Context", received: "Received", noFeedback: "No feedback has been submitted.", unknown: "Unknown", new: "New", reviewed: "Reviewed", resolved: "Resolved",
   publishVersion: "Publish app version", publishVersionDetail: "The active release is returned by the Android update-check endpoint.", versionCode: "Version code", versionName: "Version name", apkUrl: "APK URL", releaseNotes: "Release notes", setActive: "Set active", publishRelease: "Publish release", publishedVersions: "Published versions", oneActiveVersion: "Only one version is active at a time.", version: "Version", download: "Download", notes: "Notes", published: "Published", apkLink: "APK link", activate: "Activate", active: "Active", noVersions: "No app versions have been published.", code: "Code",
@@ -206,7 +243,7 @@ const englishCopy: AdminCopy = {
   appIcon: "App launcher icon", appIconDetail: "One global brand asset is bundled into the next Beta or Production APK.", appIconManagement: "Launcher icon management", appIconManagementDetail: "Update build branding independently from channels and model routing.", currentAppIcon: "Current launcher icon", noAppIcon: "Default project icon", saveAppIcon: "Save launcher icon", removeAppIcon: "Use default icon", appIconSaved: "Launcher icon saved.", customCss: "Native background CSS", customCssDetail: "Supported colors, linear gradients, animation duration, and font family are parsed into native Compose styling.", iconTooLarge: "Images must be PNG, JPEG, or WebP and smaller than 3 MB.", channelIcon: "Channel icon", animatedGradient: "Animated gradient", models: "Models", internalModelId: "Internal model ID", modelLabel: "Model label", removeModel: "Remove model", addModel: "Add model", updateChannel: "Update channel", publishChannel: "Publish channel", previewStyleDetail: "The Android client consumes these exact native style tokens", newChannel: "New channel", model: "Model", previewGreeting: "How can I help?", messageChannel: "Message channel", publishedChannels: "Published dynamic channels", publishedChannelsDetail: "Android and Web clients display these channel presentation settings after configuration refresh.",
   channelId: "Channel ID", displayName: "Display name", providerIdLabel: "Provider ID", sortOrder: "Sort order", openAiEndpoint: "OpenAI-compatible endpoint", keepEndpoint: "Leave blank to keep the current endpoint", keepSecret: "Leave blank to keep the current key", serverOnlySecret: "Server-only secret", typography: "Typography", sans: "Sans", serif: "Serif", mono: "Mono", backgroundStart: "Background start", backgroundEnd: "Background end", accentColor: "Accent", textColor: "Text", surfaceColor: "Surface", removeImage: "Remove image", enabledChannel: "Channel enabled",
   smtpHost: "SMTP host", port: "Port", username: "Username", smtpPassword: "SMTP password", configuredKeep: "Configured - leave blank to keep", senderEmail: "Sender email", senderName: "Sender name", implicitTls: "Implicit TLS", testRecipient: "Test recipient", templateVariablesDetail: "Template variables are escaped before insertion", subject: "Subject", html: "HTML", previewSecurityDetail: "Scripts, forms, and top navigation are disabled", announcementDispatch: "Announcement dispatch", announcementDetail: "Queue a rendered message for every active account", title: "Title", sendAnnouncement: "Send announcement",
-  groupId: "Group ID", releaseRing: "Release ring", production: "Production", beta: "Beta", createGroup: "Create group", members: "members", buildPipelineDetail: "Builds run outside the API process and publish ring-scoped OTA metadata",
+  groupId: "Group ID", releaseRing: "Release ring", production: "Production", beta: "Beta", createGroup: "Create group", members: "members", buildPipelineDetail: "Builds run outside the API process and publish ring-scoped OTA metadata", artifacts: "Build artifacts", artifact: "Artifact", artifactStatus: "Artifact status", buildArtifact: "Build artifact", buildQueued: "Build queued", building: "Building", built: "Built", failed: "Failed", publishedArtifact: "Published", archivedArtifact: "Archived", publishBeta: "Publish Beta", publishProductionArtifact: "Publish Production", archive: "Archive", archiveReleaseTitle: "Archive release?", archiveReleasePrompt: "The artifact will be uploaded to GitHub Releases and removed from local storage after verification.", noArtifacts: "No build artifacts yet.", noPipelineReleases: "No ring releases yet.", githubRelease: "GitHub release", localFile: "Local file", sha256: "SHA-256", buildArtifactDetail: "Stage 1 compiles an APK; publish and archive remain explicit follow-up stages.", archiveQueued: "Archive queued", jobArchive: "Archive release",
   releaseGuideTitle: "CI/CD and release management", releaseGuideDetail: "Read-only operating procedure for branded Android releases", releaseGuidePrinciples: "Release contract", releaseGuidePrinciplesDetail: "A build snapshots the global launcher icon, application source, version metadata, and target audience ring.", releaseGuideBeta: "Beta release", releaseGuideBetaDetail: "Use Beta for validation before a public rollout.", releaseGuideProduction: "Production release", releaseGuideProductionDetail: "Publish a validated artifact to all eligible active users.", releaseGuideObserve: "Verification and recovery", releaseGuideObserveDetail: "Treat the worker job and release record as the deployment audit trail.", releaseStepIcon: "Save the desired launcher icon in App builds. Channel edits are not required.", releaseStepVersion: "Choose a monotonically increasing version code and a human-readable version name.", releaseStepQueue: "Queue the target ring and follow its worker job until it succeeds.", releaseStepBetaAudience: "Beta metadata is visible only to users assigned to a Beta release group.", releaseStepBetaVerify: "Install the generated APK, verify branding and core flows, then retain its checksum for promotion review.", releaseStepProductionAudience: "Production publishes active OTA metadata for every eligible active account.", releaseStepProductionVerify: "Verify the download URL and SHA-256 result before announcing the release.", releaseStepFailure: "A failed build does not create an active release; inspect Worker jobs, correct the cause, and queue a new build.", releaseStepRollback: "Rollback is performed by activating a previously published compatible version in App releases; never reuse a version code.", releaseImmutable: "The guide is static by design. Operational state and logs remain in App builds, Worker jobs, and App releases.",
   protocol: "Protocol", localVolume: "Local volume", s3Compatible: "S3 compatible", scheduleUtc: "Schedule (UTC cron)", directory: "Directory", webdavUrl: "WebDAV URL", s3Endpoint: "S3 endpoint", region: "Region", bucket: "Bucket", accessKey: "Access key", secretKey: "Secret key", backupPassphrase: "Backup encryption passphrase", addDestination: "Add destination",
   recoveryDetail: "Restore a verified, transactionally consistent Adaptive Chat snapshot", stopWriters: "Stop stateful writers", stopWritersDetail: "Stop the application services with the command below. Keep PostgreSQL and Redis available.", decryptAuthenticate: "Decrypt and authenticate", decryptDetail: "Run the command below and enter the original destination passphrase when prompted. Authentication failure aborts without producing a dump.", restorePostgres: "Restore PostgreSQL", restorePostgresDetail: "Restore the authenticated dump with the command below.", verifyRelations: "Verify relational data", verifyRelationsDetail: "Confirm every foreign key is validated and compare users, sessions, messages, channels, and feedback row counts with the job table manifest.", restartValidate: "Restart and validate", restartValidateDetail: "Restart all application services, then verify health, Web Client sign-in, synchronized history, and a new test backup.", recoveryNote: "Every successful backup uses one exported PostgreSQL snapshot, verifies every active table in the archive, and validates S3 size and SHA-256 metadata after upload.",
@@ -222,7 +259,7 @@ const chineseCopy: AdminCopy = {
   modelTraffic: "模型流量", requestVolume: "按内部模型名称统计的请求量", routingState: "路由状态", upstreamAvailability: "已配置上游可用性", ready: "就绪", unconfigured: "未配置", serviceState: "服务状态", lastSampled: "最近采样", providerKeys: "上游密钥", clientKeys: "客户端密钥", activeUsers: "活跃用户", failures: "失败数",
   createUser: "创建用户", accountsAdminOnly: "账户只能由管理员创建", email: "邮箱", password: "密码", role: "角色", standard: "普通用户", admin: "管理员", rpm: "每分钟请求", dailyQuota: "每日配额", userAccess: "用户权限", statusRoleQuota: "状态、角色与配额", identity: "身份", limits: "限制", monthlyTokens: "月度令牌", status: "状态", suspend: "停用", restore: "恢复", edit: "编辑", editUser: "编辑用户", resetPassword: "重置密码", leavePasswordBlank: "留空则保留当前密码", saveChanges: "保存更改", cancel: "取消",
   issueClientKey: "签发客户端密钥", secretHashed: "密钥只显示一次，数据库仅保存哈希", name: "名称", user: "用户", unassigned: "未分配", issueKey: "签发密钥", newClientKey: "新的客户端密钥", dismiss: "关闭", keyPoolClient: "每分钟和每日用量由 Redis 提供", prefix: "前缀", usage: "用量", revoke: "撤销",
-  addProviderKey: "添加上游密钥", encryptedPostgres: "密钥在写入 PostgreSQL 前会加密", provider: "提供商", openAiCompatible: "OpenAI 兼容", label: "标签", endpoint: "端点", secret: "密钥", priority: "优先级", addProvider: "添加上游密钥", keyPool: "密钥池", priorityDetail: "数值更小的优先级先使用；相同优先级由路由策略决定", lastUsed: "最近使用", never: "从未", disable: "禁用", enable: "启用",
+  addProviderKey: "添加上游密钥", editProvider: "编辑上游提供商", encryptedPostgres: "密钥在写入 PostgreSQL 前会加密", provider: "提供商", openAiCompatible: "OpenAI 兼容", label: "标签", endpoint: "端点", secret: "密钥", priority: "优先级", addProvider: "添加上游密钥", keyPool: "密钥池", priorityDetail: "数值更小的优先级先使用；相同优先级由路由策略决定", lastUsed: "最近使用", never: "从未", disable: "禁用", enable: "启用", bypassAuth: "绕过认证（无密钥）", bypassAuthDetail: "不发送 Authorization 请求头；仅用于已加入 IP 白名单的上游。", keyless: "无密钥", noProviderKeys: "尚未配置上游密钥。", deleteProviderTitle: "删除上游密钥？", deleteProviderPrompt: "上游端点及已保存的密钥将被永久删除。", saveProvider: "保存上游提供商", cancelEdit: "取消编辑",
   channelDefaults: "频道默认路由", channelDefaultsDetail: "每个有序列表都是明确的回退链，会先使用第一个可用密钥。", modelOverrides: "模型覆盖", modelOverridesDetail: "模型覆盖优先于频道链，清除后继承频道默认值。", customChain: "自定义链", inheritsChannel: "继承频道", usesPriority: "使用提供商优先级", noExplicitOrder: "没有明确的密钥顺序。", addProviderKeyOption: "添加上游密钥", add: "添加", saveOrder: "保存顺序", clear: "清除", priorityBalancing: "优先级分层均衡", priorityBalancingDetail: "仅在未配置明确频道或模型链时使用。", roundRobin: "轮询", randomized: "随机", current: "当前", modelMappings: "模型映射", mappingDetail: "客户端发送的内部名称会在上游转发前进行转换", upstreamModel: "上游模型", addMapping: "添加映射", addMappingDetail: "无需变更移动端即可暴露新的内部模型名称", internalName: "内部名称", description: "描述", aliases: "别名",
   feedbackInbox: "反馈收件箱", feedbackDetail: "消息由已认证的 Android 账户提交并持久化到 PostgreSQL。", message: "内容", account: "账户", context: "上下文", received: "收到时间", noFeedback: "尚未收到反馈。", unknown: "未知", new: "新建", reviewed: "已查看", resolved: "已解决",
   publishVersion: "发布应用版本", publishVersionDetail: "Android 更新检查接口将返回当前激活的版本。", versionCode: "版本代码", versionName: "版本名称", apkUrl: "APK 地址", releaseNotes: "发布说明", setActive: "设为激活", publishRelease: "发布版本", publishedVersions: "已发布版本", oneActiveVersion: "任一时间只有一个激活版本。", version: "版本", download: "下载", notes: "说明", published: "发布时间", apkLink: "APK 链接", activate: "激活", active: "已激活", noVersions: "尚未发布应用版本。", code: "代码",
@@ -233,7 +270,7 @@ const chineseCopy: AdminCopy = {
   appIcon: "应用启动图标", appIconDetail: "一个全局品牌资源将打包进下一次 Beta 或生产 APK。", appIconManagement: "启动图标管理", appIconManagementDetail: "独立于频道和模型路由更新构建品牌资源。", currentAppIcon: "当前启动图标", noAppIcon: "项目默认图标", saveAppIcon: "保存启动图标", removeAppIcon: "使用默认图标", appIconSaved: "启动图标已保存。", customCss: "原生背景 CSS", customCssDetail: "支持的颜色、线性渐变、动画时长和字体系列会转换为原生 Compose 样式。", iconTooLarge: "图片必须是 PNG、JPEG 或 WebP，且小于 3 MB。", channelIcon: "频道图标", animatedGradient: "渐变动画", models: "模型", internalModelId: "内部模型 ID", modelLabel: "模型标签", removeModel: "移除模型", addModel: "添加模型", updateChannel: "更新频道", publishChannel: "发布频道", previewStyleDetail: "Android 客户端使用这些原生样式令牌", newChannel: "新频道", model: "模型", previewGreeting: "需要我做什么？", messageChannel: "发送消息", publishedChannels: "已发布动态频道", publishedChannelsDetail: "Android 与 Web 客户端刷新配置后会显示这些频道外观设置。",
   channelId: "频道 ID", displayName: "显示名称", providerIdLabel: "提供商 ID", sortOrder: "排序序号", openAiEndpoint: "OpenAI 兼容端点", keepEndpoint: "留空则保留当前端点", keepSecret: "留空则保留当前密钥", serverOnlySecret: "仅服务端密钥", typography: "字体", sans: "无衬线", serif: "衬线", mono: "等宽", backgroundStart: "背景起始色", backgroundEnd: "背景结束色", accentColor: "强调色", textColor: "文字色", surfaceColor: "表面色", removeImage: "移除图片", enabledChannel: "启用频道",
   smtpHost: "SMTP 主机", port: "端口", username: "用户名", smtpPassword: "SMTP 密码", configuredKeep: "已配置，留空则保留", senderEmail: "发件邮箱", senderName: "发件人名称", implicitTls: "隐式 TLS", testRecipient: "测试收件人", templateVariablesDetail: "模板变量会在插入前进行转义", subject: "主题", html: "HTML", previewSecurityDetail: "脚本、表单和顶部导航已禁用", announcementDispatch: "公告发送", announcementDetail: "为每个活跃账户加入一封渲染后的消息", title: "标题", sendAnnouncement: "发送公告",
-  groupId: "用户组 ID", releaseRing: "发布通道", production: "生产版", beta: "Beta", createGroup: "创建用户组", members: "名成员", buildPipelineDetail: "构建在 API 进程之外执行，并发布限定用户环的 OTA 元数据",
+  groupId: "用户组 ID", releaseRing: "发布通道", production: "生产版", beta: "Beta", createGroup: "创建用户组", members: "名成员", buildPipelineDetail: "构建在 API 进程之外执行，并发布限定用户环的 OTA 元数据", artifacts: "构建产物", artifact: "产物", artifactStatus: "产物状态", buildArtifact: "构建产物", buildQueued: "构建已排队", building: "构建中", built: "已构建", failed: "失败", publishedArtifact: "已发布", archivedArtifact: "已归档", publishBeta: "发布 Beta", publishProductionArtifact: "发布生产版", archive: "归档", archiveReleaseTitle: "归档发布？", archiveReleasePrompt: "验证成功后，产物会上传到 GitHub Releases 并从本地存储删除。", noArtifacts: "还没有构建产物。", noPipelineReleases: "还没有发布环记录。", githubRelease: "GitHub 发布", localFile: "本地文件", sha256: "SHA-256", buildArtifactDetail: "阶段一编译 APK；发布和归档是明确的后续阶段。", archiveQueued: "归档已排队", jobArchive: "归档发布",
   releaseGuideTitle: "CI/CD 与发布管理", releaseGuideDetail: "品牌化 Android 发布的只读操作流程", releaseGuidePrinciples: "发布契约", releaseGuidePrinciplesDetail: "构建会固定全局启动图标、应用源码、版本元数据和目标用户环。", releaseGuideBeta: "Beta 发布", releaseGuideBetaDetail: "在公开发布前使用 Beta 完成验证。", releaseGuideProduction: "生产发布", releaseGuideProductionDetail: "向所有符合条件的活跃用户发布已验证产物。", releaseGuideObserve: "验证与恢复", releaseGuideObserveDetail: "以后台任务和发布记录作为部署审计轨迹。", releaseStepIcon: "在“应用构建”中保存目标启动图标，无需修改频道。", releaseStepVersion: "选择单调递增的版本代码和便于识别的版本名称。", releaseStepQueue: "将目标发布环加入队列，并跟踪后台任务直至成功。", releaseStepBetaAudience: "Beta 元数据仅对已加入 Beta 发布组的用户可见。", releaseStepBetaVerify: "安装生成的 APK，验证品牌和核心流程，并保留校验和供发布评审。", releaseStepProductionAudience: "生产发布会向所有符合条件的活跃账户提供 OTA 元数据。", releaseStepProductionVerify: "公告发布前验证下载地址和 SHA-256 结果。", releaseStepFailure: "失败的构建不会创建激活版本；检查后台任务、修复原因后使用新构建重试。", releaseStepRollback: "回滚应在“应用发布”中激活此前兼容版本；绝不能复用版本代码。", releaseImmutable: "本指南特意保持静态。运行状态和日志分别位于应用构建、后台任务和应用发布模块。",
   protocol: "协议", localVolume: "本地卷", s3Compatible: "S3 兼容存储", scheduleUtc: "计划（UTC cron）", directory: "目录", webdavUrl: "WebDAV 地址", s3Endpoint: "S3 端点", region: "区域", bucket: "存储桶", accessKey: "访问密钥", secretKey: "秘密密钥", backupPassphrase: "备份加密口令", addDestination: "添加备份目标",
   recoveryDetail: "恢复经过验证且具备事务一致性的 Adaptive Chat 快照", stopWriters: "停止有状态写入服务", stopWritersDetail: "使用下方命令停止应用服务，并保持 PostgreSQL 和 Redis 可用。", decryptAuthenticate: "解密并验证", decryptDetail: "运行下方命令，并在提示时输入备份目标的原始口令。验证失败会立即终止且不会生成转储文件。", restorePostgres: "恢复 PostgreSQL", restorePostgresDetail: "使用下方命令恢复已验证的转储文件。", verifyRelations: "验证关系数据", verifyRelationsDetail: "确认所有外键均已验证，并将用户、会话、消息、频道和反馈行数与任务表清单逐项比较。", restartValidate: "重启并验证", restartValidateDetail: "重启全部应用服务，然后验证健康检查、Web Client 登录、同步历史及一次新的测试备份。", recoveryNote: "每次成功备份都使用同一个 PostgreSQL 导出快照，逐表验证归档，并在 S3 上传后核验文件长度与 SHA-256 元数据。",
@@ -363,7 +400,8 @@ export default function AdminPage() {
   const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
   const [userEditForm, setUserEditForm] = useState<UserEditForm>({ password: "", role: "standard", status: "active", rpmLimit: "60", dailyLimit: "100000" });
   const [clientKeyForm, setClientKeyForm] = useState({ name: "", userId: "", rpmLimit: "60", dailyLimit: "100000" });
-  const [providerForm, setProviderForm] = useState({ provider: "openai" as Provider, label: "", endpoint: "", secret: "", priority: "100" });
+  const [providerForm, setProviderForm] = useState({ provider: "openai" as Provider, label: "", endpoint: "", secret: "", priority: "100", bypassAuth: false });
+  const [editingProviderKey, setEditingProviderKey] = useState<ProviderKey | null>(null);
   const [mappingForm, setMappingForm] = useState({ id: "", provider: "openai" as Provider, upstreamModel: "", label: "", description: "", uiMode: "chatgpt", aliases: "" });
   const [appVersionForm, setAppVersionForm] = useState({ versionCode: "", versionName: "", downloadUrl: "", releaseNotes: "", isActive: true });
   const copy = locale === "zh-CN" ? chineseCopy : englishCopy;
@@ -516,20 +554,33 @@ export default function AdminPage() {
     });
   }
 
+  function openProviderEditor(key: ProviderKey) {
+    setEditingProviderKey(key);
+    setProviderForm({ provider: key.provider, label: key.label, endpoint: key.endpoint, secret: "", priority: String(key.priority), bypassAuth: key.bypassAuth });
+  }
+
+  function resetProviderEditor() {
+    setEditingProviderKey(null);
+    setProviderForm({ provider: "openai", label: "", endpoint: "", secret: "", priority: "100", bypassAuth: false });
+  }
+
   function submitProviderKey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     void mutate(async () => {
-      await request("provider-keys", {
-        method: "POST",
+      const payload = {
+        ...providerForm,
+        label: providerForm.label.trim(),
+        endpoint: providerForm.endpoint.trim(),
+        secret: providerForm.bypassAuth ? null : (providerForm.secret.trim() || undefined),
+        priority: Number(providerForm.priority),
+      };
+      await request(editingProviderKey ? `provider-keys/${editingProviderKey.id}` : "provider-keys", {
+        method: editingProviderKey ? "PUT" : "POST",
         body: JSON.stringify({
-          ...providerForm,
-          label: providerForm.label.trim(),
-          endpoint: providerForm.endpoint.trim(),
-          secret: providerForm.secret.trim(),
-          priority: Number(providerForm.priority),
+          ...payload,
         }),
       });
-      setProviderForm({ provider: "openai", label: "", endpoint: "", secret: "", priority: "100" });
+      resetProviderEditor();
     });
   }
 
@@ -606,7 +657,7 @@ export default function AdminPage() {
           {overview && section === "Overview" && <OverviewPanel overview={overview} modelTraffic={modelTraffic} />}
           {overview && section === "Users" && <><UsersPanel form={userForm} onChange={setUserForm} onSubmit={submitUser} onToggle={(user) => void mutate(() => request(`users/${user.id}`, { method: "PATCH", body: JSON.stringify({ status: user.status === "active" ? "suspended" : "active" }) }))} onDelete={(user) => void mutate(async () => { await request(`users/${user.id}`, { method: "DELETE" }); })} onEdit={openUserEditor} submitting={submitting} users={overview.users} />{editingUser && <UserEditDialog form={userEditForm} onChange={setUserEditForm} onClose={() => setEditingUser(null)} onSubmit={submitUserEdit} submitting={submitting} user={editingUser} />}</>}
           {overview && section === "Client keys" && <ClientKeysPanel createdSecret={createdSecret} form={clientKeyForm} onChange={setClientKeyForm} onDismissSecret={() => setCreatedSecret(null)} onRevoke={(id) => void mutate(() => request(`api-keys/${id}`, { method: "DELETE" }))} onSubmit={submitClientKey} submitting={submitting} keys={overview.keys} users={overview.users} />}
-          {overview && section === "Provider keys" && <ProviderKeysPanel form={providerForm} keys={overview.providerKeys} onChange={setProviderForm} onSubmit={submitProviderKey} onToggle={(key) => void mutate(() => request(`provider-keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ status: key.status === "active" ? "disabled" : "active" }) }))} submitting={submitting} />}
+          {overview && section === "Provider keys" && <ProviderKeysPanel editing={editingProviderKey} form={providerForm} keys={overview.providerKeys} onChange={setProviderForm} onCancel={resetProviderEditor} onDelete={(key) => void mutate(() => request(`provider-keys/${key.id}`, { method: "DELETE" }))} onEdit={openProviderEditor} onSubmit={submitProviderKey} onToggle={(key) => void mutate(() => request(`provider-keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ status: key.status === "active" ? "disabled" : "active" }) }))} submitting={submitting} />}
           {overview && section === "Search providers" && <SearchProvidersPanel />}
           {overview && section === "Routing" && <RoutingPanel
             form={mappingForm}
@@ -682,11 +733,23 @@ function ClientKeysPanel({ createdSecret, form, keys, onChange, onDismissSecret,
   </>;
 }
 
-function ProviderKeysPanel({ form, keys, onChange, onSubmit, onToggle, submitting }: { form: { provider: Provider; label: string; endpoint: string; secret: string; priority: string }; keys: ProviderKey[]; onChange: (value: { provider: Provider; label: string; endpoint: string; secret: string; priority: string }) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onToggle: (key: ProviderKey) => void; submitting: boolean }) {
+function ProviderKeysPanel({ editing, form, keys, onChange, onCancel, onDelete, onEdit, onSubmit, onToggle, submitting }: { editing: ProviderKey | null; form: { provider: Provider; label: string; endpoint: string; secret: string; priority: string; bypassAuth: boolean }; keys: ProviderKey[]; onChange: (value: { provider: Provider; label: string; endpoint: string; secret: string; priority: string; bypassAuth: boolean }) => void; onCancel: () => void; onDelete: (key: ProviderKey) => void; onEdit: (key: ProviderKey) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onToggle: (key: ProviderKey) => void; submitting: boolean }) {
   const copy = useCopy();
+  const confirm = useConfirmation();
   return <>
-    <section className="data-section"><SectionHeading title={copy.addProviderKey} detail={copy.encryptedPostgres} /><form className="form-grid provider-form" onSubmit={onSubmit}><label>{copy.provider}<select value={form.provider} onChange={(event) => onChange({ ...form, provider: event.target.value as Provider })}><option value="openai">{copy.openAiCompatible}</option><option value="gemini">Gemini</option><option value="deepseek">DeepSeek</option></select></label><label>{copy.label}<input required value={form.label} onChange={(event) => onChange({ ...form, label: event.target.value })} /></label><label className="wide-field">{copy.endpoint}<input required type="url" placeholder="https://provider.example/v1" value={form.endpoint} onChange={(event) => onChange({ ...form, endpoint: event.target.value })} /></label><label>{copy.secret}<input required type="password" autoComplete="new-password" value={form.secret} onChange={(event) => onChange({ ...form, secret: event.target.value })} /></label><label>{copy.priority}<input min="0" type="number" value={form.priority} onChange={(event) => onChange({ ...form, priority: event.target.value })} /></label><button className="primary-button form-action" disabled={submitting} type="submit"><Plus size={16} />{copy.addProvider}</button></form></section>
-    <section className="data-section"><SectionHeading title={copy.keyPool} detail={copy.priorityDetail} /><div className="table-wrap"><table><thead><tr><th>{copy.provider}</th><th>{copy.label}</th><th>{copy.endpoint}</th><th>{copy.priority}</th><th>{copy.lastUsed}</th><th>{copy.status}</th><th /></tr></thead><tbody>{keys.map((key) => <tr key={key.id}><td><span className={`provider-tag provider-${key.provider}`}>{key.provider}</span></td><td><strong>{key.label}</strong></td><td><code>{key.endpoint}</code></td><td>{key.priority}</td><td>{key.lastUsedAt ? formatDate(key.lastUsedAt, copy, true) : copy.never}</td><td><span className={statusClass(key.status)}>{key.status === "active" ? <CircleCheck size={14} /> : <CirclePause size={14} />}{key.status === "active" ? copy.active : copy.disable}</span></td><td><button className="small-button" onClick={() => onToggle(key)} type="button">{key.status === "active" ? copy.disable : copy.enable}</button></td></tr>)}</tbody></table></div></section>
+    <section className="data-section">
+      <SectionHeading title={editing ? copy.editProvider : copy.addProviderKey} detail={copy.encryptedPostgres} />
+      <form className="form-grid provider-form" onSubmit={onSubmit}>
+        <label>{copy.provider}<select value={form.provider} onChange={(event) => onChange({ ...form, provider: event.target.value as Provider })}><option value="openai">{copy.openAiCompatible}</option><option value="gemini">Gemini</option><option value="deepseek">DeepSeek</option></select></label>
+        <label>{copy.label}<input required value={form.label} onChange={(event) => onChange({ ...form, label: event.target.value })} /></label>
+        <label className="wide-field">{copy.endpoint}<input required type="url" placeholder="https://provider.example/v1" value={form.endpoint} onChange={(event) => onChange({ ...form, endpoint: event.target.value })} /></label>
+        <label>{copy.secret}<input disabled={form.bypassAuth} required={!form.bypassAuth && (!editing || editing.bypassAuth)} placeholder={editing && !editing.bypassAuth ? copy.keepSecret : undefined} type="password" autoComplete="new-password" value={form.secret} onChange={(event) => onChange({ ...form, secret: event.target.value })} /></label>
+        <label>{copy.priority}<input min="0" type="number" value={form.priority} onChange={(event) => onChange({ ...form, priority: event.target.value })} /></label>
+        <label className="checkbox-label wide-field"><input checked={form.bypassAuth} onChange={(event) => onChange({ ...form, bypassAuth: event.target.checked, secret: event.target.checked ? "" : form.secret })} type="checkbox" />{copy.bypassAuth}<span>{copy.bypassAuthDetail}</span></label>
+        <div className="form-actions form-action"><button className="primary-button" disabled={submitting} type="submit"><Save size={16} />{editing ? copy.saveProvider : copy.addProvider}</button>{editing && <button className="small-button" disabled={submitting} onClick={onCancel} type="button"><CircleX size={15} />{copy.cancelEdit}</button>}</div>
+      </form>
+    </section>
+    <section className="data-section"><SectionHeading title={copy.keyPool} detail={copy.priorityDetail} /><div className="table-wrap"><table><thead><tr><th>{copy.provider}</th><th>{copy.label}</th><th>{copy.endpoint}</th><th>{copy.priority}</th><th>{copy.lastUsed}</th><th>{copy.status}</th><th /></tr></thead><tbody>{keys.length ? keys.map((key) => <tr key={key.id}><td><span className={`provider-tag provider-${key.provider}`}>{key.provider}</span></td><td><strong>{key.label}</strong><span>{key.bypassAuth ? copy.keyless : copy.secret}</span></td><td><code>{key.endpoint}</code></td><td>{key.priority}</td><td>{key.lastUsedAt ? formatDate(key.lastUsedAt, copy, true) : copy.never}</td><td><span className={statusClass(key.status)}>{key.status === "active" ? <CircleCheck size={14} /> : <CirclePause size={14} />}{key.status === "active" ? copy.active : copy.disable}</span></td><td><div className="table-actions"><button className="small-button" onClick={() => onEdit(key)} type="button"><Pencil size={14} />{copy.edit}</button><button className="small-button" onClick={() => onToggle(key)} type="button">{key.status === "active" ? copy.disable : copy.enable}</button><button aria-label={`${copy.delete} ${key.label}`} className="icon-button danger-button" disabled={submitting} onClick={() => void confirm({ title: copy.deleteProviderTitle, message: `${key.label}. ${copy.deleteProviderPrompt}`, confirmLabel: copy.delete }).then((accepted) => { if (accepted) onDelete(key); })} title={`${copy.delete} ${key.label}`} type="button"><Trash2 size={16} /></button></div></td></tr>) : <tr><td colSpan={7} className="empty-table">{copy.noProviderKeys}</td></tr>}</tbody></table></div></section>
   </>;
 }
 
@@ -844,7 +907,7 @@ type DynamicChannel = { id: string; slug: string; displayName: string; descripti
 type DynamicModel = { id: string; label: string; description: string; upstreamModel: string };
 type LauncherIconAsset = { dataUrl: string; updatedAt: string };
 type UserGroup = { id: string; slug: string; name: string; description: string; releaseRing: "beta" | "production"; memberCount: number; createdAt: string; updatedAt: string };
-type BackgroundJob = { id: string; type: "email" | "backup" | "build"; status: string; payload: Record<string, unknown>; result: Record<string, unknown> | null; error: string | null; attempts: number; maxAttempts: number; logs: string[]; createdAt: string; startedAt: string | null; finishedAt: string | null };
+type BackgroundJob = { id: string; type: "email" | "backup" | "build" | "archive"; status: string; payload: Record<string, unknown>; result: Record<string, unknown> | null; error: string | null; attempts: number; maxAttempts: number; logs: string[]; createdAt: string; startedAt: string | null; finishedAt: string | null };
 type BackupDestination = { id: string; name: string; protocol: "local" | "webdav" | "s3"; scheduleCron: string; enabled: boolean; localDirectory: string; webdavUrl: string; s3Endpoint: string; s3Region: string; s3Bucket: string; s3Prefix: string; s3ForcePathStyle: boolean; credentialsConfigured: boolean; lastScheduledAt: string | null; updatedAt: string };
 
 function templateName(trigger: EmailTemplate["trigger"], copy: AdminCopy) {
@@ -1054,31 +1117,46 @@ function UserGroupsPanel({ users }: { users: UserRecord[] }) {
     </section></div>;
 }
 
+function ArchiveIcon() {
+  return <HardDrive size={14} />;
+}
+
 function AppBuildsPanel() {
   const copy = useCopy();
   const [icon, setIcon] = useState<LauncherIconAsset | null>(null);
   const [iconDraft, setIconDraft] = useState("");
+  const [iconDirty, setIconDirty] = useState(false);
   const [buildForm, setBuildForm] = useState({ versionCode: "", versionName: "", releaseNotes: "" });
+  const [artifacts, setArtifacts] = useState<BuildArtifact[]>([]);
+  const [releases, setReleases] = useState<PipelineRelease[]>([]);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const confirm = useConfirmation();
 
   const load = useCallback(async () => {
     try {
-      const payload = await request<{ data: LauncherIconAsset }>("launcher-icon");
-      setIcon(payload.data);
-      setIconDraft(payload.data.dataUrl);
+      const [iconPayload, artifactPayload, releasePayload] = await Promise.all([
+        request<{ data: LauncherIconAsset }>("launcher-icon"),
+        request<{ data: BuildArtifact[] }>("artifacts", { cache: "no-store" }),
+        request<{ data: PipelineRelease[] }>("releases", { cache: "no-store" }),
+      ]);
+      setIcon(iconPayload.data);
+      setIconDraft((current) => iconDirty ? current : iconPayload.data.dataUrl);
+      setArtifacts(artifactPayload.data);
+      setReleases(releasePayload.data);
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : copy.operationFailed);
     }
-  }, [copy.operationFailed]);
+  }, [copy.operationFailed, iconDirty]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); const timer = window.setInterval(() => void load(), 5_000); return () => window.clearInterval(timer); }, [load]);
 
   function readLauncherIcon(file: File | undefined) {
     if (!file) return;
     setSaved(false);
+    setIconDirty(true);
     if (!/^image\/(?:png|jpeg|webp)$/.test(file.type) || file.size > 3_000_000) {
       setError(copy.iconTooLarge);
       return;
@@ -1098,26 +1176,53 @@ function AppBuildsPanel() {
       });
       setIcon(payload.data);
       setIconDraft(payload.data.dataUrl);
+      setIconDirty(false);
       setSaved(true);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : copy.operationFailed);
     } finally { setBusy(false); }
   }
 
-  async function queueBuild(ring: "beta" | "production") {
+  async function queueBuild() {
     setBusy(true); setSaved(false); setError(null);
     try {
-      await request(`builds/${ring}`, {
+      await request("builds", {
         method: "POST",
         body: JSON.stringify({
           versionCode: Number(buildForm.versionCode),
-          versionName: buildForm.versionName,
-          releaseNotes: buildForm.releaseNotes,
+          versionName: buildForm.versionName.trim(),
+          releaseNotes: buildForm.releaseNotes.trim(),
         }),
       });
+      setBuildForm({ versionCode: "", versionName: "", releaseNotes: "" });
+      await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : copy.operationFailed);
     } finally { setBusy(false); }
+  }
+
+  async function publishArtifact(artifactId: string, releaseRing: "beta" | "production") {
+    setBusy(true); setError(null);
+    try {
+      await request("releases", { method: "POST", body: JSON.stringify({ artifactId, releaseRing }) });
+      await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : copy.operationFailed); }
+    finally { setBusy(false); }
+  }
+
+  async function archiveRelease(release: PipelineRelease) {
+    const accepted = await confirm({ title: copy.archiveReleaseTitle, message: `${release.versionName} (${release.releaseRing}). ${copy.archiveReleasePrompt}`, confirmLabel: copy.archive });
+    if (!accepted) return;
+    setBusy(true); setError(null);
+    try {
+      await request(`releases/${release.id}/archive`, { method: "POST" });
+      await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : copy.operationFailed); }
+    finally { setBusy(false); }
+  }
+
+  function artifactStatus(status: BuildArtifact["status"]) {
+    return status === "queued" ? copy.queued : status === "building" ? copy.building : status === "built" ? copy.built : status === "failed" ? copy.failed : status === "published" ? copy.publishedArtifact : copy.archivedArtifact;
   }
 
   return <div className="enterprise-stack">
@@ -1135,7 +1240,7 @@ function AppBuildsPanel() {
           <label className="launcher-icon-picker">{copy.appIcon}<span>{copy.appIconDetail}</span><input accept="image/png,image/jpeg,image/webp" type="file" onChange={(event) => readLauncherIcon(event.target.files?.[0])} /></label>
           <div className="form-actions">
             <button className="primary-button" disabled={busy || iconDraft === icon?.dataUrl} onClick={() => void saveIcon()} type="button"><Save size={16} />{copy.saveAppIcon}</button>
-            <button className="small-button" disabled={busy || !iconDraft} onClick={() => { setIconDraft(""); setSaved(false); }} type="button">{copy.removeAppIcon}</button>
+            <button className="small-button" disabled={busy || !iconDraft} onClick={() => { setIconDraft(""); setIconDirty(true); setSaved(false); }} type="button">{copy.removeAppIcon}</button>
           </div>
         </div>
       </section>
@@ -1146,12 +1251,17 @@ function AppBuildsPanel() {
           <label>{copy.versionName}<input placeholder="2.0.0-beta.1" value={buildForm.versionName} onChange={(event) => setBuildForm({ ...buildForm, versionName: event.target.value })} /></label>
           <label>{copy.releaseNotes}<textarea rows={5} value={buildForm.releaseNotes} onChange={(event) => setBuildForm({ ...buildForm, releaseNotes: event.target.value })} /></label>
           <div className="form-actions">
-            <button className="small-button" disabled={busy || !buildForm.versionCode || !buildForm.versionName} onClick={() => void queueBuild("beta")} type="button"><Hammer size={16} />{copy.buildBeta}</button>
-            <button className="primary-button" disabled={busy || !buildForm.versionCode || !buildForm.versionName} onClick={() => void queueBuild("production")} type="button"><Rocket size={16} />{copy.publishProduction}</button>
+            <button className="primary-button" disabled={busy || !buildForm.versionCode || !buildForm.versionName} onClick={() => void queueBuild()} type="button"><Hammer size={16} />{copy.buildArtifact}</button>
           </div>
         </div>
       </section>
     </div>
+    <section className="data-section"><SectionHeading title={copy.artifacts} detail={copy.buildArtifactDetail} /><div className="table-wrap"><table><thead><tr><th>{copy.artifact}</th><th>{copy.version}</th><th>{copy.artifactStatus}</th><th>{copy.localFile}</th><th>{copy.sha256}</th><th /></tr></thead><tbody>{artifacts.length ? artifacts.map((artifact) => {
+      const publishedRings = new Set(releases.filter((release) => release.artifactId === artifact.id).map((release) => release.releaseRing));
+      const publishable = artifact.status === "built" || artifact.status === "published";
+      return <tr key={artifact.id}><td><strong>{artifact.id}</strong><span>{artifact.buildJobId ?? copy.buildQueued}</span></td><td><strong>{artifact.versionName}</strong><span>{copy.code} {artifact.versionCode}</span></td><td><span className={publishable ? "status status-good" : "status status-muted"}>{artifact.status === "building" && <LoaderCircle className="spin" size={14} />}{artifactStatus(artifact.status)}</span>{artifact.error && <span>{artifact.error}</span>}</td><td>{artifact.fileName || "-"}<span>{artifact.bytes ? `${formatNumber(artifact.bytes, copy)} B` : "-"}</span></td><td><code>{artifact.sha256 ? `${artifact.sha256.slice(0, 12)}…` : "-"}</code></td><td><div className="table-actions">{publishable && !publishedRings.has("beta") && <button className="small-button" disabled={busy} onClick={() => void publishArtifact(artifact.id, "beta")} type="button"><Send size={14} />{copy.publishBeta}</button>}{publishable && !publishedRings.has("production") && <button className="small-button" disabled={busy} onClick={() => void publishArtifact(artifact.id, "production")} type="button"><Rocket size={14} />{copy.publishProductionArtifact}</button>}{artifact.downloadUrl && artifact.status !== "archived" && <a className="small-button" href={artifact.downloadUrl} rel="noreferrer" target="_blank">{copy.download}</a>}</div></td></tr>;
+    }) : <tr><td colSpan={6} className="empty-table">{copy.noArtifacts}</td></tr>}</tbody></table></div></section>
+    <section className="data-section"><SectionHeading title={copy.publishedVersions} detail={copy.oneActiveVersion} /><div className="table-wrap"><table><thead><tr><th>{copy.version}</th><th>{copy.releaseRing}</th><th>{copy.status}</th><th>{copy.download}</th><th>{copy.githubRelease}</th><th /></tr></thead><tbody>{releases.length ? releases.map((release) => <tr key={release.id}><td><strong>{release.versionName}</strong><span>{copy.code} {release.versionCode} · {release.id}</span></td><td>{release.releaseRing === "beta" ? copy.beta : copy.production}</td><td><span className={release.status === "archived" ? "status status-muted" : "status status-good"}>{release.status === "archived" ? copy.archivedArtifact : copy.publishedArtifact}</span></td><td><a href={release.githubAssetUrl ?? release.downloadUrl} rel="noreferrer" target="_blank">{copy.apkLink}</a></td><td>{release.githubReleaseUrl ? <a href={release.githubReleaseUrl} rel="noreferrer" target="_blank">{copy.githubRelease}</a> : "-"}</td><td>{release.status === "published" && <button className="small-button danger-button" disabled={busy} onClick={() => void archiveRelease(release)} type="button"><ArchiveIcon />{copy.archive}</button>}</td></tr>) : <tr><td colSpan={6} className="empty-table">{copy.noPipelineReleases}</td></tr>}</tbody></table></div></section>
   </div>;
 }
 
@@ -1193,7 +1303,7 @@ function RecoveryGuide() {
 }
 
 function jobTypeLabel(type: BackgroundJob["type"], copy: AdminCopy) {
-  return type === "email" ? copy.jobEmail : type === "backup" ? copy.jobBackup : copy.jobBuild;
+  return type === "email" ? copy.jobEmail : type === "backup" ? copy.jobBackup : type === "build" ? copy.jobBuild : copy.jobArchive;
 }
 
 function jobStatusLabel(status: string, copy: AdminCopy) {

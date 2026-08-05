@@ -9,7 +9,7 @@ import { Pool } from "pg";
 import { createClient } from "redis";
 
 export type EmailTemplateTrigger = "suspicious_login" | "announcement" | "version_update";
-export type JobType = "email" | "backup" | "build";
+export type JobType = "email" | "backup" | "build" | "archive";
 export type JobStatus = "queued" | "running" | "retrying" | "succeeded" | "failed";
 export type ReleaseRing = "beta" | "production";
 export type BackupProtocol = "local" | "webdav" | "s3";
@@ -163,6 +163,46 @@ export type EligibleAppVersion = {
   publishedAt: string;
 };
 
+export type ArtifactStatus = "queued" | "building" | "built" | "published" | "archived" | "failed";
+
+export type BuildArtifact = {
+  id: string;
+  versionCode: number;
+  versionName: string;
+  releaseNotes: string;
+  fileName: string;
+  localPath: string;
+  downloadUrl: string;
+  sha256: string;
+  bytes: number;
+  status: ArtifactStatus;
+  buildJobId: string | null;
+  error: string | null;
+  createdAt: string;
+  builtAt: string | null;
+  archivedAt: string | null;
+};
+
+export type ReleaseStatus = "published" | "archived";
+
+export type ReleaseRecord = {
+  id: string;
+  artifactId: string;
+  appVersionId: string;
+  versionCode: number;
+  versionName: string;
+  releaseNotes: string;
+  releaseRing: ReleaseRing;
+  audienceGroupId: string | null;
+  downloadUrl: string;
+  status: ReleaseStatus;
+  githubTag: string | null;
+  githubReleaseUrl: string | null;
+  githubAssetUrl: string | null;
+  publishedAt: string;
+  archivedAt: string | null;
+};
+
 export type SmtpDeliveryConfig = {
   host: string;
   port: number;
@@ -218,6 +258,16 @@ export interface EnterpriseStore {
   appendJobLog(id: string, line: string): Promise<void>;
   completeJob(id: string, result: Record<string, unknown>): Promise<void>;
   failJob(id: string, error: string): Promise<void>;
+  createArtifact(input: Pick<BuildArtifact, "versionCode" | "versionName" | "releaseNotes">): Promise<BuildArtifact>;
+  attachArtifactBuildJob(id: string, jobId: string): Promise<BuildArtifact | undefined>;
+  getArtifact(id: string): Promise<BuildArtifact | undefined>;
+  listArtifacts(): Promise<BuildArtifact[]>;
+  markArtifactBuilt(id: string, input: Pick<BuildArtifact, "fileName" | "localPath" | "downloadUrl" | "sha256" | "bytes">): Promise<BuildArtifact | undefined>;
+  markArtifactFailed(id: string, error: string): Promise<BuildArtifact | undefined>;
+  publishArtifact(id: string, releaseRing: ReleaseRing, audienceGroupId: string | null): Promise<ReleaseRecord>;
+  getRelease(id: string): Promise<ReleaseRecord | undefined>;
+  listReleases(): Promise<ReleaseRecord[]>;
+  markReleaseArchived(id: string, github: { tag: string; releaseUrl: string; assetUrl: string }): Promise<{ release: ReleaseRecord; deleteLocalFile: boolean }>;
   getEligibleAppVersion(userId?: string): Promise<EligibleAppVersion | undefined>;
   createRelease(input: Omit<EligibleAppVersion, "id" | "publishedAt">): Promise<EligibleAppVersion>;
   listGroupEmails(groupId?: string): Promise<string[]>;
@@ -425,6 +475,46 @@ function releaseFromRow(row: Record<string, unknown>): EligibleAppVersion {
   };
 }
 
+function artifactFromRow(row: Record<string, unknown>): BuildArtifact {
+  return {
+    id: String(row.id),
+    versionCode: numberValue(row.version_code),
+    versionName: String(row.version_name),
+    releaseNotes: String(row.release_notes ?? ""),
+    fileName: String(row.file_name ?? ""),
+    localPath: String(row.local_path ?? ""),
+    downloadUrl: String(row.download_url ?? ""),
+    sha256: String(row.sha256 ?? ""),
+    bytes: numberValue(row.bytes),
+    status: String(row.status) as ArtifactStatus,
+    buildJobId: row.build_job_id ? String(row.build_job_id) : null,
+    error: row.error ? String(row.error) : null,
+    createdAt: isoValue(row.created_at),
+    builtAt: row.built_at ? isoValue(row.built_at) : null,
+    archivedAt: row.archived_at ? isoValue(row.archived_at) : null,
+  };
+}
+
+function releaseRecordFromRow(row: Record<string, unknown>): ReleaseRecord {
+  return {
+    id: String(row.id),
+    artifactId: String(row.artifact_id),
+    appVersionId: String(row.app_version_id),
+    versionCode: numberValue(row.version_code),
+    versionName: String(row.version_name),
+    releaseNotes: String(row.release_notes ?? ""),
+    releaseRing: String(row.release_ring) as ReleaseRing,
+    audienceGroupId: row.audience_group_id ? String(row.audience_group_id) : null,
+    downloadUrl: String(row.download_url ?? ""),
+    status: String(row.status) as ReleaseStatus,
+    githubTag: row.github_tag ? String(row.github_tag) : null,
+    githubReleaseUrl: row.github_release_url ? String(row.github_release_url) : null,
+    githubAssetUrl: row.github_asset_url ? String(row.github_asset_url) : null,
+    publishedAt: isoValue(row.published_at),
+    archivedAt: row.archived_at ? isoValue(row.archived_at) : null,
+  };
+}
+
 export class PostgresEnterpriseStore implements EnterpriseStore {
   private readonly pool: Pool;
   private readonly redis: ReturnType<typeof createClient>;
@@ -570,7 +660,7 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
       );
       CREATE TABLE IF NOT EXISTS background_jobs (
         id TEXT PRIMARY KEY,
-        type TEXT NOT NULL CHECK (type IN ('email', 'backup', 'build')),
+        type TEXT NOT NULL CHECK (type IN ('email', 'backup', 'build', 'archive')),
         status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'retrying', 'succeeded', 'failed')) DEFAULT 'queued',
         payload JSONB NOT NULL DEFAULT '{}'::jsonb,
         result JSONB,
@@ -582,6 +672,8 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
         started_at TIMESTAMPTZ,
         finished_at TIMESTAMPTZ
       );
+      ALTER TABLE background_jobs DROP CONSTRAINT IF EXISTS background_jobs_type_check;
+      ALTER TABLE background_jobs ADD CONSTRAINT background_jobs_type_check CHECK (type IN ('email', 'backup', 'build', 'archive'));
       CREATE INDEX IF NOT EXISTS background_jobs_status_idx ON background_jobs(status, created_at DESC);
       CREATE TABLE IF NOT EXISTS backup_runs (
         id TEXT PRIMARY KEY,
@@ -598,7 +690,46 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
       ALTER TABLE app_versions ADD COLUMN IF NOT EXISTS release_ring TEXT NOT NULL DEFAULT 'production';
       ALTER TABLE app_versions ADD COLUMN IF NOT EXISTS audience_group_id TEXT REFERENCES user_groups(id) ON DELETE SET NULL;
       ALTER TABLE app_versions ADD COLUMN IF NOT EXISTS build_job_id TEXT REFERENCES background_jobs(id) ON DELETE SET NULL;
+      ALTER TABLE app_versions DROP CONSTRAINT IF EXISTS app_versions_version_code_key;
+      CREATE UNIQUE INDEX IF NOT EXISTS app_versions_version_ring_uidx ON app_versions(version_code, release_ring);
       CREATE INDEX IF NOT EXISTS app_versions_ring_idx ON app_versions(is_active, release_ring, version_code DESC);
+      CREATE TABLE IF NOT EXISTS artifacts (
+        id TEXT PRIMARY KEY,
+        version_code INTEGER NOT NULL,
+        version_name TEXT NOT NULL,
+        release_notes TEXT NOT NULL DEFAULT '',
+        file_name TEXT NOT NULL DEFAULT '',
+        local_path TEXT NOT NULL DEFAULT '',
+        download_url TEXT NOT NULL DEFAULT '',
+        sha256 TEXT NOT NULL DEFAULT '',
+        bytes BIGINT NOT NULL DEFAULT 0,
+        status TEXT NOT NULL CHECK (status IN ('queued', 'building', 'built', 'published', 'archived', 'failed')) DEFAULT 'queued',
+        build_job_id TEXT REFERENCES background_jobs(id) ON DELETE SET NULL,
+        error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        built_at TIMESTAMPTZ,
+        archived_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS artifacts_status_idx ON artifacts(status, created_at DESC);
+      CREATE TABLE IF NOT EXISTS releases (
+        id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT,
+        app_version_id TEXT NOT NULL REFERENCES app_versions(id) ON DELETE RESTRICT,
+        version_code INTEGER NOT NULL,
+        version_name TEXT NOT NULL,
+        release_notes TEXT NOT NULL DEFAULT '',
+        release_ring TEXT NOT NULL CHECK (release_ring IN ('beta', 'production')),
+        audience_group_id TEXT REFERENCES user_groups(id) ON DELETE SET NULL,
+        download_url TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK (status IN ('published', 'archived')) DEFAULT 'published',
+        github_tag TEXT,
+        github_release_url TEXT,
+        github_asset_url TEXT,
+        published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        archived_at TIMESTAMPTZ,
+        UNIQUE (artifact_id, release_ring)
+      );
+      CREATE INDEX IF NOT EXISTS releases_status_idx ON releases(status, published_at DESC);
     `);
   }
 
@@ -1031,6 +1162,127 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
     if (row && row.attempts < row.max_attempts) await this.redis.lPush(this.queueKey, id);
   }
 
+  async createArtifact(input: Pick<BuildArtifact, "versionCode" | "versionName" | "releaseNotes">) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      `INSERT INTO artifacts (id, version_code, version_name, release_notes)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [`art_${randomUUID().slice(0, 12)}`, input.versionCode, input.versionName, input.releaseNotes],
+    );
+    return artifactFromRow(result.rows[0]);
+  }
+
+  async attachArtifactBuildJob(id: string, jobId: string) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      "UPDATE artifacts SET build_job_id = $1, status = 'building' WHERE id = $2 RETURNING *", [jobId, id],
+    );
+    return result.rows[0] ? artifactFromRow(result.rows[0]) : undefined;
+  }
+
+  async getArtifact(id: string) {
+    const result = await this.pool.query<Record<string, unknown>>("SELECT * FROM artifacts WHERE id = $1", [id]);
+    return result.rows[0] ? artifactFromRow(result.rows[0]) : undefined;
+  }
+
+  async listArtifacts() {
+    const result = await this.pool.query<Record<string, unknown>>("SELECT * FROM artifacts ORDER BY created_at DESC");
+    return result.rows.map(artifactFromRow);
+  }
+
+  async markArtifactBuilt(id: string, input: Pick<BuildArtifact, "fileName" | "localPath" | "downloadUrl" | "sha256" | "bytes">) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      `UPDATE artifacts SET file_name = $1, local_path = $2, download_url = $3, sha256 = $4, bytes = $5,
+       status = 'built', error = NULL, built_at = NOW() WHERE id = $6 RETURNING *`,
+      [input.fileName, input.localPath, input.downloadUrl, input.sha256, input.bytes, id],
+    );
+    return result.rows[0] ? artifactFromRow(result.rows[0]) : undefined;
+  }
+
+  async markArtifactFailed(id: string, error: string) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      "UPDATE artifacts SET status = 'failed', error = $1 WHERE id = $2 RETURNING *", [error.slice(0, 8_000), id],
+    );
+    return result.rows[0] ? artifactFromRow(result.rows[0]) : undefined;
+  }
+
+  async publishArtifact(id: string, releaseRing: ReleaseRing, audienceGroupId: string | null) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const artifactResult = await client.query<Record<string, unknown>>("SELECT * FROM artifacts WHERE id = $1 FOR UPDATE", [id]);
+      if (!artifactResult.rows[0]) throw new Error("Build artifact was not found.");
+      const artifact = artifactFromRow(artifactResult.rows[0]);
+      if (!["built", "published"].includes(artifact.status)) throw new Error(`Artifact cannot be published from ${artifact.status} state.`);
+      const existing = await client.query<Record<string, unknown>>("SELECT * FROM releases WHERE artifact_id = $1 AND release_ring = $2", [id, releaseRing]);
+      if (existing.rows[0]) {
+        await client.query("COMMIT");
+        return releaseRecordFromRow(existing.rows[0]);
+      }
+      await client.query("UPDATE app_versions SET is_active = FALSE WHERE release_ring = $1 AND is_active = TRUE", [releaseRing]);
+      const appVersionId = `appv_${randomUUID().slice(0, 12)}`;
+      await client.query(
+        `INSERT INTO app_versions (id, version_code, version_name, download_url, release_notes, is_active, release_ring, audience_group_id, build_job_id)
+         VALUES ($1,$2,$3,$4,$5,TRUE,$6,$7,$8)`,
+        [appVersionId, artifact.versionCode, artifact.versionName, artifact.downloadUrl, artifact.releaseNotes, releaseRing, releaseRing === "beta" ? audienceGroupId : null, artifact.buildJobId],
+      );
+      const result = await client.query<Record<string, unknown>>(
+        `INSERT INTO releases (id, artifact_id, app_version_id, version_code, version_name, release_notes, release_ring, audience_group_id, download_url)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+        [`rel_${randomUUID().slice(0, 12)}`, id, appVersionId, artifact.versionCode, artifact.versionName, artifact.releaseNotes,
+          releaseRing, releaseRing === "beta" ? audienceGroupId : null, artifact.downloadUrl],
+      );
+      await client.query("UPDATE artifacts SET status = 'published' WHERE id = $1", [id]);
+      await client.query("COMMIT");
+      return releaseRecordFromRow(result.rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getRelease(id: string) {
+    const result = await this.pool.query<Record<string, unknown>>("SELECT * FROM releases WHERE id = $1", [id]);
+    return result.rows[0] ? releaseRecordFromRow(result.rows[0]) : undefined;
+  }
+
+  async listReleases() {
+    const result = await this.pool.query<Record<string, unknown>>("SELECT * FROM releases ORDER BY published_at DESC");
+    return result.rows.map(releaseRecordFromRow);
+  }
+
+  async markReleaseArchived(id: string, github: { tag: string; releaseUrl: string; assetUrl: string }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const currentResult = await client.query<Record<string, unknown>>("SELECT * FROM releases WHERE id = $1 FOR UPDATE", [id]);
+      if (!currentResult.rows[0]) throw new Error("Release was not found.");
+      if (String(currentResult.rows[0].status) === "archived") {
+        await client.query("COMMIT");
+        return { release: releaseRecordFromRow(currentResult.rows[0]), deleteLocalFile: false };
+      }
+      const updatedResult = await client.query<Record<string, unknown>>(
+        `UPDATE releases SET status = 'archived', download_url = $3, github_tag = $1, github_release_url = $2, github_asset_url = $3,
+         archived_at = NOW() WHERE id = $4 RETURNING *`,
+        [github.tag, github.releaseUrl, github.assetUrl, id],
+      );
+      await client.query("UPDATE app_versions SET download_url = $1 WHERE id = $2", [github.assetUrl, String(currentResult.rows[0].app_version_id)]);
+      const remaining = await client.query<{ count: string }>("SELECT COUNT(*) AS count FROM releases WHERE artifact_id = $1 AND status = 'published'", [String(currentResult.rows[0].artifact_id)]);
+      const deleteLocalFile = Number(remaining.rows[0]?.count ?? 0) === 0;
+      await client.query(
+        "UPDATE artifacts SET status = $1, archived_at = CASE WHEN $2 THEN NOW() ELSE archived_at END WHERE id = $3",
+        [deleteLocalFile ? "archived" : "published", deleteLocalFile, String(currentResult.rows[0].artifact_id)],
+      );
+      await client.query("COMMIT");
+      return { release: releaseRecordFromRow(updatedResult.rows[0]), deleteLocalFile };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async getEligibleAppVersion(userId?: string) {
     const result = await this.pool.query<Record<string, unknown>>(
       `SELECT app_versions.* FROM app_versions
@@ -1107,6 +1359,8 @@ export class MemoryEnterpriseStore implements EnterpriseStore {
   private jobs = new Map<string, BackgroundJob>();
   private queue: string[] = [];
   private releases: EligibleAppVersion[] = [];
+  private artifacts = new Map<string, BuildArtifact>();
+  private releaseRecords = new Map<string, ReleaseRecord>();
   private emails = new Map<string, string>();
 
   async start() {}
@@ -1193,6 +1447,46 @@ export class MemoryEnterpriseStore implements EnterpriseStore {
   async appendJobLog(id: string, line: string) { this.jobs.get(id)?.logs.push(line); }
   async completeJob(id: string, result: Record<string, unknown>) { const item = this.jobs.get(id); if (item) Object.assign(item, { status: "succeeded", result, finishedAt: nowIso() }); }
   async failJob(id: string, error: string) { const item = this.jobs.get(id); if (!item) return; item.error = error; item.status = item.attempts < item.maxAttempts ? "retrying" : "failed"; if (item.status === "retrying") this.queue.push(id); else item.finishedAt = nowIso(); }
+  async createArtifact(input: Pick<BuildArtifact, "versionCode" | "versionName" | "releaseNotes">) {
+    const item: BuildArtifact = {
+      id: `art_${randomUUID().slice(0, 12)}`, ...input, fileName: "", localPath: "", downloadUrl: "", sha256: "", bytes: 0,
+      status: "queued", buildJobId: null, error: null, createdAt: nowIso(), builtAt: null, archivedAt: null,
+    };
+    this.artifacts.set(item.id, item);
+    return { ...item };
+  }
+  async attachArtifactBuildJob(id: string, jobId: string) { const item = this.artifacts.get(id); if (!item) return undefined; item.buildJobId = jobId; item.status = "building"; return { ...item }; }
+  async getArtifact(id: string) { const item = this.artifacts.get(id); return item ? { ...item } : undefined; }
+  async listArtifacts() { return [...this.artifacts.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).map((item) => ({ ...item })); }
+  async markArtifactBuilt(id: string, input: Pick<BuildArtifact, "fileName" | "localPath" | "downloadUrl" | "sha256" | "bytes">) { const item = this.artifacts.get(id); if (!item) return undefined; Object.assign(item, input, { status: "built", error: null, builtAt: nowIso() }); return { ...item }; }
+  async markArtifactFailed(id: string, error: string) { const item = this.artifacts.get(id); if (!item) return undefined; Object.assign(item, { status: "failed", error }); return { ...item }; }
+  async publishArtifact(id: string, releaseRing: ReleaseRing, audienceGroupId: string | null) {
+    const artifact = this.artifacts.get(id);
+    if (!artifact) throw new Error("Build artifact was not found.");
+    if (!["built", "published"].includes(artifact.status)) throw new Error(`Artifact cannot be published from ${artifact.status} state.`);
+    const existing = [...this.releaseRecords.values()].find((release) => release.artifactId === id && release.releaseRing === releaseRing);
+    if (existing) return { ...existing };
+    this.releases.forEach((release) => { if (release.releaseRing === releaseRing) release.isActive = false; });
+    const appVersion = await this.createRelease({ versionCode: artifact.versionCode, versionName: artifact.versionName, downloadUrl: artifact.downloadUrl, releaseNotes: artifact.releaseNotes, isActive: true, releaseRing, audienceGroupId: releaseRing === "beta" ? audienceGroupId : null });
+    const item: ReleaseRecord = { id: `rel_${randomUUID().slice(0, 12)}`, artifactId: id, appVersionId: appVersion.id, versionCode: artifact.versionCode, versionName: artifact.versionName, releaseNotes: artifact.releaseNotes, releaseRing, audienceGroupId: releaseRing === "beta" ? audienceGroupId : null, downloadUrl: artifact.downloadUrl, status: "published", githubTag: null, githubReleaseUrl: null, githubAssetUrl: null, publishedAt: appVersion.publishedAt, archivedAt: null };
+    this.releaseRecords.set(item.id, item);
+    artifact.status = "published";
+    return { ...item };
+  }
+  async getRelease(id: string) { const item = this.releaseRecords.get(id); return item ? { ...item } : undefined; }
+  async listReleases() { return [...this.releaseRecords.values()].sort((left, right) => right.publishedAt.localeCompare(left.publishedAt)).map((item) => ({ ...item })); }
+  async markReleaseArchived(id: string, github: { tag: string; releaseUrl: string; assetUrl: string }) {
+    const item = this.releaseRecords.get(id);
+    if (!item) throw new Error("Release was not found.");
+    if (item.status === "archived") return { release: { ...item }, deleteLocalFile: false };
+    Object.assign(item, { status: "archived", downloadUrl: github.assetUrl, githubTag: github.tag, githubReleaseUrl: github.releaseUrl, githubAssetUrl: github.assetUrl, archivedAt: nowIso() });
+    const appVersion = this.releases.find((release) => release.id === item.appVersionId);
+    if (appVersion) appVersion.downloadUrl = github.assetUrl;
+    const artifact = this.artifacts.get(item.artifactId);
+    const deleteLocalFile = ![...this.releaseRecords.values()].some((release) => release.artifactId === item.artifactId && release.status === "published");
+    if (artifact && deleteLocalFile) Object.assign(artifact, { status: "archived", archivedAt: nowIso() });
+    return { release: { ...item }, deleteLocalFile };
+  }
   async getEligibleAppVersion(userId?: string) { const beta = userId && (this.memberships.get(userId) ?? []).includes("grp_beta"); return this.releases.filter((item) => item.isActive && (item.releaseRing === "production" || beta)).sort((a, b) => b.versionCode - a.versionCode)[0]; }
   async createRelease(input: Omit<EligibleAppVersion, "id" | "publishedAt">) { const item = { id: `appv_${randomUUID().slice(0, 12)}`, ...input, publishedAt: nowIso() }; this.releases.push(item); return item; }
   async listGroupEmails(groupId?: string) { return [...this.emails.entries()].filter(([id]) => !groupId || (this.memberships.get(id) ?? []).includes(groupId)).map(([, email]) => email); }

@@ -496,6 +496,83 @@ describe("Adaptive Chat API", () => {
     expect((await routing.json()).data.strategy).toBe("random");
   });
 
+  it("supports keyless provider CRUD and omits Authorization for the selected upstream", async () => {
+    const upstream = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.has("authorization")).toBe(false);
+      return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "keyless response" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", upstream);
+    const app = createApp({ demoMode: false });
+    const adminHeaders = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    const created = await app.request("/admin/provider-keys", {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ provider: "openai", label: "IP allowlisted relay", endpoint: "https://allowlisted.example.test/v1/chat/completions", secret: "", bypassAuth: true, priority: 5 }),
+    });
+    expect(created.status).toBe(201);
+    const key = (await created.json()).data as { id: string; bypassAuth: boolean };
+    expect(key.bypassAuth).toBe(true);
+
+    const updated = await app.request(`/v1/admin/keys/${key.id}`, {
+      method: "PUT",
+      headers: adminHeaders,
+      body: JSON.stringify({ endpoint: "https://allowlisted.example.test/v1/chat/completions", secret: null, bypass_auth: true, priority: 1 }),
+    });
+    expect(updated.status).toBe(200);
+    expect((await updated.json()).data.bypassAuth).toBe(true);
+
+    const completion = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "chatgpt-lite", messages: [{ role: "user", content: "hello" }] }),
+    });
+    expect(completion.status).toBe(200);
+    expect(upstream).toHaveBeenCalledOnce();
+
+    const deleted = await app.request(`/v1/admin/keys/${key.id}`, { method: "DELETE", headers: adminHeaders });
+    expect(deleted.status).toBe(204);
+    expect((await app.request("/admin/provider-keys", { headers: adminHeaders })).status).toBe(200);
+  });
+
+  it("tracks Build, Publish, and Archive as separate persisted stages", async () => {
+    const enterprise = new MemoryEnterpriseStore();
+    const app = createApp({ enterpriseStore: enterprise });
+    const headers = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    const build = await app.request("/v1/admin/builds", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ versionCode: "42", versionName: "4.2.0", releaseNotes: "Pipeline test" }),
+    });
+    expect(build.status).toBe(202);
+    const buildData = (await build.json()).data as { artifactId: string; job: { type: string } };
+    expect(buildData.job.type).toBe("build");
+    expect((await enterprise.getArtifact(buildData.artifactId))?.status).toBe("building");
+
+    await enterprise.markArtifactBuilt(buildData.artifactId, {
+      fileName: "adaptive-chat-4.2.0.apk",
+      localPath: "/artifacts/adaptive-chat-4.2.0.apk",
+      downloadUrl: "https://chatapi.zengjunjie.com/downloads/adaptive-chat-4.2.0.apk",
+      sha256: "a".repeat(64),
+      bytes: 123,
+    });
+    const published = await app.request("/v1/admin/releases", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ artifactId: buildData.artifactId, releaseRing: "beta" }),
+    });
+    expect(published.status).toBe(201);
+    const release = (await published.json()).data as { id: string; releaseRing: string; status: string };
+    expect(release).toMatchObject({ releaseRing: "beta", status: "published" });
+
+    const archive = await app.request(`/v1/admin/releases/${release.id}/archive`, { method: "POST", headers });
+    expect(archive.status).toBe(202);
+    expect((await archive.json()).data.job.type).toBe("archive");
+  });
+
   it("supports ordered channel defaults and model-specific routing overrides", async () => {
     const app = createApp();
     const headers = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };

@@ -1168,7 +1168,7 @@ private fun messageModelLabel(
 }
 
 private fun bubbleShape(fromUser: Boolean, provider: ProviderMode) = when {
-    provider.isGemini -> RoundedCornerShape(24.dp)
+    provider.isGemini -> RoundedCornerShape(36.dp)
     provider.isDeepSeek -> RoundedCornerShape(
         topStart = 6.dp,
         topEnd = 16.dp,
@@ -1364,7 +1364,7 @@ private fun Composer(
 ) {
     val copy = LocalAppCopy.current
     val shape = when {
-        provider.isGemini -> RoundedCornerShape(32.dp)
+        provider.isGemini -> RoundedCornerShape(48.dp)
         provider.isDeepSeek -> RoundedCornerShape(8.dp)
         else -> RoundedCornerShape(26.dp)
     }
