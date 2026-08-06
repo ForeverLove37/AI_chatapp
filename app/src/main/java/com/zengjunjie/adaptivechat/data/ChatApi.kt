@@ -51,12 +51,14 @@ data class LoginResult(
     val email: String,
     val displayName: String,
     val avatarUrl: String,
+    val groups: List<String> = emptyList(),
 )
 
 data class UserProfile(
     val email: String,
     val displayName: String,
     val avatarUrl: String,
+    val groups: List<String> = emptyList(),
 )
 
 data class ProfileAvatarUpload(
@@ -81,6 +83,8 @@ data class RemoteConfig(
     val version: Int,
     val channels: List<ProviderMode>,
     val webSearchEnabled: Boolean,
+    val expertModeAllowed: Boolean = false,
+    val expertModeEnabled: Boolean = false,
 )
 
 data class RemoteConversationSnapshot(
@@ -103,6 +107,7 @@ class ChatApi(baseUrl: String) {
     ): Flow<StreamChunk> = callbackFlow {
         val payload = JSONObject()
             .put("model", model.wireName)
+            .put("expert_mode", model.isExpertRaw)
             .put("stream", true)
             .put(
                 "messages",
@@ -163,10 +168,12 @@ class ChatApi(baseUrl: String) {
         awaitClose { eventSource.cancel() }
     }
 
-    suspend fun fetchConfig(): RemoteConfig = withContext(Dispatchers.IO) {
+    suspend fun fetchConfig(accessToken: String? = null, expertMode: Boolean = false): RemoteConfig = withContext(Dispatchers.IO) {
+        val query = if (expertMode) "?expert_mode=true" else ""
         val request = Request.Builder()
-            .url("$baseEndpoint/v1/config")
+            .url("$baseEndpoint/v1/config$query")
             .header("Accept", "application/json")
+            .apply { if (!accessToken.isNullOrBlank()) header("Authorization", "Bearer $accessToken") }
             .get()
             .build()
         client.newCall(request).execute().use { response ->
@@ -187,7 +194,7 @@ class ChatApi(baseUrl: String) {
                             val modelId = model.optString("id").trim()
                             val label = model.optString("label").trim()
                             if (modelId.isNotBlank() && label.isNotBlank()) {
-                                add(ChatModel(modelId, id, label, model.optString("description")))
+                                add(ChatModel(modelId, id, label.ifBlank { modelId }, model.optString("description"), model.optBoolean("expert")))
                             }
                         }
                     }
@@ -220,6 +227,8 @@ class ChatApi(baseUrl: String) {
                 version = payload.optInt("version", 1),
                 channels = channels.ifEmpty { ProviderMode.entries },
                 webSearchEnabled = payload.optJSONObject("featureFlags")?.optBoolean("webSearch") == true,
+                expertModeAllowed = payload.optJSONObject("expertMode")?.optBoolean("allowed") == true,
+                expertModeEnabled = payload.optJSONObject("expertMode")?.optBoolean("enabled") == true,
             )
         }
     }
@@ -366,6 +375,7 @@ class ChatApi(baseUrl: String) {
             email = userEmail,
             displayName = user?.optString("displayName").orEmpty(),
             avatarUrl = resolvePublicUrl(user?.optString("avatarUrl").orEmpty()),
+            groups = parseGroups(user),
         )
     }
 
@@ -521,7 +531,19 @@ class ChatApi(baseUrl: String) {
             email = email,
             displayName = user?.optString("displayName").orEmpty(),
             avatarUrl = resolvePublicUrl(user?.optString("avatarUrl").orEmpty()),
+            groups = parseGroups(user),
         )
+    }
+
+    private fun parseGroups(user: JSONObject?): List<String> {
+        val groups = user?.optJSONArray("groups") ?: return emptyList()
+        return buildList {
+            for (index in 0 until groups.length()) {
+                val value = groups.opt(index)
+                val slug = if (value is JSONObject) value.optString("slug") else value?.toString().orEmpty()
+                if (slug.isNotBlank()) add(slug)
+            }
+        }
     }
 }
 

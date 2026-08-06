@@ -423,6 +423,8 @@ img { display: block; max-width: 100%; }
 .settings-section-heading strong, .settings-section-heading span { display: block; }
 .settings-section-heading strong { font-size: 14px; }
 .settings-section-heading span { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.toggle-row { align-items: center; color: var(--muted); display: flex; font-size: 12px; font-weight: 700; justify-content: space-between; gap: 12px; }
+.toggle-row input { accent-color: var(--channel-accent); height: 20px; width: 20px; }
 .profile-editor { align-items: center; display: flex; gap: 14px; }
 .settings-avatar .user-avatar { flex-basis: 70px; font-size: 24px; height: 70px; width: 70px; }
 .avatar-commands { display: flex; flex-wrap: wrap; gap: 7px; }

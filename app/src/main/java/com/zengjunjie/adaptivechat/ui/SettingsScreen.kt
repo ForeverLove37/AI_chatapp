@@ -30,6 +30,7 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -41,6 +42,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -79,6 +81,7 @@ fun SettingsScreen(
     onDismissFeedbackState: () -> Unit,
     onLogout: () -> Unit,
     onSetAppearance: (AppearancePreference) -> Unit,
+    onSetExpertMode: (Boolean) -> Unit,
     onSetFontScale: (Float) -> Unit,
     onSetLanguage: (LanguagePreference) -> Unit,
     onSubmitFeedback: (String) -> Unit,
@@ -239,6 +242,27 @@ fun SettingsScreen(
                         selected = state.account.appearance,
                         onSelected = onSetAppearance,
                     )
+                }
+            }
+            if (state.expertModeAllowed) {
+                item {
+                    SettingsSection(
+                        icon = { Icon(Icons.Outlined.AutoAwesome, contentDescription = null) },
+                        title = copy.expertMode,
+                        detail = copy.expertModeDetail,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (state.expertModeEnabled) copy.expertModeOn else copy.expertModeOff,
+                                modifier = Modifier.weight(1f),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Switch(
+                                checked = state.expertModeEnabled,
+                                onCheckedChange = onSetExpertMode,
+                            )
+                        }
+                    }
                 }
             }
             item {

@@ -18,6 +18,9 @@ import {
   type RequestMetric,
   type RoutingScope,
   type SelectedUpstream,
+  type ExpertModel,
+  type ExpertModelInput,
+  type ExpertModelPatch,
   type UpdateUserInput,
 } from "./control-plane.js";
 import {
@@ -53,6 +56,7 @@ import {
 const contentSchema = z.union([z.string(), z.array(z.unknown()), z.null()]).optional();
 const chatRequestSchema = z.object({
   model: z.string().trim().min(1).max(120).default("chatgpt-lite"),
+  expert_mode: z.boolean().default(false),
   stream: z.boolean().default(false),
   messages: z.array(
     z.object({
@@ -141,6 +145,15 @@ const modelMappingsReplaceSchema = z.object({
     targets.add(target);
   });
 });
+const expertModelSchema = z.object({
+  rawModel: z.string().trim().min(1).max(256),
+  label: z.string().trim().max(120).default(""),
+  description: z.string().trim().max(500).default(""),
+  provider: z.string().trim().min(2).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
+  priority: z.coerce.number().int().min(0).max(100_000).default(100),
+  enabled: z.boolean().default(true),
+});
+const expertModelPatchSchema = expertModelSchema.partial().refine((value) => Object.keys(value).length > 0);
 const loginSchema = z.object({
   email: z.email().max(320),
   password: z.string().min(1).max(200),
@@ -519,17 +532,18 @@ function demoAnswer(request: ChatRequest, route: ModelRoute): { reasoning?: stri
 
 async function fetchUpstream(upstreams: SelectedUpstream[], body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
   let lastError: unknown;
+  const { expert_mode: _expertMode, ...forwardBody } = body;
   for (const upstream of upstreams) {
     try {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
-        Accept: body.stream ? "text/event-stream" : "application/json",
+        Accept: forwardBody.stream ? "text/event-stream" : "application/json",
       };
       if (!upstream.bypassAuth && upstream.secret) headers.Authorization = `Bearer ${upstream.secret}`;
       const response = await fetch(upstream.endpoint, {
         method: "POST",
         headers,
-        body: JSON.stringify(body),
+        body: JSON.stringify(forwardBody),
         signal,
       });
       if (response.ok || [400, 404, 422].includes(response.status)) return response;
@@ -596,12 +610,13 @@ async function fetchFinalUpstream(
   signal?: AbortSignal,
 ) {
   const forward = async (body: ChatRequest) => {
+    const { expert_mode: _expertMode, ...openAiBody } = body;
     let lastResponse: Response | undefined;
     let lastError: unknown;
     for (const upstream of upstreams) {
       try {
         const response = await fetchUpstream([upstream], {
-          ...body,
+          ...openAiBody,
           model: upstream.upstreamModel,
         }, signal);
         lastResponse = response;
@@ -775,8 +790,17 @@ export function createApp(options: CreateAppOptions = {}) {
   }
 
   async function enforceClientPolicy(context: Context) {
-    if (!(options.requireClientAuth ?? flag(process.env.REQUIRE_CLIENT_AUTH, false))) return { clientKeyId: null, userId: null };
     const token = requestBearer(context.req.header("authorization"));
+    const requireAuth = options.requireClientAuth ?? flag(process.env.REQUIRE_CLIENT_AUTH, false);
+    if (!requireAuth) {
+      const session = token ? verifySessionToken(token) : undefined;
+      if (session) {
+        const authorization = await controlPlane.authorizeUser(session.sub);
+        if (!authorization.allowed) return { response: context.json({ error: { message: authorization.message } }, authorization.status) };
+        return { clientKeyId: null, userId: authorization.userId };
+      }
+      return { clientKeyId: null, userId: null };
+    }
     if (!token) return { response: context.json({ error: { message: "Sign in is required to use chat." } }, 401) };
     const session = verifySessionToken(token);
     if (session) {
@@ -807,7 +831,25 @@ export function createApp(options: CreateAppOptions = {}) {
       ?? "unknown";
   }
 
-  async function remoteConfig() {
+  async function userView(user: (Partial<Awaited<ReturnType<ControlPlane["getUser"]>>> & { id: string }) | undefined) {
+    if (!user) return undefined;
+    const groups = await enterprise.getUserGroupSlugs(user.id);
+    return {
+      ...user,
+      groups,
+      permissions: { expertMode: groups.some((slug) => slug.toLowerCase() === "expert") },
+    };
+  }
+
+  function channelMatchesProvider(channelId: string, provider: string) {
+    const channel = channelId.trim().toLowerCase();
+    const upstream = provider.trim().toLowerCase();
+    return channel === upstream
+      || (channel === "chatgpt" && upstream === "openai")
+      || (channel === "openai" && upstream === "chatgpt");
+  }
+
+  async function remoteConfig(userId?: string, expertMode = false) {
     const [routes, dynamicChannels] = await Promise.all([
       controlPlane.getModels(),
       enterprise.listDynamicChannels(),
@@ -830,7 +872,33 @@ export function createApp(options: CreateAppOptions = {}) {
       },
       models: channel.models.map(({ id, label, description }) => ({ id, label, description })),
     }));
-    return publicRemoteConfig(routes, channels);
+    const standard = publicRemoteConfig(routes, channels);
+    const allowed = Boolean(userId && await enterprise.isUserInGroup(userId, "expert"));
+    if (expertMode && !allowed) throw new Error("Expert mode is restricted to the Expert user group.");
+    if (!expertMode) {
+      return { ...standard, expertMode: { allowed, enabled: false, models: [] } };
+    }
+    const expertModels = await controlPlane.listExpertModels();
+    const rawModels = expertModels.map((model) => ({
+      id: model.rawModel,
+      label: model.label || model.rawModel,
+      description: model.description,
+      expert: true,
+      provider: model.provider,
+    }));
+    const expertChannels = standard.channels.map((channel) => ({
+      ...channel,
+      models: [
+        ...channel.models,
+        ...rawModels.filter((model) => channelMatchesProvider(channel.id, model.provider)),
+      ],
+    }));
+    return {
+      ...standard,
+      channels: expertChannels,
+      models: [...standard.models, ...rawModels],
+      expertMode: { allowed: true, enabled: true, models: rawModels },
+    };
   }
 
   const updateUser = async (context: Context) => {
@@ -923,14 +991,43 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.get("/v1/models", async (context) => {
-    const models = await controlPlane.getModels();
+    const requestedExpert = context.req.query("expert_mode") === "true";
+    let userId: string | undefined;
+    if (requestedExpert) {
+      const session = await requireSessionUser(context);
+      if ("response" in session) return session.response;
+      userId = session.userId;
+    }
+    let config;
+    try {
+      config = await remoteConfig(userId, requestedExpert);
+    } catch (error) {
+      return context.json({ error: { code: "expert_access_denied", message: error instanceof Error ? error.message : "Expert mode is not available." } }, 403);
+    }
     return context.json({
       object: "list",
-      data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.uiMode })),
+      data: config.models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: "expert" in model && model.expert ? model.provider : "adaptive-chat" })),
     });
   });
 
-  app.get("/v1/config", async (context) => context.json(await remoteConfig()));
+  app.get("/v1/config", async (context) => {
+    const requestedExpert = context.req.query("expert_mode") === "true";
+    let userId: string | undefined;
+    if (requestedExpert) {
+      const session = await requireSessionUser(context);
+      if ("response" in session) return session.response;
+      userId = session.userId;
+    } else {
+      const token = requestBearer(context.req.header("authorization"));
+      const session = token ? verifySessionToken(token) : undefined;
+      if (session) userId = session.sub;
+    }
+    try {
+      return context.json(await remoteConfig(userId, requestedExpert));
+    } catch (error) {
+      return context.json({ error: { code: "expert_access_denied", message: error instanceof Error ? error.message : "Expert mode is not available." } }, 403);
+    }
+  });
 
   app.get("/v1/config/launcher-icon", async (context) => {
     const image = decodeRasterDataUrl((await enterprise.getLauncherIcon()).dataUrl);
@@ -972,7 +1069,7 @@ export function createApp(options: CreateAppOptions = {}) {
       token,
       tokenType: "Bearer",
       expiresAt: session ? new Date(session.exp * 1_000).toISOString() : undefined,
-      user,
+      user: await userView(user),
     });
   });
 
@@ -1002,7 +1099,16 @@ export function createApp(options: CreateAppOptions = {}) {
     if ("response" in session) return session.response;
     const user = await controlPlane.getUser(session.userId);
     return user
-      ? context.json({ data: user })
+      ? context.json({ data: await userView(user) })
+      : context.json({ error: { code: "profile_not_found", message: "User profile was not found." } }, 404);
+  });
+
+  app.get("/v1/users/me", async (context) => {
+    const session = await requireSessionUser(context);
+    if ("response" in session) return session.response;
+    const user = await controlPlane.getUser(session.userId);
+    return user
+      ? context.json({ data: await userView(user) })
       : context.json({ error: { code: "profile_not_found", message: "User profile was not found." } }, 404);
   });
 
@@ -1071,7 +1177,7 @@ export function createApp(options: CreateAppOptions = {}) {
         if ((avatar || removeAvatar) && previousFilename && previousFilename !== newFilename) {
           await unlink(join(avatarStorageDir, previousFilename)).catch(() => undefined);
         }
-        return context.json({ data: updated });
+        return context.json({ data: await userView(updated) });
       } catch (error) {
         if (newFilename) await unlink(join(avatarStorageDir, newFilename)).catch(() => undefined);
         const message = error instanceof Error && PUBLIC_PROFILE_ERRORS.has(error.message)
@@ -1207,7 +1313,24 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!parsed.success) return context.json({ error: { message: "Invalid chat completion request.", details: parsed.error.issues } }, 400);
 
     let request = parsed.data;
-    const route = await controlPlane.findModelRoute(request.model);
+    let expertModel: ExpertModel | undefined;
+    let route = await controlPlane.findModelRoute(request.model);
+    if (request.expert_mode) {
+      if (!policy.userId || !await enterprise.isUserInGroup(policy.userId, "expert")) {
+        return context.json({ error: { code: "expert_access_denied", message: "Expert mode is restricted to the Expert user group." } }, 403);
+      }
+      expertModel = await controlPlane.findExpertModel(request.model);
+      if (expertModel) {
+        route = {
+          id: expertModel.rawModel,
+          label: expertModel.label,
+          description: expertModel.description,
+          uiMode: expertModel.provider === "openai" ? "chatgpt" : expertModel.provider,
+          aliases: [],
+          enabled: true,
+        };
+      }
+    }
     if (!route) return context.json({ error: { message: `Unknown or disabled model: ${request.model}` } }, 404);
     const requestSignal = context.req.raw.signal;
     const requestStartedAt = Date.now();
@@ -1228,7 +1351,9 @@ export function createApp(options: CreateAppOptions = {}) {
     let upstreams: SelectedUpstream[] = [];
     let prepared: PreparedSearchRequest = { primary: request };
     if (!isDemo) {
-      upstreams = await resolveUpstreams(route);
+      upstreams = expertModel
+        ? await controlPlane.selectExpertUpstreams(expertModel)
+        : await resolveUpstreams(route);
       metricProvider = upstreams[0]?.provider ?? metricProvider;
       if (!upstreams.length) {
         await record(makeMetric("failure"));
@@ -1568,6 +1693,45 @@ export function createApp(options: CreateAppOptions = {}) {
   for (const prefix of ["/admin/mappings", "/v1/admin/mappings"] as const) {
     app.get(prefix, listMappings);
     app.put(`${prefix}/:modelId`, replaceMappings);
+  }
+
+  const listExpertModels = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return context.json({ data: await controlPlane.listExpertModels(true) });
+  };
+  const createExpertModel = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = expertModelSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid Expert model.", details: parsed.error.issues } }, 400);
+    try {
+      return context.json({ data: await controlPlane.createExpertModel(parsed.data satisfies ExpertModelInput) }, 201);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to create Expert model." } }, 409);
+    }
+  };
+  const updateExpertModel = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    const parsed = expertModelPatchSchema.safeParse(await context.req.json().catch(() => undefined));
+    if (!parsed.success) return context.json({ error: { message: "Invalid Expert model update.", details: parsed.error.issues } }, 400);
+    try {
+      const model = await controlPlane.updateExpertModel(context.req.param("id") ?? "", parsed.data satisfies ExpertModelPatch);
+      return model ? context.json({ data: model }) : context.json({ error: { message: "Expert model was not found." } }, 404);
+    } catch (error) {
+      return context.json({ error: { message: error instanceof Error ? error.message : "Unable to update Expert model." } }, 409);
+    }
+  };
+  const deleteExpertModel = async (context: Context) => {
+    if (!requireAdmin(context)) return context.json({ error: { message: "Administrator authorization required." } }, 401);
+    return await controlPlane.deleteExpertModel(context.req.param("id") ?? "")
+      ? context.body(null, 204)
+      : context.json({ error: { message: "Expert model was not found." } }, 404);
+  };
+  for (const prefix of ["/admin/expert-models", "/v1/admin/expert-models"] as const) {
+    app.get(prefix, listExpertModels);
+    app.post(prefix, createExpertModel);
+    app.patch(`${prefix}/:id`, updateExpertModel);
+    app.put(`${prefix}/:id`, updateExpertModel);
+    app.delete(`${prefix}/:id`, deleteExpertModel);
   }
 
   app.get("/admin/routing", async (context) => {

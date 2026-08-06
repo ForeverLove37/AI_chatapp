@@ -110,6 +110,18 @@ type ModelMappingDraft = {
   enabled: boolean;
 };
 
+type ExpertModel = {
+  id: string;
+  rawModel: string;
+  label: string;
+  description: string;
+  provider: Provider;
+  priority: number;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type ProviderKey = {
   id: string;
   provider: Provider;
@@ -255,7 +267,7 @@ const englishCopy: AdminCopy = {
   createUser: "Create user", accountsAdminOnly: "Accounts are created only by an administrator", email: "Email", password: "Password", role: "Role", standard: "Standard", admin: "Admin", rpm: "RPM", dailyQuota: "Daily quota", userAccess: "User access", statusRoleQuota: "Status, role, and quotas", identity: "Identity", limits: "Limits", monthlyTokens: "Monthly tokens", status: "Status", suspend: "Suspend", restore: "Restore", edit: "Edit", editUser: "Edit user", resetPassword: "Reset password", leavePasswordBlank: "Leave blank to keep the current password", saveChanges: "Save changes", cancel: "Cancel",
   issueClientKey: "Issue client key", secretHashed: "A secret is shown once and stored as a hash", name: "Name", user: "User", unassigned: "Unassigned", issueKey: "Issue key", newClientKey: "New client key", dismiss: "Dismiss", keyPoolClient: "Rate and daily quota usage are sourced from Redis", prefix: "Prefix", usage: "Usage", revoke: "Revoke",
   addProviderKey: "Add provider key", editProvider: "Edit provider", encryptedPostgres: "Secrets are encrypted before PostgreSQL storage", provider: "Provider", openAiCompatible: "OpenAI-compatible", label: "Label", endpoint: "Endpoint", secret: "Secret", priority: "Priority", addProvider: "Add provider key", keyPool: "Key pool", priorityDetail: "Lowest numeric priority is selected first; tied tiers use the routing strategy", lastUsed: "Last used", never: "Never", disable: "Disable", enable: "Enable", bypassAuth: "Bypass Authentication (Keyless)", bypassAuthDetail: "Send requests without an Authorization header; use only with an IP-whitelisted upstream.", keyless: "Keyless", noProviderKeys: "No provider keys are configured.", deleteProviderTitle: "Delete provider key?", deleteProviderPrompt: "The provider endpoint and stored secret will be permanently removed.", saveProvider: "Save provider", cancelEdit: "Cancel edit",
-  channelDefaults: "Channel defaults", channelDefaultsDetail: "Each ordered list is an explicit fallback chain. The first available key is used first.", modelOverrides: "Model overrides", modelOverridesDetail: "A model override takes precedence over its channel chain. Clear it to inherit the channel default.", customChain: "Custom chain", inheritsChannel: "Inherits channel", usesPriority: "Uses provider priority", noExplicitOrder: "No explicit key order.", addProviderKeyOption: "Add provider key", add: "Add", saveOrder: "Save order", clear: "Clear", priorityBalancing: "Priority-tier balancing", priorityBalancingDetail: "Used only when no explicit channel or model chain is configured.", roundRobin: "Round robin", randomized: "Randomized", current: "Current", routingMappings: "Model routing mappings", routingMappingsDetail: "The array-based 1-to-N target list is the single source of truth for upstream dispatch.", upstreamModel: "Upstream model", internalName: "Internal model", description: "Description", channel: "Channel", upstreamTargets: "Upstream targets", loadingMappings: "Loading model mappings", noInternalModels: "No internal models are configured.", noDescription: "No description", noUpstreamTargets: "No upstream targets", configure: "Configure", configureRouting: "Configure routing", mappingModalDetail: "Manage every upstream target in one atomic change.", priorityOrderDetail: "Lower priorities run first. Reordering normalizes priorities in steps of 10.", addTarget: "Add target", atLeastOneTarget: "Add at least one upstream target before saving.", invalidMappingTarget: "Every target requires a provider, upstream model, and integer priority from 0 to 100000.", duplicateMappingTarget: "Each provider and upstream model pair must be unique.", saveMappings: "Save mappings",
+  channelDefaults: "Channel defaults", channelDefaultsDetail: "Each ordered list is an explicit fallback chain. The first available key is used first.", modelOverrides: "Model overrides", modelOverridesDetail: "A model override takes precedence over its channel chain. Clear it to inherit the channel default.", customChain: "Custom chain", inheritsChannel: "Inherits channel", usesPriority: "Uses provider priority", noExplicitOrder: "No explicit key order.", addProviderKeyOption: "Add provider key", add: "Add", saveOrder: "Save order", clear: "Clear", priorityBalancing: "Priority-tier balancing", priorityBalancingDetail: "Used only when no explicit channel or model chain is configured.", roundRobin: "Round robin", randomized: "Randomized", current: "Current", expertModelsTitle: "Expert model list", expertModelsDetail: "Manage raw upstream names available only to users assigned to the Expert group.", rawModel: "Raw upstream model", expertModelLabel: "Display label", expertProvider: "Upstream provider", addExpertModel: "Add Expert model", updateExpertModel: "Update Expert model", deleteExpertModelTitle: "Delete Expert model?", deleteExpertModelPrompt: "This raw model will no longer be available to Expert users.", noExpertModels: "No Expert models have been configured.", expertModelEnabled: "Enabled for Expert users", expertModelDisabled: "Disabled", routingMappings: "Model routing mappings", routingMappingsDetail: "The array-based 1-to-N target list is the single source of truth for upstream dispatch.", upstreamModel: "Upstream model", internalName: "Internal model", description: "Description", channel: "Channel", upstreamTargets: "Upstream targets", loadingMappings: "Loading model mappings", noInternalModels: "No internal models are configured.", noDescription: "No description", noUpstreamTargets: "No upstream targets", configure: "Configure", configureRouting: "Configure routing", mappingModalDetail: "Manage every upstream target in one atomic change.", priorityOrderDetail: "Lower priorities run first. Reordering normalizes priorities in steps of 10.", addTarget: "Add target", atLeastOneTarget: "Add at least one upstream target before saving.", invalidMappingTarget: "Every target requires a provider, upstream model, and integer priority from 0 to 100000.", duplicateMappingTarget: "Each provider and upstream model pair must be unique.", saveMappings: "Save mappings",
   feedbackInbox: "Feedback inbox", feedbackDetail: "Messages are submitted by authenticated Android accounts and persisted in PostgreSQL.", message: "Message", account: "Account", context: "Context", received: "Received", noFeedback: "No feedback has been submitted.", unknown: "Unknown", new: "New", reviewed: "Reviewed", resolved: "Resolved",
   publishVersion: "Publish app version", publishVersionDetail: "The active release is returned by the Android update-check endpoint.", versionCode: "Version code", versionName: "Version name", apkUrl: "APK URL", releaseNotes: "Release notes", setActive: "Set active", publishRelease: "Publish release", publishedVersions: "Published versions", oneActiveVersion: "Only one version is active at a time.", version: "Version", download: "Download", notes: "Notes", published: "Published", apkLink: "APK link", activate: "Activate", active: "Active", noVersions: "No app versions have been published.", code: "Code",
   liveSse: "Live SSE", connectionsFlight: "Connections in flight", persistedSuccess: "Persisted successes", providerFailure: "Provider or relay failures", currentProcess: "Current process lifetime",
@@ -282,7 +294,7 @@ const chineseCopy: AdminCopy = {
   createUser: "创建用户", accountsAdminOnly: "账户只能由管理员创建", email: "邮箱", password: "密码", role: "角色", standard: "普通用户", admin: "管理员", rpm: "每分钟请求", dailyQuota: "每日配额", userAccess: "用户权限", statusRoleQuota: "状态、角色与配额", identity: "身份", limits: "限制", monthlyTokens: "月度令牌", status: "状态", suspend: "停用", restore: "恢复", edit: "编辑", editUser: "编辑用户", resetPassword: "重置密码", leavePasswordBlank: "留空则保留当前密码", saveChanges: "保存更改", cancel: "取消",
   issueClientKey: "签发客户端密钥", secretHashed: "密钥只显示一次，数据库仅保存哈希", name: "名称", user: "用户", unassigned: "未分配", issueKey: "签发密钥", newClientKey: "新的客户端密钥", dismiss: "关闭", keyPoolClient: "每分钟和每日用量由 Redis 提供", prefix: "前缀", usage: "用量", revoke: "撤销",
   addProviderKey: "添加上游密钥", editProvider: "编辑上游提供商", encryptedPostgres: "密钥在写入 PostgreSQL 前会加密", provider: "提供商", openAiCompatible: "OpenAI 兼容", label: "标签", endpoint: "端点", secret: "密钥", priority: "优先级", addProvider: "添加上游密钥", keyPool: "密钥池", priorityDetail: "数值更小的优先级先使用；相同优先级由路由策略决定", lastUsed: "最近使用", never: "从未", disable: "禁用", enable: "启用", bypassAuth: "绕过认证（无密钥）", bypassAuthDetail: "不发送 Authorization 请求头；仅用于已加入 IP 白名单的上游。", keyless: "无密钥", noProviderKeys: "尚未配置上游密钥。", deleteProviderTitle: "删除上游密钥？", deleteProviderPrompt: "上游端点及已保存的密钥将被永久删除。", saveProvider: "保存上游提供商", cancelEdit: "取消编辑",
-  channelDefaults: "频道默认路由", channelDefaultsDetail: "每个有序列表都是明确的回退链，会先使用第一个可用密钥。", modelOverrides: "模型覆盖", modelOverridesDetail: "模型覆盖优先于频道链，清除后继承频道默认值。", customChain: "自定义链", inheritsChannel: "继承频道", usesPriority: "使用提供商优先级", noExplicitOrder: "没有明确的密钥顺序。", addProviderKeyOption: "添加上游密钥", add: "添加", saveOrder: "保存顺序", clear: "清除", priorityBalancing: "优先级分层均衡", priorityBalancingDetail: "仅在未配置明确频道或模型链时使用。", roundRobin: "轮询", randomized: "随机", current: "当前", routingMappings: "模型路由映射", routingMappingsDetail: "基于数组的一对多目标列表是上游转发的唯一数据源。", upstreamModel: "上游模型", internalName: "内部模型", description: "描述", channel: "频道", upstreamTargets: "上游目标", loadingMappings: "正在加载模型映射", noInternalModels: "尚未配置内部模型。", noDescription: "无描述", noUpstreamTargets: "无上游目标", configure: "配置", configureRouting: "配置路由", mappingModalDetail: "在一次原子变更中管理全部上游目标。", priorityOrderDetail: "优先级数值越低越先执行；重新排序会按 10 的步长重设优先级。", addTarget: "添加目标", atLeastOneTarget: "保存前请至少添加一个上游目标。", invalidMappingTarget: "每个目标都需要提供商、上游模型以及 0 到 100000 之间的整数优先级。", duplicateMappingTarget: "提供商与上游模型的组合不得重复。", saveMappings: "保存映射",
+  channelDefaults: "频道默认路由", channelDefaultsDetail: "每个有序列表都是明确的回退链，会先使用第一个可用密钥。", modelOverrides: "模型覆盖", modelOverridesDetail: "模型覆盖优先于频道链，清除后继承频道默认值。", customChain: "自定义链", inheritsChannel: "继承频道", usesPriority: "使用提供商优先级", noExplicitOrder: "没有明确的密钥顺序。", addProviderKeyOption: "添加上游密钥", add: "添加", saveOrder: "保存顺序", clear: "清除", priorityBalancing: "优先级分层均衡", priorityBalancingDetail: "仅在未配置明确频道或模型链时使用。", roundRobin: "轮询", randomized: "随机", current: "当前", expertModelsTitle: "专家模型列表", expertModelsDetail: "管理仅对加入 Expert 用户组的用户开放的上游原始名称。", rawModel: "上游原始模型", expertModelLabel: "显示标签", expertProvider: "上游提供商", addExpertModel: "添加专家模型", updateExpertModel: "更新专家模型", deleteExpertModelTitle: "删除专家模型？", deleteExpertModelPrompt: "该原始模型将不再对 Expert 用户开放。", noExpertModels: "尚未配置专家模型。", expertModelEnabled: "对专家用户启用", expertModelDisabled: "已禁用", routingMappings: "模型路由映射", routingMappingsDetail: "基于数组的一对多目标列表是上游转发的唯一数据源。", upstreamModel: "上游模型", internalName: "内部模型", description: "描述", channel: "频道", upstreamTargets: "上游目标", loadingMappings: "正在加载模型映射", noInternalModels: "尚未配置内部模型。", noDescription: "无描述", noUpstreamTargets: "无上游目标", configure: "配置", configureRouting: "配置路由", mappingModalDetail: "在一次原子变更中管理全部上游目标。", priorityOrderDetail: "优先级数值越低越先执行；重新排序会按 10 的步长重设优先级。", addTarget: "添加目标", atLeastOneTarget: "保存前请至少添加一个上游目标。", invalidMappingTarget: "每个目标都需要提供商、上游模型以及 0 到 100000 之间的整数优先级。", duplicateMappingTarget: "提供商与上游模型的组合不得重复。", saveMappings: "保存映射",
   feedbackInbox: "反馈收件箱", feedbackDetail: "消息由已认证的 Android 账户提交并持久化到 PostgreSQL。", message: "内容", account: "账户", context: "上下文", received: "收到时间", noFeedback: "尚未收到反馈。", unknown: "未知", new: "新建", reviewed: "已查看", resolved: "已解决",
   publishVersion: "发布应用版本", publishVersionDetail: "Android 更新检查接口将返回当前激活的版本。", versionCode: "版本代码", versionName: "版本名称", apkUrl: "APK 地址", releaseNotes: "发布说明", setActive: "设为激活", publishRelease: "发布版本", publishedVersions: "已发布版本", oneActiveVersion: "任一时间只有一个激活版本。", version: "版本", download: "下载", notes: "说明", published: "发布时间", apkLink: "APK 链接", activate: "激活", active: "已激活", noVersions: "尚未发布应用版本。", code: "代码",
   liveSse: "实时 SSE", connectionsFlight: "传输中的连接", persistedSuccess: "已持久化成功请求", providerFailure: "提供商或中继失败", currentProcess: "当前进程运行时间",
@@ -843,11 +855,87 @@ function RoutingPanel({ channelPolicies, keys, modelPolicies, models, onDeletePo
   ];
   const policyFor = (policies: RoutingPolicy[], scopeId: string) => policies.find((policy) => policy.scopeId === scopeId);
   return <>
+    <ExpertModelsPanel keys={keys} />
     <ModelMappingsPanel keys={keys} />
     <section className="data-section"><SectionHeading title={copy.channelDefaults} detail={copy.channelDefaultsDetail} /><div className="policy-grid">{channelNames.map((channel) => <RoutingPolicyEditor key={channel.id} label={channel.label} scope="channel" scopeId={channel.id} policy={policyFor(channelPolicies, channel.id)} keys={keys} onSave={onSavePolicy} onDelete={onDeletePolicy} disabled={submitting} />)}</div></section>
     <section className="data-section"><SectionHeading title={copy.modelOverrides} detail={copy.modelOverridesDetail} /><div className="policy-grid model-policy-grid">{models.map((model) => <RoutingPolicyEditor key={model.id} label={`${model.id} (${model.label})`} scope="model" scopeId={model.id} policy={policyFor(modelPolicies, model.id)} keys={keys} onSave={onSavePolicy} onDelete={onDeletePolicy} disabled={submitting} />)}</div></section>
     <section className="data-section"><SectionHeading title={copy.priorityBalancing} detail={copy.priorityBalancingDetail} /><div className="strategy-row"><div className="segmented" role="group" aria-label={copy.navRouting}><button className={strategy === "round_robin" ? "segment-active" : ""} disabled={submitting} onClick={() => onSetStrategy("round_robin")} type="button"><ArrowRightLeft size={16} />{copy.roundRobin}</button><button className={strategy === "random" ? "segment-active" : ""} disabled={submitting} onClick={() => onSetStrategy("random")} type="button">{copy.randomized}</button></div><span className="strategy-note">{copy.current}: {strategy === "round_robin" ? copy.roundRobin : copy.randomized}</span></div></section>
   </>;
+}
+
+function ExpertModelsPanel({ keys }: { keys: ProviderKey[] }) {
+  const copy = useCopy();
+  const confirm = useConfirmation();
+  const providers = useMemo(() => [...new Set(["openai", "gemini", "deepseek", ...keys.map((key) => key.provider)])], [keys]);
+  const [models, setModels] = useState<ExpertModel[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState({ rawModel: "", label: "", description: "", provider: providers[0] ?? "openai", priority: "100", enabled: true });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    try {
+      const payload = await request<{ data: ExpertModel[] }>("expert-models", { cache: "no-store" });
+      setModels(payload.data);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.operationFailed);
+    }
+  }, [copy.operationFailed]);
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (!form.provider && providers[0]) setForm((current) => ({ ...current, provider: providers[0] }));
+  }, [form.provider, providers]);
+  const reset = () => {
+    setEditingId(null);
+    setForm({ rawModel: "", label: "", description: "", provider: providers[0] ?? "openai", priority: "100", enabled: true });
+  };
+  const edit = (model: ExpertModel) => {
+    setEditingId(model.id);
+    setForm({ rawModel: model.rawModel, label: model.label, description: model.description, provider: model.provider, priority: String(model.priority), enabled: model.enabled });
+  };
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const payload = { rawModel: form.rawModel.trim(), label: form.label.trim(), description: form.description.trim(), provider: form.provider.trim(), priority: Number(form.priority), enabled: form.enabled };
+      await request(editingId ? `expert-models/${editingId}` : "expert-models", { method: editingId ? "PATCH" : "POST", body: JSON.stringify(payload) });
+      reset();
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.operationFailed);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function remove(model: ExpertModel) {
+    const accepted = await confirm({ title: copy.deleteExpertModelTitle, message: `${model.rawModel}. ${copy.deleteExpertModelPrompt}`, confirmLabel: copy.delete });
+    if (!accepted) return;
+    setBusy(true);
+    try {
+      await request(`expert-models/${model.id}`, { method: "DELETE" });
+      if (editingId === model.id) reset();
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.operationFailed);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <section className="data-section expert-models-section">
+    <InlineError message={error} />
+    <SectionHeading title={copy.expertModelsTitle} detail={copy.expertModelsDetail} />
+    <form className="form-grid" onSubmit={save}>
+      <label>{copy.rawModel}<input required maxLength={256} value={form.rawModel} onChange={(event) => setForm({ ...form, rawModel: event.target.value })} /></label>
+      <label>{copy.expertModelLabel}<input maxLength={120} value={form.label} onChange={(event) => setForm({ ...form, label: event.target.value })} /></label>
+      <label>{copy.expertProvider}<select value={form.provider} onChange={(event) => setForm({ ...form, provider: event.target.value })}>{providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></label>
+      <label>{copy.priority}<input required min="0" max="100000" type="number" value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })} /></label>
+      <label className="wide-field">{copy.description}<input maxLength={500} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
+      <label className="checkbox-label"><input checked={form.enabled} type="checkbox" onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />{copy.enabled}</label>
+      <div className="form-actions"><button className="primary-button form-action" disabled={busy} type="submit">{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}{editingId ? copy.updateExpertModel : copy.addExpertModel}</button>{editingId && <button className="small-button" disabled={busy} onClick={reset} type="button">{copy.cancel}</button>}</div>
+    </form>
+    <div className="table-wrap"><table><thead><tr><th>{copy.rawModel}</th><th>{copy.expertProvider}</th><th>{copy.priority}</th><th>{copy.status}</th><th /></tr></thead><tbody>{models.length ? models.map((model) => <tr key={model.id}><td><strong>{model.label || model.rawModel}</strong><span><code>{model.rawModel}</code> · {model.description || copy.noDescription}</span></td><td>{model.provider}</td><td>{model.priority}</td><td><span className={model.enabled ? "status status-good" : "status status-muted"}>{model.enabled ? copy.expertModelEnabled : copy.expertModelDisabled}</span></td><td><div className="table-actions"><button className="small-button" disabled={busy} onClick={() => edit(model)} type="button"><Pencil size={14} />{copy.edit}</button><button className="small-button" disabled={busy} onClick={() => void request(`expert-models/${model.id}`, { method: "PATCH", body: JSON.stringify({ enabled: !model.enabled }) }).then(load).catch((reason) => setError(reason instanceof Error ? reason.message : copy.operationFailed))} type="button">{model.enabled ? copy.disable : copy.enable}</button><button aria-label={`${copy.delete} ${model.rawModel}`} className="icon-button danger-button" disabled={busy} onClick={() => void remove(model)} type="button"><Trash2 size={16} /></button></div></td></tr>) : <tr><td className="empty-table" colSpan={5}>{copy.noExpertModels}</td></tr>}</tbody></table></div>
+  </section>;
 }
 
 function ModelMappingsPanel({ keys }: { keys: ProviderKey[] }) {

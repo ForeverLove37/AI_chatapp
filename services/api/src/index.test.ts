@@ -617,6 +617,60 @@ describe("Adaptive Chat API", () => {
     expect((await app.request("/admin/provider-keys", { headers: adminHeaders })).status).toBe(200);
   });
 
+  it("gates Expert raw models by group membership and forwards the exact upstream name", async () => {
+    const control = new MemoryControlPlane();
+    const enterprise = new MemoryEnterpriseStore();
+    const upstream = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.model).toBe("deepseek-coder");
+      expect(body).not.toHaveProperty("expert_mode");
+      return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "expert response" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", upstream);
+    const app = createApp({ controlPlane: control, enterpriseStore: enterprise, demoMode: false, requireClientAuth: true });
+    const adminHeaders = { "x-admin-key": "dev-admin-key", "Content-Type": "application/json" };
+    const created = await app.request("/admin/users", {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ email: "expert@example.test", password: "expert-password", role: "standard" }),
+    });
+    const userId = (await created.json()).data.id as string;
+    const groups = await app.request("/admin/user-groups", { headers: adminHeaders });
+    const expertGroup = (await groups.json()).data.find((group: { slug: string }) => group.slug === "expert");
+    await app.request(`/admin/users/${userId}/groups`, {
+      method: "PUT",
+      headers: adminHeaders,
+      body: JSON.stringify({ groupIds: [expertGroup.id] }),
+    });
+    await app.request("/admin/provider-keys", {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ provider: "deepseek", label: "Expert relay", endpoint: "https://deepseek.example.test/v1", secret: "expert-secret", priority: 1 }),
+    });
+    const denied = await app.request("/v1/config?expert_mode=true");
+    expect(denied.status).toBe(401);
+    const login = await app.request("/v1/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "expert@example.test", password: "expert-password" }),
+    });
+    const token = (await login.json()).token as string;
+    const config = await app.request("/v1/config?expert_mode=true", { headers: { Authorization: `Bearer ${token}` } });
+    expect(config.status).toBe(200);
+    expect((await config.json()).channels.flatMap((channel: { models: Array<{ id: string }> }) => channel.models).some((model: { id: string }) => model.id === "deepseek-coder")).toBe(true);
+    const completion = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ model: "deepseek-coder", expert_mode: true, messages: [{ role: "user", content: "write code" }] }),
+    });
+    expect(completion.status).toBe(200);
+    expect((await completion.json()).choices[0].message.content).toBe("expert response");
+    expect(upstream).toHaveBeenCalledOnce();
+  });
+
   it("tracks Build, Publish, and Archive as separate persisted stages", async () => {
     const enterprise = new MemoryEnterpriseStore();
     const app = createApp({ enterpriseStore: enterprise });

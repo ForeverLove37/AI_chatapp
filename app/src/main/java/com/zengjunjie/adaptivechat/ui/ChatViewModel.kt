@@ -16,6 +16,7 @@ import com.zengjunjie.adaptivechat.data.MessageRole
 import com.zengjunjie.adaptivechat.data.ProviderMode
 import com.zengjunjie.adaptivechat.data.ProfileAvatarUpload
 import com.zengjunjie.adaptivechat.data.RemoteAppVersion
+import com.zengjunjie.adaptivechat.data.RemoteConfig
 import com.zengjunjie.adaptivechat.data.SpeechPlayer
 import com.zengjunjie.adaptivechat.data.UserPreferences
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +35,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import java.util.concurrent.atomic.AtomicLong
 
 enum class AppDestination {
     CHAT,
@@ -70,6 +72,8 @@ data class ChatUiState(
     val model: ChatModel = ChatModel.CHATGPT_LITE,
     val channels: List<ProviderMode> = ProviderMode.entries,
     val webSearchAvailable: Boolean = false,
+    val expertModeAllowed: Boolean = false,
+    val expertModeEnabled: Boolean = false,
     val account: AppPreferencesState = AppPreferencesState(),
     val destination: AppDestination = AppDestination.CHAT,
     val isLoggingIn: Boolean = false,
@@ -99,7 +103,18 @@ class ChatViewModel(
     private val profileUpdateState = MutableStateFlow<ProfileUpdateState>(ProfileUpdateState.Idle)
     private val channelCatalog = MutableStateFlow(ProviderMode.entries)
     private val webSearchAvailable = MutableStateFlow(false)
+    private val configRequestSequence = AtomicLong(0L)
     private var generationJob: Job? = null
+
+    private suspend fun loadRemoteConfig(accessToken: String? = null, expertMode: Boolean = false): RemoteConfig {
+        val requestSequence = configRequestSequence.incrementAndGet()
+        val config = repository.fetchRemoteConfig(accessToken, expertMode)
+        if (requestSequence == configRequestSequence.get()) {
+            channelCatalog.value = config.channels
+            webSearchAvailable.value = config.webSearchEnabled
+        }
+        return config
+    }
 
     private val sessions = repository.observeSessions().stateIn(
         scope = viewModelScope,
@@ -133,6 +148,8 @@ class ChatViewModel(
             model = selected?.model ?: ChatModel.CHATGPT_LITE,
             channels = channels,
             account = account,
+            expertModeAllowed = account.expertModeAllowed,
+            expertModeEnabled = account.expertModeEnabled && account.expertModeAllowed,
         )
     }.combine(isStreaming) { state, streaming ->
         state.copy(isStreaming = streaming)
@@ -165,11 +182,7 @@ class ChatViewModel(
             selectedSessionId.value = repository.getOrCreateDefaultSession().id
         }
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { repository.fetchRemoteConfig() }
-                .onSuccess { config ->
-                    channelCatalog.value = config.channels
-                    webSearchAvailable.value = config.webSearchEnabled
-                }
+            runCatching { loadRemoteConfig() }
         }
         viewModelScope.launch(Dispatchers.IO) {
             preferences.state
@@ -178,7 +191,15 @@ class ChatViewModel(
                 .collectLatest { accessToken ->
                     if (!accessToken.isNullOrBlank()) {
                         runCatching { repository.fetchProfile(accessToken) }
-                            .onSuccess { profile -> preferences.saveProfile(profile.email, profile.displayName, profile.avatarUrl) }
+                            .onSuccess { profile -> preferences.saveProfile(profile.email, profile.displayName, profile.avatarUrl, profile.groups) }
+                        runCatching { loadRemoteConfig(accessToken, preferences.state.value.expertModeEnabled) }
+                            .onSuccess { config ->
+                                channelCatalog.value = config.channels
+                                webSearchAvailable.value = config.webSearchEnabled
+                                if (!config.expertModeAllowed && preferences.state.value.expertModeEnabled) {
+                                    preferences.setExpertMode(false)
+                                }
+                            }
                         runCatching {
                             repository.synchronizeFromServer(accessToken)
                             repository.getOrCreateDefaultSession()
@@ -200,7 +221,7 @@ class ChatViewModel(
             loginError.value = null
             runCatching { repository.login(normalizedEmail, password) }
                 .onSuccess { session ->
-                    preferences.saveSession(session.accessToken, session.email, session.displayName, session.avatarUrl)
+                    preferences.saveSession(session.accessToken, session.email, session.displayName, session.avatarUrl, session.groups)
                 }
                 .onFailure { error -> loginError.value = error.message ?: "Sign-in failed." }
             isLoggingIn.value = false
@@ -208,6 +229,7 @@ class ChatViewModel(
     }
 
     fun logout() {
+        configRequestSequence.incrementAndGet()
         preferences.clearSession()
         destination.value = AppDestination.CHAT
         errorMessage.value = null
@@ -399,6 +421,24 @@ class ChatViewModel(
 
     fun setFontScale(value: Float) = preferences.setFontScale(value)
 
+    fun setExpertMode(enabled: Boolean) {
+        if (!uiState.value.expertModeAllowed) return
+        val previous = preferences.state.value.expertModeEnabled
+        preferences.setExpertMode(enabled)
+        val token = uiState.value.account.accessToken
+        if (token.isNullOrBlank()) {
+            preferences.setExpertMode(previous)
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { loadRemoteConfig(token, enabled) }
+                .onFailure {
+                    preferences.setExpertMode(previous)
+                    errorMessage.value = it.message ?: "Unable to load Expert Mode models."
+                }
+        }
+    }
+
     fun updateProfile(displayName: String, avatar: ProfileAvatarUpload?, removeAvatar: Boolean) {
         val token = uiState.value.account.accessToken ?: return
         if (profileUpdateState.value is ProfileUpdateState.Saving) return
@@ -406,7 +446,7 @@ class ChatViewModel(
             profileUpdateState.value = ProfileUpdateState.Saving
             runCatching { repository.updateProfile(token, displayName.trim(), avatar, removeAvatar) }
                 .onSuccess { profile ->
-                    preferences.saveProfile(profile.email, profile.displayName, profile.avatarUrl)
+                    preferences.saveProfile(profile.email, profile.displayName, profile.avatarUrl, profile.groups)
                     profileUpdateState.value = ProfileUpdateState.Saved
                 }
                 .onFailure { error ->
@@ -472,7 +512,7 @@ class ChatViewModel(
         val token = uiState.value.account.accessToken ?: return
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { repository.fetchProfile(token) }
-                .onSuccess { profile -> preferences.saveProfile(profile.email, profile.displayName, profile.avatarUrl) }
+                .onSuccess { profile -> preferences.saveProfile(profile.email, profile.displayName, profile.avatarUrl, profile.groups) }
         }
     }
 

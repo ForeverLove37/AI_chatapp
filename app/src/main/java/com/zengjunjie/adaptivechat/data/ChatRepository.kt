@@ -393,7 +393,8 @@ class ChatRepository(
         removeAvatar: Boolean,
     ): UserProfile = chatApi.updateProfile(accessToken, displayName, avatar, removeAvatar)
 
-    suspend fun fetchRemoteConfig(): RemoteConfig = chatApi.fetchConfig()
+    suspend fun fetchRemoteConfig(accessToken: String? = null, expertMode: Boolean = false): RemoteConfig =
+        chatApi.fetchConfig(accessToken, expertMode)
 
     suspend fun checkForUpdate(accessToken: String, versionCode: Int, versionName: String): UpdateCheckResult =
         chatApi.checkForUpdate(accessToken, versionCode, versionName)

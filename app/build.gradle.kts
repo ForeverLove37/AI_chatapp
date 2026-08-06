@@ -12,8 +12,8 @@ android {
         applicationId = "com.zengjunjie.adaptivechat"
         minSdk = 26
         targetSdk = 36
-        versionCode = providers.gradleProperty("adaptiveVersionCode").orNull?.toInt() ?: 11
-        versionName = providers.gradleProperty("adaptiveVersionName").orNull ?: "1.8.0"
+        versionCode = providers.gradleProperty("adaptiveVersionCode").orNull?.toInt() ?: 14
+        versionName = providers.gradleProperty("adaptiveVersionName").orNull ?: "1.9.1"
 
         buildConfigField("String", "DEVELOPER_NAME", "\"zengjunjie\"")
         buildConfigField("String", "RELEASE_RING", "\"${providers.gradleProperty("adaptiveReleaseRing").orNull ?: "production"}\"")

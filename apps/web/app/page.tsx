@@ -57,9 +57,11 @@ type UserProfile = {
   avatarUrl: string | null;
   role?: "admin" | "standard";
   status?: "active" | "suspended";
+  groups?: string[];
+  permissions?: { expertMode?: boolean };
 };
 
-type ChannelModel = { id: string; label: string; description: string };
+type ChannelModel = { id: string; label: string; description: string; expert?: boolean; provider?: string };
 type Channel = {
   id: string;
   displayName: string;
@@ -81,6 +83,7 @@ type RemoteConfig = {
   defaultSystemPrompt: string;
   featureFlags: { webSearch: boolean; reasoningBlocks: boolean; attachments: boolean };
   channels: Channel[];
+  expertMode?: { allowed: boolean; enabled: boolean; models: ChannelModel[] };
 };
 type Attachment = { fileName: string; mimeType: string; dataUrl: string };
 type ChatMessage = {
@@ -115,7 +118,7 @@ const COPY = {
     signIn: "Sign in", signingIn: "Signing in", noRegistration: "Accounts are created by an administrator.",
     newChat: "New conversation", conversations: "Conversations", noHistory: "No conversations yet", signOut: "Sign out",
     channel: "Channel", model: "Model", light: "Light", dark: "Dark", system: "System", language: "Language",
-    settings: "Settings", settingsTitle: "Workspace settings", profile: "Profile", displayName: "Display name", avatar: "Avatar", chooseAvatar: "Choose avatar", removeAvatar: "Remove avatar", saveProfile: "Save profile", saving: "Saving", saved: "Saved", appearance: "Appearance", fontSize: "Font size", fontSizeDetail: "Adjust interface text", feedback: "Feedback", feedbackDetail: "Send a note to the product team", feedbackPrompt: "What would you like to share?", sendFeedback: "Send feedback", feedbackSent: "Feedback sent.", sendingFeedback: "Sending feedback",
+    settings: "Settings", settingsTitle: "Workspace settings", profile: "Profile", displayName: "Display name", avatar: "Avatar", chooseAvatar: "Choose avatar", removeAvatar: "Remove avatar", saveProfile: "Save profile", saving: "Saving", saved: "Saved", appearance: "Appearance", expertMode: "Expert mode", expertModeDetail: "Show the raw upstream model list assigned to your account.", expertModeOn: "Expert models enabled", expertModeOff: "Expert models hidden", fontSize: "Font size", fontSizeDetail: "Adjust interface text", feedback: "Feedback", feedbackDetail: "Send a note to the product team", feedbackPrompt: "What would you like to share?", sendFeedback: "Send feedback", feedbackSent: "Feedback sent.", sendingFeedback: "Sending feedback",
     welcome: "How can I help?", welcomeDetail: "Choose a channel and start a synchronized conversation.",
     placeholder: "Message Adaptive Chat", send: "Send", stop: "Stop generation", attach: "Attach image", voice: "Voice input",
     webSearch: "Web search", webSearchOn: "Web search enabled for this prompt", remove: "Remove attachment",
@@ -133,7 +136,7 @@ const COPY = {
     signIn: "登录", signingIn: "正在登录", noRegistration: "账号仅由管理员创建。",
     newChat: "新建会话", conversations: "会话", noHistory: "暂无会话", signOut: "退出登录",
     channel: "频道", model: "模型", light: "浅色", dark: "深色", system: "跟随系统", language: "语言",
-    settings: "设置", settingsTitle: "工作区设置", profile: "个人资料", displayName: "显示名称", avatar: "头像", chooseAvatar: "选择头像", removeAvatar: "移除头像", saveProfile: "保存资料", saving: "正在保存", saved: "已保存", appearance: "外观", fontSize: "文字大小", fontSizeDetail: "调整界面文字", feedback: "反馈", feedbackDetail: "向产品团队发送反馈", feedbackPrompt: "想和我们分享什么？", sendFeedback: "发送反馈", feedbackSent: "反馈已发送。", sendingFeedback: "正在发送反馈",
+    settings: "设置", settingsTitle: "工作区设置", profile: "个人资料", displayName: "显示名称", avatar: "头像", chooseAvatar: "选择头像", removeAvatar: "移除头像", saveProfile: "保存资料", saving: "正在保存", saved: "已保存", appearance: "外观", expertMode: "专家模式", expertModeDetail: "显示管理员为你的账户分配的上游原始模型。", expertModeOn: "已启用专家模型", expertModeOff: "已隐藏专家模型", fontSize: "文字大小", fontSizeDetail: "调整界面文字", feedback: "反馈", feedbackDetail: "向产品团队发送反馈", feedbackPrompt: "想和我们分享什么？", sendFeedback: "发送反馈", feedbackSent: "反馈已发送。", sendingFeedback: "正在发送反馈",
     welcome: "有什么可以帮你？", welcomeDetail: "选择频道并开始一段跨端同步的对话。",
     placeholder: "发送消息给 Adaptive Chat", send: "发送", stop: "停止生成", attach: "添加图片", voice: "语音输入",
     webSearch: "网页搜索", webSearchOn: "本次提问已启用网页搜索", remove: "移除附件",
@@ -316,6 +319,7 @@ export default function WebChat() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [editingId, setEditingId] = useState("");
   const [webSearch, setWebSearch] = useState(false);
+  const [expertMode, setExpertMode] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [error, setError] = useState("");
@@ -344,21 +348,33 @@ export default function WebChat() {
   const messageViewport = useRef<HTMLDivElement>(null);
   const autoScrollPaused = useRef(false);
   const activeAbortController = useRef<AbortController | null>(null);
+  const generationInFlight = useRef(false);
+  const streamingRef = useRef(false);
+  const configRequestSequence = useRef(0);
+  const pendingSnapshots = useRef(new Map<string, ChatSession>());
   const pendingSelections = useRef(new Map<string, { channelId: string; modelId: string; updatedAt: number }>());
   const selectionWrites = useRef(new Map<string, Promise<void>>());
+  const [dispatchSelection, setDispatchSelection] = useState<{ sessionId: string; channelId: string; modelId: string } | null>(null);
   const effectiveTheme: Exclude<Theme, "system"> = theme === "system" ? (systemDark ? "dark" : "light") : theme;
   const effectiveLanguage: Language = language === "system" ? systemLanguage : language;
   const copy = COPY[effectiveLanguage];
+  streamingRef.current = streaming;
 
   const selected = sessions.find((session) => session.id === selectedId) ?? sessions[0];
-  const channel = config?.channels.find((item) => item.id === selected?.channelId)
+  const lockedSelection = streaming && dispatchSelection?.sessionId === selected?.id ? dispatchSelection : null;
+  const visibleChannelId = lockedSelection?.channelId ?? selected?.channelId;
+  const visibleModelId = lockedSelection?.modelId ?? selected?.modelId;
+  const channel = config?.channels.find((item) => item.id === visibleChannelId)
     ?? config?.channels[0];
-  const model = channel?.models.find((item) => item.id === selected?.modelId) ?? channel?.models[0];
+  const model = channel?.models.find((item) => item.id === visibleModelId) ?? channel?.models[0];
 
   const loadSessions = useCallback(async (currentToken: string, quiet = false) => {
     try {
       const result = await api<{ data: ChatSession[] }>("/v1/sessions", currentToken);
       const merged = result.data.map((session) => {
+        const snapshot = pendingSnapshots.current.get(session.id);
+        if (snapshot && snapshot.updatedAt > session.updatedAt) return snapshot;
+        if (snapshot && snapshot.updatedAt <= session.updatedAt) pendingSnapshots.current.delete(session.id);
         const pending = pendingSelections.current.get(session.id);
         if (!pending) return session;
         if (session.updatedAt >= pending.updatedAt
@@ -387,6 +403,14 @@ export default function WebChat() {
     return result.data;
   }, []);
 
+  const loadRemoteConfig = useCallback(async (currentToken?: string, expert = false) => {
+    const requestSequence = ++configRequestSequence.current;
+    const query = expert ? "?expert_mode=true" : "";
+    const next = await api<RemoteConfig>(`/v1/config${query}`, currentToken);
+    if (requestSequence === configRequestSequence.current) setConfig(next);
+    return next;
+  }, []);
+
   useEffect(() => {
     const storedToken = localStorage.getItem("adaptive-chat-token") ?? "";
     const storedEmail = localStorage.getItem("adaptive-chat-email") ?? "";
@@ -394,8 +418,10 @@ export default function WebChat() {
     const storedLanguage = localStorage.getItem("adaptive-chat-language") as LanguagePreference | null;
     const storedFontScale = Number(localStorage.getItem("adaptive-chat-font-scale") ?? "1");
     const storedProfile = localStorage.getItem("adaptive-chat-profile");
+    const storedExpertMode = localStorage.getItem("adaptive-chat-expert-mode") === "true";
     const storedSidebarCollapsed = localStorage.getItem("adaptive-chat-sidebar-collapsed");
     setToken(storedToken);
+    setExpertMode(storedExpertMode);
     setEmail(storedEmail);
     if (storedTheme === "system" || storedTheme === "light" || storedTheme === "dark") setTheme(storedTheme);
     if (storedLanguage === "system" || storedLanguage === "en" || storedLanguage === "zh") setLanguage(storedLanguage);
@@ -404,8 +430,8 @@ export default function WebChat() {
     if (storedProfile) {
       try { setProfile(JSON.parse(storedProfile) as UserProfile); } catch { localStorage.removeItem("adaptive-chat-profile"); }
     }
-    void api<RemoteConfig>("/v1/config").then(setConfig).catch(() => setConfig(null));
-  }, []);
+    void loadRemoteConfig().catch(() => undefined);
+  }, [loadRemoteConfig]);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -432,9 +458,20 @@ export default function WebChat() {
   useEffect(() => {
     if (!token) return;
     void loadSessions(token);
-    void loadProfile(token).catch(() => undefined);
+    void (async () => {
+      try {
+        const currentProfile = await loadProfile(token);
+        const allowed = Boolean(currentProfile.permissions?.expertMode || currentProfile.groups?.some((group) => group.toLowerCase() === "expert"));
+        const enabled = allowed && (localStorage.getItem("adaptive-chat-expert-mode") === "true");
+        setExpertMode(enabled);
+        await loadRemoteConfig(token, enabled).catch(() => undefined);
+        if (!allowed) localStorage.removeItem("adaptive-chat-expert-mode");
+      } catch {
+        // The session poll below will surface an authentication failure if it is no longer valid.
+      }
+    })();
     const interval = window.setInterval(() => {
-      if (!streaming && !document.hidden) void loadSessions(token, true);
+      if (!streamingRef.current && !document.hidden) void loadSessions(token, true);
     }, 2_000);
     const profileInterval = window.setInterval(() => {
       if (!document.hidden) void loadProfile(token).catch(() => undefined);
@@ -443,7 +480,7 @@ export default function WebChat() {
       window.clearInterval(interval);
       window.clearInterval(profileInterval);
     };
-  }, [loadProfile, loadSessions, streaming, token]);
+  }, [loadProfile, loadRemoteConfig, loadSessions, token]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = effectiveTheme;
@@ -495,9 +532,12 @@ export default function WebChat() {
 
   const persist = useCallback(async (session: ChatSession) => {
     await api(`/v1/sessions/${encodeURIComponent(session.id)}`, token, { method: "PUT", body: snapshotBody(session) });
+    const pending = pendingSnapshots.current.get(session.id);
+    if (pending?.updatedAt === session.updatedAt) pendingSnapshots.current.delete(session.id);
   }, [token]);
 
-  const replaceSession = useCallback((session: ChatSession) => {
+  const replaceSession = useCallback((session: ChatSession, optimistic = true) => {
+    if (optimistic) pendingSnapshots.current.set(session.id, session);
     setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]
       .sort((left, right) => right.updatedAt - left.updatedAt));
   }, []);
@@ -536,6 +576,25 @@ export default function WebChat() {
     setSelectedId("");
     setDraft("");
     setSettingsOpen(false);
+    setExpertMode(false);
+    setDispatchSelection(null);
+    pendingSnapshots.current.clear();
+  }
+
+  async function toggleExpertMode(enabled: boolean) {
+    const allowed = Boolean(profile?.permissions?.expertMode || profile?.groups?.some((group) => group.toLowerCase() === "expert"));
+    if (!allowed || !token || streaming) return;
+    const previous = expertMode;
+    setExpertMode(enabled);
+    localStorage.setItem("adaptive-chat-expert-mode", String(enabled));
+    setSettingsError("");
+    try {
+      await loadRemoteConfig(token, enabled);
+    } catch (cause) {
+      setExpertMode(previous);
+      localStorage.setItem("adaptive-chat-expert-mode", String(previous));
+      setSettingsError(cause instanceof Error ? cause.message : copy.requestError);
+    }
   }
 
   function openSettings() {
@@ -641,6 +700,7 @@ export default function WebChat() {
   }
 
   async function updateSelection(channelId: string, modelId?: string) {
+    if (streaming || generationInFlight.current) return;
     const nextChannel = config?.channels.find((item) => item.id === channelId);
     if (!nextChannel) return;
     const target = selected ?? await createSession(nextChannel);
@@ -687,6 +747,7 @@ export default function WebChat() {
         },
         body: JSON.stringify({
           model: base.modelId,
+          expert_mode: Boolean(expertMode && profile?.permissions?.expertMode),
           stream: true,
           messages: [
             ...(base.systemPrompt ? [{ role: "system", content: base.systemPrompt }] : []),
@@ -777,6 +838,8 @@ export default function WebChat() {
       if (activeAbortController.current === controller) activeAbortController.current = null;
       await persist(working).catch(() => setError(copy.syncError));
       setWebSearch(false);
+      setDispatchSelection((current) => current?.sessionId === base.id ? null : current);
+      generationInFlight.current = false;
     }
   }
 
@@ -785,23 +848,27 @@ export default function WebChat() {
   }
 
   async function send() {
-    if (streaming || (!draft.trim() && !attachments.length) || !config) return;
+    if (streaming || generationInFlight.current || (!draft.trim() && !attachments.length) || !config) return;
+    const editIndex = editingId
+      ? (selected?.messages.findIndex((message) => message.id === editingId && message.role === "user") ?? -1)
+      : -1;
+    if (editingId && editIndex < 0) return;
     const active = selected ?? await createSession();
     if (!active) return;
+    generationInFlight.current = true;
+    setDispatchSelection({ sessionId: active.id, channelId: active.channelId, modelId: active.modelId });
     const timestamp = Date.now();
     let userMessage: ChatMessage;
     let source: ChatMessage[];
     if (editingId) {
-      const index = active.messages.findIndex((message) => message.id === editingId && message.role === "user");
-      if (index < 0) return;
       userMessage = {
-        ...active.messages[index],
+        ...active.messages[editIndex],
         content: draft.trim(),
         attachments,
         errorText: "",
         updatedAt: timestamp,
       };
-      source = [...active.messages.slice(0, index), userMessage];
+      source = [...active.messages.slice(0, editIndex), userMessage];
     } else {
       userMessage = {
         id: id(), sessionId: active.id, role: "user", content: draft.trim(), attachments,
@@ -825,12 +892,12 @@ export default function WebChat() {
     setDraft("");
     setAttachments([]);
     setEditingId("");
-    await persist(next);
+    await persist(next).catch((cause) => setError(cause instanceof Error ? cause.message : copy.syncError));
     await streamAssistant(next, assistant.id, source, webSearch);
   }
 
   async function redo(message: ChatMessage) {
-    if (!selected || streaming) return;
+    if (!selected || streaming || generationInFlight.current) return;
     if (selected.messages.at(-1)?.id !== message.id || message.role !== "assistant") return;
     const index = selected.messages.findIndex((item) => item.id === message.id);
     if (index < 0) return;
@@ -838,8 +905,10 @@ export default function WebChat() {
     const assistant = { ...message, content: "", reasoning: "", errorText: "", isStreaming: true, updatedAt: timestamp };
     const source = selected.messages.slice(0, index);
     const next = { ...selected, updatedAt: timestamp, messages: [...source, assistant] };
+    generationInFlight.current = true;
+    setDispatchSelection({ sessionId: next.id, channelId: next.channelId, modelId: next.modelId });
     replaceSession(next);
-    await persist(next);
+    await persist(next).catch((cause) => setError(cause instanceof Error ? cause.message : copy.syncError));
     await streamAssistant(next, assistant.id, source, false);
   }
 
@@ -1058,7 +1127,7 @@ export default function WebChat() {
               <span>{copy.channel}</span>
               <div className="select-wrap">
                 {channel && <ChannelIcon channel={channel} />}
-                <select value={channel?.id ?? ""} onChange={(event) => void updateSelection(event.target.value)}>
+                <select disabled={streaming} value={channel?.id ?? ""} onChange={(event) => void updateSelection(event.target.value)}>
                   {(config?.channels ?? []).map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>)}
                 </select>
                 <ChevronDown size={16} />
@@ -1068,7 +1137,7 @@ export default function WebChat() {
               <span>{copy.model}</span>
               <div className="select-wrap model-select">
                 <Sparkles size={17} />
-                <select value={model?.id ?? ""} onChange={(event) => channel && void updateSelection(channel.id, event.target.value)}>
+                <select disabled={streaming} value={model?.id ?? ""} onChange={(event) => channel && void updateSelection(channel.id, event.target.value)}>
                   {(channel?.models ?? []).map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                 </select>
                 <ChevronDown size={16} />
@@ -1216,6 +1285,16 @@ export default function WebChat() {
                 ))}
               </div>
             </div>
+
+            {Boolean(profile?.permissions?.expertMode || profile?.groups?.some((group) => group.toLowerCase() === "expert")) && (
+              <div className="settings-section expert-settings-section">
+                <div className="settings-section-heading"><Sparkles size={18} /><div><strong>{copy.expertMode}</strong><span>{copy.expertModeDetail}</span></div></div>
+                <label className="toggle-row">
+                  <span>{expertMode ? copy.expertModeOn : copy.expertModeOff}</span>
+                  <input type="checkbox" checked={expertMode} disabled={streaming} onChange={(event) => void toggleExpertMode(event.target.checked)} />
+                </label>
+              </div>
+            )}
 
             <div className="settings-section">
               <div className="settings-section-heading"><Globe2 size={18} /><strong>{copy.language}</strong></div>

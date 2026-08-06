@@ -7,6 +7,7 @@ data class ChatModel(
     val channelWireName: String,
     val displayName: String,
     val description: String = "",
+    val isExpertRaw: Boolean = false,
 ) {
     companion object {
         val CHATGPT_LITE = ChatModel("chatgpt-lite", "chatgpt", "Lite")

@@ -63,6 +63,7 @@ class MainActivity : ComponentActivity() {
                                 onDismissFeedbackState = viewModel::dismissFeedbackState,
                                 onLogout = viewModel::logout,
                                 onSetAppearance = viewModel::setAppearance,
+                                onSetExpertMode = viewModel::setExpertMode,
                                 onSetFontScale = viewModel::setFontScale,
                                 onSetLanguage = viewModel::setLanguage,
                                 onSubmitFeedback = viewModel::submitFeedback,

@@ -241,6 +241,8 @@ export interface EnterpriseStore {
   updateUserGroup(id: string, patch: Partial<Pick<UserGroup, "name" | "description" | "releaseRing">>): Promise<UserGroup | undefined>;
   setUserGroups(userId: string, groupIds: string[]): Promise<void>;
   getUserGroupIds(userId: string): Promise<string[]>;
+  getUserGroupSlugs(userId: string): Promise<string[]>;
+  isUserInGroup(userId: string, slug: string): Promise<boolean>;
   assignDefaultGroup(userId: string): Promise<void>;
   listBackupDestinations(): Promise<BackupDestination[]>;
   createBackupDestination(input: BackupDestinationInput): Promise<BackupDestination>;
@@ -767,7 +769,8 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
     await this.pool.query(
       `INSERT INTO user_groups (id, slug, name, description, release_ring) VALUES
        ('grp_standard', 'standard', 'Standard', 'Production release audience', 'production'),
-       ('grp_beta', 'beta-testers', 'Beta Testers', 'Early-access testing audience', 'beta')
+       ('grp_beta', 'beta-testers', 'Beta Testers', 'Early-access testing audience', 'beta'),
+       ('grp_expert', 'expert', 'Expert', 'Access to assigned raw upstream models', 'production')
        ON CONFLICT (id) DO NOTHING`,
     );
     await this.pool.query(
@@ -1044,6 +1047,28 @@ export class PostgresEnterpriseStore implements EnterpriseStore {
   async getUserGroupIds(userId: string) {
     const result = await this.pool.query<{ group_id: string }>("SELECT group_id FROM user_group_members WHERE user_id = $1 ORDER BY group_id", [userId]);
     return result.rows.map((row) => row.group_id);
+  }
+
+  async getUserGroupSlugs(userId: string) {
+    const result = await this.pool.query<{ slug: string }>(
+      `SELECT user_groups.slug FROM user_groups
+       JOIN user_group_members ON user_group_members.group_id = user_groups.id
+       WHERE user_group_members.user_id = $1 ORDER BY user_groups.slug`,
+      [userId],
+    );
+    return result.rows.map((row) => row.slug);
+  }
+
+  async isUserInGroup(userId: string, slug: string) {
+    const result = await this.pool.query<{ exists: boolean }>(
+      `SELECT EXISTS(
+         SELECT 1 FROM user_group_members
+         JOIN user_groups ON user_groups.id = user_group_members.group_id
+         WHERE user_group_members.user_id = $1 AND LOWER(user_groups.slug) = LOWER($2)
+       ) AS exists`,
+      [userId, slug.trim()],
+    );
+    return Boolean(result.rows[0]?.exists);
   }
 
   async assignDefaultGroup(userId: string) {
@@ -1372,6 +1397,7 @@ export class MemoryEnterpriseStore implements EnterpriseStore {
   private groups = new Map<string, UserGroup>([
     ["grp_standard", { id: "grp_standard", slug: "standard", name: "Standard", description: "Production release audience", releaseRing: "production", memberCount: 0, createdAt: nowIso(), updatedAt: nowIso() }],
     ["grp_beta", { id: "grp_beta", slug: "beta-testers", name: "Beta Testers", description: "Early-access testing audience", releaseRing: "beta", memberCount: 0, createdAt: nowIso(), updatedAt: nowIso() }],
+    ["grp_expert", { id: "grp_expert", slug: "expert", name: "Expert", description: "Access to assigned raw upstream models", releaseRing: "production", memberCount: 0, createdAt: nowIso(), updatedAt: nowIso() }],
   ]);
   private memberships = new Map<string, string[]>();
   private loginIps = new Map<string, Set<string>>();
@@ -1451,6 +1477,13 @@ export class MemoryEnterpriseStore implements EnterpriseStore {
   async updateUserGroup(id: string, patch: Partial<Pick<UserGroup, "name" | "description" | "releaseRing">>) { const item = this.groups.get(id); if (!item) return undefined; const updated = { ...item, ...patch, updatedAt: nowIso() }; this.groups.set(id, updated); return updated; }
   async setUserGroups(userId: string, groupIds: string[]) { this.memberships.set(userId, [...groupIds]); }
   async getUserGroupIds(userId: string) { return this.memberships.get(userId) ?? []; }
+  async getUserGroupSlugs(userId: string) {
+    const ids = this.memberships.get(userId) ?? [];
+    return ids.map((id) => this.groups.get(id)?.slug).filter((slug): slug is string => Boolean(slug));
+  }
+  async isUserInGroup(userId: string, slug: string) {
+    return (await this.getUserGroupSlugs(userId)).some((value) => value.toLowerCase() === slug.trim().toLowerCase());
+  }
   async assignDefaultGroup(userId: string) { this.memberships.set(userId, ["grp_standard"]); }
   async listBackupDestinations() { return [...this.backups.values()].map(({ credentials: _credentials, ...item }) => item); }
   async createBackupDestination(input: BackupDestinationInput) { if (!input.credentials) throw new Error("Backup credentials are required."); const item: BackupExecutionConfig = { id: `bkp_${randomUUID().slice(0, 12)}`, ...input, credentials: input.credentials, credentialsConfigured: true, lastScheduledAt: null, updatedAt: nowIso() }; this.backups.set(item.id, item); const { credentials: _credentials, ...view } = item; return view; }

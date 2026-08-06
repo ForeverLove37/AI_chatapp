@@ -11,6 +11,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.speech.RecognizerIntent
 import android.util.Base64
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -42,6 +43,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -50,6 +52,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -106,7 +110,9 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -121,6 +127,7 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -138,6 +145,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import kotlin.math.cos
@@ -169,6 +177,12 @@ fun ChatScreen(
     var editingMessageId by rememberSaveable { mutableStateOf<String?>(null) }
     var webSearchEnabled by rememberSaveable { mutableStateOf(false) }
     var pendingMessageConfirmation by remember { mutableStateOf<PendingMessageConfirmation?>(null) }
+
+    BackHandler(
+        enabled = drawerState.currentValue == DrawerValue.Open || drawerState.targetValue == DrawerValue.Open,
+    ) {
+        scope.launch { drawerState.close() }
+    }
 
     LaunchedEffect(state.selectedSession?.id) {
         editingMessageId = null
@@ -637,12 +651,39 @@ private fun ChatContent(
 ) {
     val copy = LocalAppCopy.current
     val listState = rememberLazyListState()
+    val density = LocalDensity.current
+    var imeResizeInProgress by remember { mutableStateOf(false) }
+    var imeAnchor by remember { mutableStateOf(ScrollAnchor(0, 0)) }
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
+
+    // Keep the last user-controlled anchor while the IME changes the available height.
+    // The anchor is restored after the resize frame, so keyboard appearance cannot move
+    // the conversation or steal manual scroll control.
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .distinctUntilChanged()
+            .collect { anchor ->
+                if (!imeResizeInProgress) imeAnchor = ScrollAnchor(anchor.first, anchor.second)
+            }
+    }
+    LaunchedEffect(imeVisible) {
+        imeResizeInProgress = true
+        val anchor = imeAnchor
+        withFrameNanos { }
+        if (state.messages.isNotEmpty()) {
+            listState.scrollToItem(
+                anchor.index.coerceIn(0, state.messages.lastIndex),
+                anchor.offset.coerceAtLeast(0),
+            )
+        }
+        imeResizeInProgress = false
+    }
     LaunchedEffect(
         state.messages.size,
         state.messages.lastOrNull()?.content?.length,
         state.messages.lastOrNull()?.reasoning?.length,
     ) {
-        if (state.messages.isNotEmpty()) {
+        if (state.messages.isNotEmpty() && !imeResizeInProgress) {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
             val followingTail = state.messages.size <= 1 || lastVisible == null || lastVisible >= state.messages.lastIndex - 1
             if (followingTail) listState.animateScrollToItem(state.messages.lastIndex)
@@ -733,10 +774,14 @@ private fun ChatContent(
             isEditing = editingMessageId != null,
             onCancelEdit = onCancelEdit,
             focusRequester = composerFocusRequester,
-            modifier = Modifier.navigationBarsPadding(),
+            modifier = Modifier
+                .imePadding()
+                .navigationBarsPadding(),
         )
     }
 }
+
+private data class ScrollAnchor(val index: Int, val offset: Int)
 
 @Composable
 private fun ChannelSelector(

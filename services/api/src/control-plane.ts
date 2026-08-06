@@ -134,6 +134,21 @@ export type ModelMapping = {
 
 export type ModelMappingTarget = Pick<ModelMapping, "provider" | "upstreamModel" | "priority" | "enabled">;
 
+export type ExpertModel = {
+  id: string;
+  rawModel: string;
+  label: string;
+  description: string;
+  provider: Provider;
+  priority: number;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ExpertModelInput = Pick<ExpertModel, "rawModel" | "label" | "description" | "provider" | "priority" | "enabled">;
+export type ExpertModelPatch = Partial<ExpertModelInput>;
+
 export type RequestMetric = {
   model: string;
   provider: Provider;
@@ -217,6 +232,12 @@ export interface ControlPlane {
   updateModelRoute(id: string, patch: ModelRoutePatch): Promise<ModelRoute | undefined>;
   listModelMappings(modelId?: string): Promise<ModelMapping[]>;
   replaceModelMappings(modelId: string, targets: ModelMappingTarget[]): Promise<ModelMapping[]>;
+  listExpertModels(includeDisabled?: boolean): Promise<ExpertModel[]>;
+  findExpertModel(rawModel: string): Promise<ExpertModel | undefined>;
+  createExpertModel(input: ExpertModelInput): Promise<ExpertModel>;
+  updateExpertModel(id: string, patch: ExpertModelPatch): Promise<ExpertModel | undefined>;
+  deleteExpertModel(id: string): Promise<boolean>;
+  selectExpertUpstreams(model: ExpertModel): Promise<SelectedUpstream[]>;
   getRoutingStrategy(): Promise<LoadBalanceStrategy>;
   setRoutingStrategy(strategy: LoadBalanceStrategy): Promise<LoadBalanceStrategy>;
   listRoutingPolicies(): Promise<RoutingPolicy[]>;
@@ -315,6 +336,20 @@ function mappingFromRow(row: Record<string, unknown>): ModelMapping {
   };
 }
 
+function expertModelFromRow(row: Record<string, unknown>): ExpertModel {
+  return {
+    id: String(row.id),
+    rawModel: String(row.raw_model),
+    label: String(row.label),
+    description: String(row.description ?? ""),
+    provider: String(row.provider),
+    priority: numberValue(row.priority),
+    enabled: Boolean(row.enabled),
+    createdAt: isoValue(row.created_at),
+    updatedAt: isoValue(row.updated_at),
+  };
+}
+
 function userFromRow(row: Record<string, unknown>): UserRecord {
   return {
     id: String(row.id),
@@ -377,6 +412,7 @@ export class MemoryControlPlane implements ControlPlane {
   private readonly providerKeys = new Map<string, StoredProviderKey>();
   private readonly models = new Map(modelCatalog.map(({ defaultMapping: _defaultMapping, ...model }) => [model.id, { ...model, enabled: true }]));
   private readonly modelMappings = new Map<string, ModelMapping>();
+  private readonly expertModels = new Map<string, ExpertModel>();
   private readonly policies = new Map<string, RoutingPolicy>();
   private readonly userUsage = new Map<string, UsageWindow>();
   private readonly feedbacks = new Map<string, StoredFeedback>();
@@ -424,6 +460,21 @@ export class MemoryControlPlane implements ControlPlane {
         modelId: model.id,
         provider: model.defaultMapping.provider,
         upstreamModel: model.defaultMapping.upstreamModel,
+        priority: 100,
+        enabled: true,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+    }
+    for (const model of [
+      { rawModel: "deepseek-coder", provider: "deepseek", label: "deepseek-coder", description: "Raw DeepSeek coding model" },
+      { rawModel: "gpt-4o", provider: "openai", label: "gpt-4o", description: "Raw OpenAI model" },
+      { rawModel: "gemini-2.5-pro", provider: "gemini", label: "gemini-2.5-pro", description: "Raw Gemini model" },
+    ]) {
+      const timestamp = nowIso();
+      this.expertModels.set(`expert_${model.rawModel}`, {
+        id: `expert_${model.rawModel}`,
+        ...model,
         priority: 100,
         enabled: true,
         createdAt: timestamp,
@@ -776,6 +827,89 @@ export class MemoryControlPlane implements ControlPlane {
     return mappings;
   }
 
+  async listExpertModels(includeDisabled = false) {
+    return [...this.expertModels.values()]
+      .filter((model) => includeDisabled || model.enabled)
+      .sort((left, right) => left.provider.localeCompare(right.provider) || left.priority - right.priority || left.rawModel.localeCompare(right.rawModel));
+  }
+
+  async findExpertModel(rawModel: string) {
+    const normalized = rawModel.trim().toLowerCase();
+    return [...this.expertModels.values()].find((model) => model.enabled && model.rawModel.toLowerCase() === normalized);
+  }
+
+  async createExpertModel(input: ExpertModelInput) {
+    const rawModel = input.rawModel.trim();
+    if (!rawModel) throw new Error("A raw upstream model name is required.");
+    if ([...this.expertModels.values()].some((model) => model.rawModel.toLowerCase() === rawModel.toLowerCase())) {
+      throw new Error("That raw upstream model is already in the Expert model list.");
+    }
+    const timestamp = nowIso();
+    const model: ExpertModel = {
+      id: `expert_${randomUUID().slice(0, 12)}`,
+      ...input,
+      rawModel,
+      label: input.label.trim() || rawModel,
+      description: input.description.trim(),
+      provider: input.provider.trim().toLowerCase(),
+      priority: input.priority,
+      enabled: input.enabled,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    this.expertModels.set(model.id, model);
+    return model;
+  }
+
+  async updateExpertModel(id: string, patch: ExpertModelPatch) {
+    const existing = this.expertModels.get(id);
+    if (!existing) return undefined;
+    const rawModel = patch.rawModel?.trim() ?? existing.rawModel;
+    if ([...this.expertModels.values()].some((model) => model.id !== id && model.rawModel.toLowerCase() === rawModel.toLowerCase())) {
+      throw new Error("That raw upstream model is already in the Expert model list.");
+    }
+    const updated: ExpertModel = {
+      ...existing,
+      ...patch,
+      rawModel,
+      label: patch.label === undefined ? existing.label : patch.label.trim() || rawModel,
+      description: patch.description === undefined ? existing.description : patch.description.trim(),
+      provider: patch.provider === undefined ? existing.provider : patch.provider.trim().toLowerCase(),
+      updatedAt: nowIso(),
+    };
+    this.expertModels.set(id, updated);
+    return updated;
+  }
+
+  async deleteExpertModel(id: string) {
+    return this.expertModels.delete(id);
+  }
+
+  async selectExpertUpstreams(model: ExpertModel) {
+    const keys = [...this.providerKeys.values()]
+      .filter((key) => key.provider === model.provider && key.status === "active")
+      .sort((left, right) => left.priority - right.priority || left.createdAt.localeCompare(right.createdAt));
+    const ordered: StoredProviderKey[] = [];
+    for (const priority of [...new Set(keys.map((key) => key.priority))]) {
+      const tier = keys.filter((key) => key.priority === priority);
+      if (this.strategy === "random") tier.sort(() => Math.random() - 0.5);
+      else if (tier.length > 1) {
+        const offset = (this.cursors[model.provider] ?? 0) % tier.length;
+        this.cursors[model.provider] = offset + 1;
+        tier.push(...tier.splice(0, offset));
+      }
+      ordered.push(...tier);
+    }
+    return ordered.map((key) => ({
+      provider: key.provider,
+      endpoint: key.endpoint,
+      secret: key.secret,
+      bypassAuth: key.bypassAuth,
+      keyId: key.id,
+      upstreamModel: model.rawModel,
+    }));
+  }
+
   async getRoutingStrategy() {
     return this.strategy;
   }
@@ -943,6 +1077,18 @@ export class PostgresControlPlane implements ControlPlane {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS model_mappings_route_idx ON model_mappings(model_id, enabled, priority, created_at);
+      CREATE TABLE IF NOT EXISTS expert_models (
+        id TEXT PRIMARY KEY,
+        raw_model TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        provider TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 100 CHECK (priority >= 0 AND priority <= 100000),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS expert_models_enabled_idx ON expert_models(enabled, provider, priority, raw_model);
       CREATE TABLE IF NOT EXISTS routing_settings (
         id SMALLINT PRIMARY KEY CHECK (id = 1),
         strategy TEXT NOT NULL CHECK (strategy IN ('round_robin', 'random')) DEFAULT 'round_robin',
@@ -1036,6 +1182,17 @@ export class PostgresControlPlane implements ControlPlane {
         [`map_${model.id}`, model.id, model.defaultMapping.provider, model.defaultMapping.upstreamModel],
       );
     }
+    for (const model of [
+      { rawModel: "deepseek-coder", provider: "deepseek", label: "deepseek-coder", description: "Raw DeepSeek coding model" },
+      { rawModel: "gpt-4o", provider: "openai", label: "gpt-4o", description: "Raw OpenAI model" },
+      { rawModel: "gemini-2.5-pro", provider: "gemini", label: "gemini-2.5-pro", description: "Raw Gemini model" },
+    ]) {
+      await this.pool.query(
+        `INSERT INTO expert_models (id, raw_model, label, description, provider, priority, enabled)
+         VALUES ($1, $2, $3, $4, $5, 100, TRUE) ON CONFLICT (raw_model) DO NOTHING`,
+        [`expert_${model.rawModel}`, model.rawModel, model.label, model.description, model.provider],
+      );
+    }
   }
 
   private encrypt(value: string) {
@@ -1105,6 +1262,95 @@ export class PostgresControlPlane implements ControlPlane {
     } finally {
       client.release();
     }
+  }
+
+  async listExpertModels(includeDisabled = false) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      `SELECT * FROM expert_models ${includeDisabled ? "" : "WHERE enabled = TRUE"}
+       ORDER BY provider, priority, raw_model`,
+    );
+    return result.rows.map(expertModelFromRow);
+  }
+
+  async findExpertModel(rawModel: string) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      "SELECT * FROM expert_models WHERE enabled = TRUE AND LOWER(raw_model) = LOWER($1) LIMIT 1",
+      [rawModel.trim()],
+    );
+    return result.rows[0] ? expertModelFromRow(result.rows[0]) : undefined;
+  }
+
+  async createExpertModel(input: ExpertModelInput) {
+    const rawModel = input.rawModel.trim();
+    if (!rawModel) throw new Error("A raw upstream model name is required.");
+    const result = await this.pool.query<Record<string, unknown>>(
+      `INSERT INTO expert_models (id, raw_model, label, description, provider, priority, enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [`expert_${randomUUID().slice(0, 12)}`, rawModel, input.label.trim() || rawModel, input.description.trim(), input.provider.trim().toLowerCase(), input.priority, input.enabled],
+    );
+    return expertModelFromRow(result.rows[0]);
+  }
+
+  async updateExpertModel(id: string, patch: ExpertModelPatch) {
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    const columns: Record<keyof ExpertModelPatch, string> = {
+      rawModel: "raw_model",
+      label: "label",
+      description: "description",
+      provider: "provider",
+      priority: "priority",
+      enabled: "enabled",
+    };
+    for (const [key, column] of Object.entries(columns) as Array<[keyof ExpertModelPatch, string]>) {
+      if (!(key in patch)) continue;
+      const value = patch[key];
+      values.push(typeof value === "string" ? (key === "provider" ? value.trim().toLowerCase() : value.trim()) : value);
+      fields.push(`${column} = $${values.length}`);
+    }
+    if (!fields.length) {
+      const existing = await this.pool.query<Record<string, unknown>>("SELECT * FROM expert_models WHERE id = $1", [id]);
+      return existing.rows[0] ? expertModelFromRow(existing.rows[0]) : undefined;
+    }
+    fields.push("updated_at = NOW()");
+    values.push(id);
+    const result = await this.pool.query<Record<string, unknown>>(
+      `UPDATE expert_models SET ${fields.join(", ")} WHERE id = $${values.length} RETURNING *`,
+      values,
+    );
+    return result.rows[0] ? expertModelFromRow(result.rows[0]) : undefined;
+  }
+
+  async deleteExpertModel(id: string) {
+    return (await this.pool.query("DELETE FROM expert_models WHERE id = $1", [id])).rowCount === 1;
+  }
+
+  async selectExpertUpstreams(model: ExpertModel) {
+    const result = await this.pool.query<Record<string, unknown>>(
+      "SELECT * FROM provider_keys WHERE provider = $1 AND status = 'active' ORDER BY priority ASC, created_at ASC",
+      [model.provider],
+    );
+    const strategy = await this.getRoutingStrategy();
+    const ordered: Record<string, unknown>[] = [];
+    for (const priority of [...new Set(result.rows.map((row) => numberValue(row.priority)))]) {
+      const tier = result.rows.filter((row) => numberValue(row.priority) === priority);
+      if (strategy === "random") tier.sort(() => Math.random() - 0.5);
+      else if (tier.length > 1) {
+        const count = await this.redis.incr(`routing:expert-cursor:${model.provider}:${priority}`);
+        const offset = (count - 1) % tier.length;
+        tier.push(...tier.splice(0, offset));
+      }
+      ordered.push(...tier);
+    }
+    if (ordered.length) await this.pool.query("UPDATE provider_keys SET last_used_at = NOW() WHERE id = ANY($1::text[])", [ordered.map((row) => String(row.id))]);
+    return ordered.map((row) => ({
+      provider: String(row.provider),
+      endpoint: String(row.endpoint),
+      secret: this.decrypt(String(row.encrypted_secret)),
+      bypassAuth: Boolean(row.bypass_auth),
+      keyId: String(row.id),
+      upstreamModel: model.rawModel,
+    }));
   }
 
   private async policyForRoute(route: ModelRoute) {
