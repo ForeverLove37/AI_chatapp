@@ -37,6 +37,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
   type UIEvent,
 } from "react";
 import ReactMarkdown from "react-markdown";
@@ -111,6 +112,33 @@ type ChatSession = {
   messages: ChatMessage[];
 };
 type Confirmation = { kind: "delete" | "branch"; title: string; body: string; confirm: string; run: () => void };
+
+/** A single delegated interaction layer keeps ripple geometry and timing consistent. */
+function useGlobalMicroInteractions() {
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      const source = event.target as HTMLElement | null;
+      const surface = source?.closest<HTMLElement>("button, a, [role='button'], .select-wrap");
+      if (!surface || surface.getAttribute("aria-disabled") === "true" || (surface instanceof HTMLButtonElement && surface.disabled)) return;
+      surface.classList.add("ripple-surface");
+      const rect = surface.getBoundingClientRect();
+      const ripple = document.createElement("span");
+      ripple.className = "material-ripple";
+      const size = Math.max(rect.width, rect.height) * 1.35;
+      ripple.style.width = `${size}px`;
+      ripple.style.height = `${size}px`;
+      ripple.style.left = `${event.clientX - rect.left - size / 2}px`;
+      ripple.style.top = `${event.clientY - rect.top - size / 2}px`;
+      surface.appendChild(ripple);
+      window.setTimeout(() => {
+        ripple.remove();
+        surface.classList.remove("ripple-surface");
+      }, 560);
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+  }, []);
+}
 
 const COPY = {
   en: {
@@ -271,6 +299,66 @@ function ChannelIcon({ channel }: { channel: Channel }) {
     : <span className="channel-initial" aria-hidden="true">{channel.displayName.slice(0, 1).toUpperCase()}</span>;
 }
 
+function AnimatedDropdown({
+  value,
+  options,
+  disabled,
+  ariaLabel,
+  renderValue,
+  onChange,
+}: {
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  disabled?: boolean;
+  ariaLabel: string;
+  renderValue?: (option: { value: string; label: string }) => ReactNode;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const selectedOption = options.find((option) => option.value === value) ?? options[0];
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  return (
+    <div className={`animated-dropdown ${open ? "dropdown-open" : ""}`} ref={root}>
+      <button
+        type="button"
+        className="dropdown-trigger"
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        disabled={disabled || options.length === 0}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span>{selectedOption && renderValue ? renderValue(selectedOption) : selectedOption?.label}</span>
+        <ChevronDown size={16} aria-hidden="true" />
+      </button>
+      {open && (
+        <div className="dropdown-menu" role="listbox" aria-label={ariaLabel}>
+          {options.map((option) => (
+            <button
+              type="button"
+              role="option"
+              aria-selected={option.value === value}
+              className={option.value === value ? "dropdown-option option-selected" : "dropdown-option"}
+              key={option.value}
+              onClick={() => { onChange(option.value); setOpen(false); }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Markdown({ value }: { value: string }) {
   return (
     <div className="markdown">
@@ -307,6 +395,7 @@ function localizeProfileError(message: string, copy: (typeof COPY)[Language]) {
 }
 
 export default function WebChat() {
+  useGlobalMicroInteractions();
   const [token, setToken] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -320,6 +409,7 @@ export default function WebChat() {
   const [editingId, setEditingId] = useState("");
   const [webSearch, setWebSearch] = useState(false);
   const [expertMode, setExpertMode] = useState(false);
+  const [expertModelDraft, setExpertModelDraft] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [error, setError] = useState("");
@@ -367,6 +457,15 @@ export default function WebChat() {
   const channel = config?.channels.find((item) => item.id === visibleChannelId)
     ?? config?.channels[0];
   const model = channel?.models.find((item) => item.id === visibleModelId) ?? channel?.models[0];
+  const expertActive = Boolean(expertMode && profile?.permissions?.expertMode);
+  const visibleModel = model ?? (expertActive && channel && visibleModelId
+    ? { id: visibleModelId, label: visibleModelId, description: "", expert: true, provider: channel.id }
+    : undefined);
+
+  useEffect(() => {
+    if (expertActive && visibleModelId) setExpertModelDraft(visibleModelId);
+    else if (!expertActive) setExpertModelDraft("");
+  }, [expertActive, visibleModelId]);
 
   const loadSessions = useCallback(async (currentToken: string, quiet = false) => {
     try {
@@ -705,10 +804,15 @@ export default function WebChat() {
     if (!nextChannel) return;
     const target = selected ?? await createSession(nextChannel);
     if (!target) return;
+    const requestedModel = modelId?.trim();
+    const nextModelId = requestedModel && (expertActive || nextChannel.models.some((item) => item.id === requestedModel))
+      ? requestedModel
+      : nextChannel.models[0]?.id;
+    if (!nextModelId) return;
     const next = {
       ...target,
       channelId,
-      modelId: modelId && nextChannel.models.some((item) => item.id === modelId) ? modelId : nextChannel.models[0].id,
+      modelId: nextModelId,
       updatedAt: Date.now(),
     };
     pendingSelections.current.set(next.id, { channelId: next.channelId, modelId: next.modelId, updatedAt: next.updatedAt });
@@ -747,7 +851,8 @@ export default function WebChat() {
         },
         body: JSON.stringify({
           model: base.modelId,
-          expert_mode: Boolean(expertMode && profile?.permissions?.expertMode),
+          channel: base.channelId,
+          expert_mode: expertActive,
           stream: true,
           messages: [
             ...(base.systemPrompt ? [{ role: "system", content: base.systemPrompt }] : []),
@@ -1127,20 +1232,48 @@ export default function WebChat() {
               <span>{copy.channel}</span>
               <div className="select-wrap">
                 {channel && <ChannelIcon channel={channel} />}
-                <select disabled={streaming} value={channel?.id ?? ""} onChange={(event) => void updateSelection(event.target.value)}>
-                  {(config?.channels ?? []).map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>)}
-                </select>
-                <ChevronDown size={16} />
+                <AnimatedDropdown
+                  value={channel?.id ?? ""}
+                  options={(config?.channels ?? []).map((item) => ({ value: item.id, label: item.displayName }))}
+                  disabled={streaming}
+                  ariaLabel={copy.channel}
+                  onChange={(value) => void updateSelection(value)}
+                />
               </div>
             </label>
             <label>
               <span>{copy.model}</span>
               <div className="select-wrap model-select">
                 <Sparkles size={17} />
-                <select disabled={streaming} value={model?.id ?? ""} onChange={(event) => channel && void updateSelection(channel.id, event.target.value)}>
-                  {(channel?.models ?? []).map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-                </select>
-                <ChevronDown size={16} />
+                {expertActive ? (
+                  <>
+                    <input
+                      role="combobox"
+                      aria-label={copy.model}
+                      aria-autocomplete="list"
+                      list="expert-model-options"
+                      disabled={streaming}
+                      value={expertModelDraft || visibleModel?.id || ""}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setExpertModelDraft(value);
+                        if (channel && value.trim()) void updateSelection(channel.id, value);
+                      }}
+                      placeholder="model-name"
+                    />
+                    <datalist id="expert-model-options">
+                      {(channel?.models ?? []).filter((item) => item.expert).map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                    </datalist>
+                  </>
+                ) : (
+                  <AnimatedDropdown
+                    value={visibleModel?.id ?? ""}
+                    options={(channel?.models ?? []).map((item) => ({ value: item.id, label: item.label }))}
+                    disabled={streaming}
+                    ariaLabel={copy.model}
+                    onChange={(value) => channel && void updateSelection(channel.id, value)}
+                  />
+                )}
               </div>
             </label>
           </div>

@@ -238,6 +238,7 @@ export interface ControlPlane {
   updateExpertModel(id: string, patch: ExpertModelPatch): Promise<ExpertModel | undefined>;
   deleteExpertModel(id: string): Promise<boolean>;
   selectExpertUpstreams(model: ExpertModel): Promise<SelectedUpstream[]>;
+  selectExpertUpstreamsForChannel(channel: string, rawModel: string): Promise<SelectedUpstream[]>;
   getRoutingStrategy(): Promise<LoadBalanceStrategy>;
   setRoutingStrategy(strategy: LoadBalanceStrategy): Promise<LoadBalanceStrategy>;
   listRoutingPolicies(): Promise<RoutingPolicy[]>;
@@ -886,16 +887,24 @@ export class MemoryControlPlane implements ControlPlane {
   }
 
   async selectExpertUpstreams(model: ExpertModel) {
+    return this.selectExpertUpstreamsForChannel(model.provider, model.rawModel);
+  }
+
+  async selectExpertUpstreamsForChannel(channel: string, rawModel: string) {
+    const normalizedChannel = channel.trim().toLowerCase();
+    const provider = normalizedChannel === "chatgpt" ? "openai" : normalizedChannel === "openai" ? "openai" : normalizedChannel;
+    const policy = this.policies.get(policyKey("channel", normalizedChannel));
     const keys = [...this.providerKeys.values()]
-      .filter((key) => key.provider === model.provider && key.status === "active")
+      .filter((key) => key.provider === provider && key.status === "active")
+      .filter((key) => !policy || policy.keyIds.includes(key.id))
       .sort((left, right) => left.priority - right.priority || left.createdAt.localeCompare(right.createdAt));
     const ordered: StoredProviderKey[] = [];
     for (const priority of [...new Set(keys.map((key) => key.priority))]) {
       const tier = keys.filter((key) => key.priority === priority);
       if (this.strategy === "random") tier.sort(() => Math.random() - 0.5);
       else if (tier.length > 1) {
-        const offset = (this.cursors[model.provider] ?? 0) % tier.length;
-        this.cursors[model.provider] = offset + 1;
+        const offset = (this.cursors[provider] ?? 0) % tier.length;
+        this.cursors[provider] = offset + 1;
         tier.push(...tier.splice(0, offset));
       }
       ordered.push(...tier);
@@ -906,7 +915,7 @@ export class MemoryControlPlane implements ControlPlane {
       secret: key.secret,
       bypassAuth: key.bypassAuth,
       keyId: key.id,
-      upstreamModel: model.rawModel,
+      upstreamModel: rawModel,
     }));
   }
 
@@ -1326,17 +1335,31 @@ export class PostgresControlPlane implements ControlPlane {
   }
 
   async selectExpertUpstreams(model: ExpertModel) {
+    return this.selectExpertUpstreamsForChannel(model.provider, model.rawModel);
+  }
+
+  async selectExpertUpstreamsForChannel(channel: string, rawModel: string) {
+    const normalizedChannel = channel.trim().toLowerCase();
+    const provider = normalizedChannel === "chatgpt" ? "openai" : normalizedChannel === "openai" ? "openai" : normalizedChannel;
+    const policyResult = await this.pool.query<Record<string, unknown>>(
+      "SELECT * FROM routing_policies WHERE scope = 'channel' AND scope_id = $1 LIMIT 1",
+      [normalizedChannel],
+    );
+    const policy = policyResult.rows[0]
+      ? { keyIds: Array.isArray(policyResult.rows[0].key_ids) ? policyResult.rows[0].key_ids.map(String) : [] }
+      : undefined;
     const result = await this.pool.query<Record<string, unknown>>(
       "SELECT * FROM provider_keys WHERE provider = $1 AND status = 'active' ORDER BY priority ASC, created_at ASC",
-      [model.provider],
+      [provider],
     );
+    const filteredRows = policy ? result.rows.filter((row) => policy.keyIds.includes(String(row.id))) : result.rows;
     const strategy = await this.getRoutingStrategy();
     const ordered: Record<string, unknown>[] = [];
-    for (const priority of [...new Set(result.rows.map((row) => numberValue(row.priority)))]) {
-      const tier = result.rows.filter((row) => numberValue(row.priority) === priority);
+    for (const priority of [...new Set(filteredRows.map((row) => numberValue(row.priority)))]) {
+      const tier = filteredRows.filter((row) => numberValue(row.priority) === priority);
       if (strategy === "random") tier.sort(() => Math.random() - 0.5);
       else if (tier.length > 1) {
-        const count = await this.redis.incr(`routing:expert-cursor:${model.provider}:${priority}`);
+        const count = await this.redis.incr(`routing:expert-cursor:${provider}:${priority}`);
         const offset = (count - 1) % tier.length;
         tier.push(...tier.splice(0, offset));
       }
@@ -1349,7 +1372,7 @@ export class PostgresControlPlane implements ControlPlane {
       secret: this.decrypt(String(row.encrypted_secret)),
       bypassAuth: Boolean(row.bypass_auth),
       keyId: String(row.id),
-      upstreamModel: model.rawModel,
+      upstreamModel: rawModel,
     }));
   }
 

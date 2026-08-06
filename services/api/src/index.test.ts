@@ -622,8 +622,9 @@ describe("Adaptive Chat API", () => {
     const enterprise = new MemoryEnterpriseStore();
     const upstream = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      expect(body.model).toBe("deepseek-coder");
+      expect(["deepseek-coder", "gpt-5.6-experimental"]).toContain(body.model);
       expect(body).not.toHaveProperty("expert_mode");
+      expect(body).not.toHaveProperty("channel");
       return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "expert response" } }] }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -668,7 +669,13 @@ describe("Adaptive Chat API", () => {
     });
     expect(completion.status).toBe(200);
     expect((await completion.json()).choices[0].message.content).toBe("expert response");
-    expect(upstream).toHaveBeenCalledOnce();
+    const arbitrary = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ model: "gpt-5.6-experimental", channel: "deepseek", expert_mode: true, messages: [{ role: "user", content: "try new model" }] }),
+    });
+    expect(arbitrary.status).toBe(200);
+    expect(upstream).toHaveBeenCalledTimes(2);
   });
 
   it("tracks Build, Publish, and Archive as separate persisted stages", async () => {

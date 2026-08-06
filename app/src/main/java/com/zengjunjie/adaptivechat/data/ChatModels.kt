@@ -27,7 +27,12 @@ data class ChatModel(
         fun fromWireName(value: String, fallback: ProviderMode): ChatModel =
             entries.firstOrNull { it.wireName == value && it.channelWireName == fallback.wireName }
                 ?: fallback.models.firstOrNull { it.wireName == value }
-                ?: ChatModel(value, fallback.wireName, value.substringAfterLast('-').replaceFirstChar(Char::uppercase))
+                ?: ChatModel(
+                    wireName = value,
+                    channelWireName = fallback.wireName,
+                    displayName = value,
+                    isExpertRaw = true,
+                )
     }
 }
 

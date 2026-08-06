@@ -107,6 +107,7 @@ class ChatApi(baseUrl: String) {
     ): Flow<StreamChunk> = callbackFlow {
         val payload = JSONObject()
             .put("model", model.wireName)
+            .put("channel", model.channelWireName)
             .put("expert_mode", model.isExpertRaw)
             .put("stream", true)
             .put(

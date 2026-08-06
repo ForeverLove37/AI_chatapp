@@ -289,6 +289,7 @@ fun ChatScreen(
                                 provider = state.provider,
                                 model = state.model,
                                 channels = state.channels,
+                                expertMode = state.expertModeEnabled,
                                 onModelSelected = viewModel::selectModel,
                                 onProviderSelected = viewModel::selectChannel,
                             )
@@ -600,6 +601,7 @@ private fun HeaderSelectors(
     provider: ProviderMode,
     model: ChatModel,
     channels: List<ProviderMode>,
+    expertMode: Boolean,
     onProviderSelected: (ProviderMode) -> Unit,
     onModelSelected: (ChatModel) -> Unit,
 ) {
@@ -618,6 +620,7 @@ private fun HeaderSelectors(
         ModelSelector(
             provider = provider,
             selected = model,
+            expertMode = expertMode,
             onSelected = onModelSelected,
             modifier = Modifier.weight(1f),
         )
@@ -844,11 +847,17 @@ private fun ChannelSelector(
 private fun ModelSelector(
     provider: ProviderMode,
     selected: ChatModel,
+    expertMode: Boolean,
     onSelected: (ChatModel) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val copy = LocalAppCopy.current
     var expanded by remember { mutableStateOf(false) }
+    var query by remember(selected.wireName, expertMode) { mutableStateOf(selected.wireName) }
+    val expertCombobox = expertMode || selected.isExpertRaw
+    val suggestions = provider.models.filter { model ->
+        model.isExpertRaw && (query.isBlank() || model.wireName.contains(query.trim(), ignoreCase = true) || model.displayName.contains(query.trim(), ignoreCase = true))
+    }
     Box(modifier = modifier) {
         Surface(
             shape = selectorShape(provider),
@@ -858,7 +867,29 @@ private fun ModelSelector(
                 .fillMaxWidth()
                 .heightIn(min = 44.dp),
         ) {
-            TextButton(
+            if (expertCombobox) {
+                TextField(
+                    value = query,
+                    onValueChange = { value ->
+                        query = value
+                        if (value.trim().isNotBlank()) onSelected(ChatModel(value.trim(), provider.wireName, value.trim(), isExpertRaw = true))
+                        expanded = true
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    leadingIcon = { ChannelIcon(provider, Modifier.size(18.dp)) },
+                    trailingIcon = { Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = copy.selectModel, modifier = Modifier.size(17.dp)) },
+                    placeholder = { Text(copy.selectModel) },
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        disabledContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    ),
+                )
+            } else TextButton(
                 onClick = { expanded = true },
                 modifier = Modifier.fillMaxWidth(),
                 contentPadding = PaddingValues(horizontal = 8.dp),
@@ -870,11 +901,11 @@ private fun ModelSelector(
             }
         }
         DropdownMenu(
-            expanded = expanded,
+            expanded = expanded && (if (expertCombobox) suggestions.isNotEmpty() else true),
             onDismissRequest = { expanded = false },
             modifier = Modifier.widthIn(min = 184.dp, max = 264.dp),
         ) {
-            provider.models.forEach { model ->
+            (if (expertCombobox) suggestions else provider.models).forEach { model ->
                 DropdownMenuItem(
                     text = {
                         Text(
@@ -888,6 +919,7 @@ private fun ModelSelector(
                     },
                     contentPadding = PaddingValues(horizontal = 14.dp),
                     onClick = {
+                        query = model.wireName
                         onSelected(model)
                         expanded = false
                     },

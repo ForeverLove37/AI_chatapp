@@ -56,6 +56,9 @@ import {
 const contentSchema = z.union([z.string(), z.array(z.unknown()), z.null()]).optional();
 const chatRequestSchema = z.object({
   model: z.string().trim().min(1).max(120).default("chatgpt-lite"),
+  // Optional channel context is used only for Expert raw-model routing. Existing
+  // OpenAI-compatible callers may omit it without changing their payload contract.
+  channel: z.string().trim().min(1).max(120).optional(),
   expert_mode: z.boolean().default(false),
   stream: z.boolean().default(false),
   messages: z.array(
@@ -532,7 +535,7 @@ function demoAnswer(request: ChatRequest, route: ModelRoute): { reasoning?: stri
 
 async function fetchUpstream(upstreams: SelectedUpstream[], body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
   let lastError: unknown;
-  const { expert_mode: _expertMode, ...forwardBody } = body;
+  const { expert_mode: _expertMode, channel: _channel, ...forwardBody } = body;
   for (const upstream of upstreams) {
     try {
       const headers: Record<string, string> = {
@@ -610,7 +613,7 @@ async function fetchFinalUpstream(
   signal?: AbortSignal,
 ) {
   const forward = async (body: ChatRequest) => {
-    const { expert_mode: _expertMode, ...openAiBody } = body;
+    const { expert_mode: _expertMode, channel: _channel, ...openAiBody } = body;
     let lastResponse: Response | undefined;
     let lastError: unknown;
     for (const upstream of upstreams) {
@@ -886,13 +889,14 @@ export function createApp(options: CreateAppOptions = {}) {
       expert: true,
       provider: model.provider,
     }));
-    const expertChannels = standard.channels.map((channel) => ({
-      ...channel,
-      models: [
-        ...channel.models,
-        ...rawModels.filter((model) => channelMatchesProvider(channel.id, model.provider)),
-      ],
-    }));
+    // Expert mode is a distinct catalog: standard aliases are intentionally
+    // removed so the client can expose an editable raw-model combobox.
+    const expertChannels = standard.channels
+      .map((channel) => ({
+        ...channel,
+        models: rawModels.filter((model) => channelMatchesProvider(channel.id, model.provider)),
+      }))
+      .filter((channel) => channel.models.length > 0);
     return {
       ...standard,
       channels: expertChannels,
@@ -1314,6 +1318,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
     let request = parsed.data;
     let expertModel: ExpertModel | undefined;
+    let expertChannel: string | undefined;
     let route = await controlPlane.findModelRoute(request.model);
     if (request.expert_mode) {
       if (!policy.userId || !await enterprise.isUserInGroup(policy.userId, "expert")) {
@@ -1321,11 +1326,28 @@ export function createApp(options: CreateAppOptions = {}) {
       }
       expertModel = await controlPlane.findExpertModel(request.model);
       if (expertModel) {
+        expertChannel = request.channel?.trim().toLowerCase() || expertModel.provider;
         route = {
           id: expertModel.rawModel,
           label: expertModel.label,
           description: expertModel.description,
           uiMode: expertModel.provider === "openai" ? "chatgpt" : expertModel.provider,
+          aliases: [],
+          enabled: true,
+        };
+      } else {
+        // Expert users may submit a model that is absent from model_mappings and
+        // the administered Expert list. The selected channel determines the key
+        // pool; the raw model string is forwarded unchanged to that upstream.
+        expertChannel = request.channel?.trim().toLowerCase();
+        if (!expertChannel) {
+          return context.json({ error: { code: "expert_channel_required", message: "A channel is required when using an unlisted Expert model." } }, 400);
+        }
+        route = {
+          id: request.model,
+          label: request.model,
+          description: "Expert raw upstream model",
+          uiMode: expertChannel,
           aliases: [],
           enabled: true,
         };
@@ -1351,8 +1373,8 @@ export function createApp(options: CreateAppOptions = {}) {
     let upstreams: SelectedUpstream[] = [];
     let prepared: PreparedSearchRequest = { primary: request };
     if (!isDemo) {
-      upstreams = expertModel
-        ? await controlPlane.selectExpertUpstreams(expertModel)
+      upstreams = request.expert_mode
+        ? await controlPlane.selectExpertUpstreamsForChannel(expertChannel ?? route.uiMode, request.model)
         : await resolveUpstreams(route);
       metricProvider = upstreams[0]?.provider ?? metricProvider;
       if (!upstreams.length) {
