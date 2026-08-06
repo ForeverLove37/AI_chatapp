@@ -16,4 +16,12 @@ class ChatApiStreamParserTest {
         val chunk = parseStreamDelta("""{"choices":[{"delta":{"content":null,"reasoning":"step"}}]}""")
         assertEquals(StreamChunk(reasoning = "step"), chunk)
     }
+
+    @Test
+    fun keepsGeneratedModelMetadataWithoutTextDelta() {
+        val chunk = parseStreamDelta(
+            """{"generated_by_model":"deepseek-chat-v3","choices":[{"delta":{}}]}""",
+        )
+        assertEquals(StreamChunk(generatedByModel = "deepseek-chat-v3"), chunk)
+    }
 }

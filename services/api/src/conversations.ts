@@ -16,6 +16,7 @@ export type ConversationMessage = {
   attachments: ConversationAttachment[];
   reasoning: string;
   modelId: string;
+  generatedByModel: string;
   errorText: string;
   isStreaming: boolean;
   parentMessageId: string | null;
@@ -52,6 +53,7 @@ export interface ConversationStore {
   upsertSnapshot(userId: string, snapshot: ConversationSnapshotInput): Promise<ConversationSession>;
   deleteSession(userId: string, sessionId: string): Promise<boolean>;
   deleteMessage(userId: string, messageId: string): Promise<MessageDeletion | undefined>;
+  recordGeneratedModel(userId: string, sessionId: string, messageId: string, generatedByModel: string): Promise<boolean>;
 }
 
 const now = () => Date.now();
@@ -96,7 +98,14 @@ export class MemoryConversationStore implements ConversationStore {
     if (owner && owner !== userId) throw new Error("The conversation id is already in use.");
     const existing = this.sessions.get(snapshot.id);
     if (existing && snapshot.updatedAt < existing.updatedAt) return structuredClone(existing);
-    const messages = inferParents(snapshot.messages).map((message) => ({ ...message, sessionId: snapshot.id }));
+    const messages = inferParents(snapshot.messages).map((message) => {
+      const previous = existing?.messages.find((candidate) => candidate.id === message.id);
+      return {
+        ...message,
+        generatedByModel: message.generatedByModel || previous?.generatedByModel || "",
+        sessionId: snapshot.id,
+      };
+    });
     for (const message of messages) {
       const collision = [...this.sessions.values()].some((session) =>
         session.id !== snapshot.id && session.messages.some((candidate) => candidate.id === message.id));
@@ -133,6 +142,15 @@ export class MemoryConversationStore implements ConversationStore {
     session.updatedAt = Math.max(now(), session.updatedAt + 1);
     return { sessionId: session.id, deletedIds: [...deleted], updatedAt: session.updatedAt };
   }
+
+  async recordGeneratedModel(userId: string, sessionId: string, messageId: string, generatedByModel: string) {
+    const session = this.sessions.get(sessionId);
+    if (!session || this.owners.get(sessionId) !== userId) return false;
+    const message = session.messages.find((candidate) => candidate.id === messageId);
+    if (!message || message.role !== "assistant") return false;
+    message.generatedByModel = generatedByModel.trim();
+    return true;
+  }
 }
 
 function milliseconds(value: unknown) {
@@ -148,6 +166,7 @@ function messageFromRow(row: Record<string, unknown>): ConversationMessage {
     attachments: Array.isArray(row.attachments) ? row.attachments as ConversationAttachment[] : [],
     reasoning: String(row.reasoning ?? ""),
     modelId: String(row.model_id ?? ""),
+    generatedByModel: String(row.generated_by_model ?? ""),
     errorText: String(row.error_text ?? ""),
     isStreaming: Boolean(row.is_streaming),
     parentMessageId: row.parent_message_id ? String(row.parent_message_id) : null,
@@ -207,6 +226,7 @@ export class PostgresConversationStore implements ConversationStore {
         attachments JSONB NOT NULL DEFAULT '[]'::JSONB CHECK (jsonb_typeof(attachments) = 'array'),
         reasoning TEXT NOT NULL DEFAULT '',
         model_id TEXT NOT NULL DEFAULT '',
+        generated_by_model TEXT NOT NULL DEFAULT '',
         error_text TEXT NOT NULL DEFAULT '',
         is_streaming BOOLEAN NOT NULL DEFAULT FALSE,
         parent_message_id TEXT REFERENCES chat_messages(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
@@ -218,6 +238,7 @@ export class PostgresConversationStore implements ConversationStore {
       CREATE INDEX IF NOT EXISTS chat_messages_parent_idx
         ON chat_messages(parent_message_id) WHERE parent_message_id IS NOT NULL;
       ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS is_streaming BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS generated_by_model TEXT NOT NULL DEFAULT '';
     `);
   }
 
@@ -294,16 +315,17 @@ export class PostgresConversationStore implements ConversationStore {
       for (const message of messages) {
         const result = await client.query(
           `INSERT INTO chat_messages
-            (id, session_id, role, content, attachments, reasoning, model_id, error_text,
-             is_streaming, parent_message_id, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, NULL,
-             to_timestamp($10 / 1000.0), to_timestamp($11 / 1000.0))
+          (id, session_id, role, content, attachments, reasoning, model_id, error_text,
+             generated_by_model, is_streaming, parent_message_id, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, NULL,
+             to_timestamp($11 / 1000.0), to_timestamp($12 / 1000.0))
            ON CONFLICT (id) DO UPDATE SET
              role = EXCLUDED.role,
              content = EXCLUDED.content,
              attachments = EXCLUDED.attachments,
              reasoning = EXCLUDED.reasoning,
              model_id = EXCLUDED.model_id,
+             generated_by_model = CASE WHEN chat_messages.generated_by_model <> '' THEN chat_messages.generated_by_model ELSE EXCLUDED.generated_by_model END,
              error_text = EXCLUDED.error_text,
              is_streaming = EXCLUDED.is_streaming,
              updated_at = EXCLUDED.updated_at
@@ -318,6 +340,7 @@ export class PostgresConversationStore implements ConversationStore {
             message.reasoning,
             message.modelId,
             message.errorText,
+            message.generatedByModel,
             message.isStreaming,
             message.createdAt,
             message.updatedAt,
@@ -414,6 +437,21 @@ export class PostgresConversationStore implements ConversationStore {
     } finally {
       client.release();
     }
+  }
+
+  async recordGeneratedModel(userId: string, sessionId: string, messageId: string, generatedByModel: string) {
+    const result = await this.pool.query(
+      `UPDATE chat_messages
+       SET generated_by_model = $1
+       FROM chat_sessions
+       WHERE chat_messages.id = $2
+         AND chat_messages.session_id = $3
+         AND chat_messages.session_id = chat_sessions.id
+         AND chat_sessions.user_id = $4
+         AND chat_messages.role = 'assistant'`,
+      [generatedByModel.trim(), messageId, sessionId, userId],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 }
 

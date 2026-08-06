@@ -625,6 +625,8 @@ describe("Adaptive Chat API", () => {
       expect(["deepseek-coder", "gpt-5.6-experimental"]).toContain(body.model);
       expect(body).not.toHaveProperty("expert_mode");
       expect(body).not.toHaveProperty("channel");
+      expect(body).not.toHaveProperty("session_id");
+      expect(body).not.toHaveProperty("message_id");
       return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "expert response" } }] }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -662,13 +664,70 @@ describe("Adaptive Chat API", () => {
     const config = await app.request("/v1/config?expert_mode=true", { headers: { Authorization: `Bearer ${token}` } });
     expect(config.status).toBe(200);
     expect((await config.json()).channels.flatMap((channel: { models: Array<{ id: string }> }) => channel.models).some((model: { id: string }) => model.id === "deepseek-coder")).toBe(true);
+    const sessionId = "expert-attribution-session";
+    const assistantMessageId = "expert-attribution-assistant";
+    const sessionHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+    const sessionCreatedAt = Date.now();
+    const savedSession = await app.request("/v1/sessions", {
+      method: "POST",
+      headers: sessionHeaders,
+      body: JSON.stringify({
+        id: sessionId,
+        title: "Model attribution",
+        channelId: "deepseek",
+        modelId: "deepseek-coder",
+        systemPrompt: "",
+        createdAt: sessionCreatedAt,
+        updatedAt: sessionCreatedAt,
+        messages: [
+          {
+            id: "expert-attribution-user",
+            role: "user",
+            content: "write code",
+            attachments: [],
+            reasoning: "",
+            modelId: "",
+            errorText: "",
+            isStreaming: false,
+            parentMessageId: null,
+            createdAt: sessionCreatedAt,
+            updatedAt: sessionCreatedAt,
+          },
+          {
+            id: assistantMessageId,
+            role: "assistant",
+            content: "",
+            attachments: [],
+            reasoning: "",
+            modelId: "deepseek-coder",
+            errorText: "",
+            isStreaming: true,
+            parentMessageId: "expert-attribution-user",
+            createdAt: sessionCreatedAt + 1,
+            updatedAt: sessionCreatedAt + 1,
+          },
+        ],
+      }),
+    });
+    expect(savedSession.status).toBe(201);
     const completion = await app.request("/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ model: "deepseek-coder", expert_mode: true, messages: [{ role: "user", content: "write code" }] }),
+      headers: sessionHeaders,
+      body: JSON.stringify({
+        model: "deepseek-coder",
+        expert_mode: true,
+        session_id: sessionId,
+        message_id: assistantMessageId,
+        messages: [{ role: "user", content: "write code" }],
+      }),
     });
     expect(completion.status).toBe(200);
-    expect((await completion.json()).choices[0].message.content).toBe("expert response");
+    const completionBody = await completion.json();
+    expect(completionBody.choices[0].message.content).toBe("expert response");
+    expect(completionBody.generated_by_model).toBe("deepseek-coder");
+    const persistedSession = await app.request(`/v1/sessions/${sessionId}`, { headers: sessionHeaders });
+    expect((await persistedSession.json()).data.messages.find((message: { id: string }) => message.id === assistantMessageId))
+      .toMatchObject({ generatedByModel: "deepseek-coder" });
     const arbitrary = await app.request("/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },

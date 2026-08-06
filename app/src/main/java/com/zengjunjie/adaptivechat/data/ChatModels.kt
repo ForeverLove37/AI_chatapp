@@ -132,6 +132,8 @@ data class ChatMessage(
     val errorText: String,
     val parentMessageId: String = "",
     val updatedAt: Long = createdAt,
+    /** Exact upstream model identifier returned by the gateway for this response. */
+    val generatedByModel: String = "",
 )
 
 /**

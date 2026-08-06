@@ -742,7 +742,6 @@ private fun ChatContent(
                     MessageItem(
                         message = message,
                         provider = state.provider,
-                        modelLabel = messageModelLabel(message, state.channels, state.provider, copy),
                         profileDisplayName = state.account.displayName,
                         profileEmail = state.account.email.orEmpty(),
                         profileAvatarUrl = state.account.avatarUrl,
@@ -980,7 +979,6 @@ private enum class MessageAction {
 private fun MessageItem(
     message: ChatMessage,
     provider: ProviderMode,
-    modelLabel: String,
     profileDisplayName: String,
     profileEmail: String,
     profileAvatarUrl: String,
@@ -1098,14 +1096,6 @@ private fun MessageItem(
                         }
                         Spacer(Modifier.height(7.dp))
                     }
-                    if (!fromUser) {
-                        Text(
-                            text = modelLabel,
-                            color = MaterialTheme.colorScheme.primary,
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        Spacer(Modifier.height(7.dp))
-                    }
                     if (message.attachments.isNotEmpty()) {
                         AttachmentSummary(message.attachments)
                         if (message.content.isNotBlank()) Spacer(Modifier.height(8.dp))
@@ -1143,6 +1133,17 @@ private fun MessageItem(
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
+                    }
+                    val generatedByModel = message.generatedByModel.ifBlank {
+                        message.modelId.takeIf { !message.isStreaming }.orEmpty()
+                    }
+                    if (!fromUser && generatedByModel.isNotBlank()) {
+                        Spacer(Modifier.height(7.dp))
+                        Text(
+                            text = generatedByModel,
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
                     }
                     Spacer(Modifier.height(7.dp))
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
@@ -1232,22 +1233,6 @@ private fun messageActionLabel(action: MessageAction, copy: AppCopy): String = w
     MessageAction.BRANCH -> copy.branch
     MessageAction.LISTEN -> copy.listen
     MessageAction.DELETE -> copy.delete
-}
-
-private fun messageModelLabel(
-    message: ChatMessage,
-    channels: List<ProviderMode>,
-    activeProvider: ProviderMode,
-    copy: AppCopy,
-): String {
-    val storedModel = message.modelId.ifBlank { activeProvider.defaultModel.wireName }
-    val provider = channels.firstOrNull { channel -> channel.models.any { it.wireName == storedModel } }
-        ?: channels.firstOrNull { storedModel.startsWith("${it.wireName}-") }
-        ?: activeProvider
-    val model = provider.models.firstOrNull { it.wireName == storedModel }
-    val modelName = model?.let(copy::modelName)
-        ?: storedModel.substringAfterLast('-').replaceFirstChar { character -> character.titlecase() }
-    return "${copy.providerName(provider)}-$modelName"
 }
 
 private fun bubbleShape(fromUser: Boolean, provider: ProviderMode) = when {

@@ -42,6 +42,7 @@ data class ChatMessageEntity(
     @ColumnInfo(defaultValue = "''") val errorText: String = "",
     @ColumnInfo(defaultValue = "''") val parentMessageId: String = "",
     @ColumnInfo(defaultValue = "0") val updatedAt: Long = createdAt,
+    @ColumnInfo(defaultValue = "''") val generatedByModel: String = "",
 )
 
 @Dao
@@ -85,12 +86,13 @@ interface ChatDao {
     @Query("UPDATE chat_sessions SET updatedAt = :updatedAt WHERE id = :sessionId")
     suspend fun touchSession(sessionId: String, updatedAt: Long)
 
-    @Query("UPDATE chat_messages SET content = :content, reasoning = :reasoning, model = :model, errorText = :errorText, isStreaming = :isStreaming, updatedAt = :updatedAt WHERE id = :messageId")
+    @Query("UPDATE chat_messages SET content = :content, reasoning = :reasoning, model = :model, generatedByModel = :generatedByModel, errorText = :errorText, isStreaming = :isStreaming, updatedAt = :updatedAt WHERE id = :messageId")
     suspend fun updateAssistantMessage(
         messageId: String,
         content: String,
         reasoning: String,
         model: String,
+        generatedByModel: String,
         errorText: String,
         isStreaming: Boolean,
         updatedAt: Long,
@@ -171,7 +173,7 @@ interface ChatDao {
         updatedAt: Long,
     ) {
         deleteMessagesAfter(sessionId, createdAt)
-        updateAssistantMessage(messageId, "", "", model, "", true, updatedAt)
+        updateAssistantMessage(messageId, "", "", model, "", "", true, updatedAt)
         touchSession(sessionId, updatedAt)
     }
 
@@ -203,7 +205,7 @@ internal fun pairedDeletionIds(messages: List<ChatMessageEntity>, messageId: Str
 
 @Database(
     entities = [ChatSessionEntity::class, ChatMessageEntity::class],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -251,6 +253,12 @@ abstract class ChatDatabase : RoomDatabase() {
                        )
                        WHERE chat_messages.role = 'ASSISTANT'""".trimIndent(),
                 )
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN generatedByModel TEXT NOT NULL DEFAULT ''")
             }
         }
     }

@@ -96,6 +96,7 @@ class ChatRepository(
             errorText = "",
             parentMessageId = userMessage.id,
             updatedAt = now + 1,
+            generatedByModel = "",
         )
         chatDao.upsertMessage(userMessage.toEntity())
         chatDao.upsertMessage(assistantMessage.toEntity())
@@ -209,6 +210,7 @@ class ChatRepository(
             createdAt = maxOf(original.createdAt + 1, now),
             isStreaming = true,
             model = session.model.wireName,
+            generatedByModel = "",
             errorText = "",
             parentMessageId = original.id,
             updatedAt = now,
@@ -295,10 +297,19 @@ class ChatRepository(
         val parser = ReasoningStreamParser()
         var response = ""
         var reasoning = ""
+        var generatedByModel = ""
         var receivedFirstToken = false
         var streamFailure: Throwable? = null
         try {
-            chatApi.stream(accessToken, session.model, history, webSearchEnabled).collect { chunk ->
+            chatApi.stream(
+                accessToken = accessToken,
+                model = session.model,
+                messages = history,
+                webSearchEnabled = webSearchEnabled,
+                sessionId = session.id,
+                assistantMessageId = assistantMessageId,
+            ).collect { chunk ->
+                if (chunk.generatedByModel.isNotBlank()) generatedByModel = chunk.generatedByModel
                 if (!receivedFirstToken && (chunk.content.isNotEmpty() || chunk.reasoning.isNotEmpty())) {
                     receivedFirstToken = true
                     onFirstToken()
@@ -325,6 +336,7 @@ class ChatRepository(
                     content = response,
                     reasoning = reasoning,
                     model = session.model.wireName,
+                    generatedByModel = generatedByModel,
                     errorText = "",
                     isStreaming = !chunk.completed,
                     updatedAt = System.currentTimeMillis(),
@@ -343,6 +355,7 @@ class ChatRepository(
                     content = response,
                     reasoning = reasoning,
                     model = session.model.wireName,
+                    generatedByModel = generatedByModel,
                     errorText = streamFailure?.persistedErrorText().orEmpty(),
                     isStreaming = false,
                     updatedAt = System.currentTimeMillis(),
@@ -471,6 +484,7 @@ private fun ChatMessageEntity.toModel() = ChatMessage(
     createdAt = createdAt,
     isStreaming = isStreaming,
     modelId = model,
+    generatedByModel = generatedByModel,
     errorText = errorText,
     parentMessageId = parentMessageId,
     updatedAt = updatedAt,
@@ -486,6 +500,7 @@ private fun ChatMessage.toEntity() = ChatMessageEntity(
     createdAt = createdAt,
     isStreaming = isStreaming,
     model = modelId,
+    generatedByModel = generatedByModel,
     errorText = errorText,
     parentMessageId = parentMessageId,
     updatedAt = updatedAt,

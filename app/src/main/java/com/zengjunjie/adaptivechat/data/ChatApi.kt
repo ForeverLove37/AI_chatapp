@@ -28,6 +28,7 @@ data class RemoteMessage(
 data class StreamChunk(
     val content: String = "",
     val reasoning: String = "",
+    val generatedByModel: String = "",
     val completed: Boolean = false,
 )
 
@@ -41,8 +42,9 @@ internal fun parseStreamDelta(data: String): StreamChunk? {
         delta.has("reasoning") && !delta.isNull("reasoning") -> delta.optString("reasoning")
         else -> ""
     }
-    return StreamChunk(content = content, reasoning = reasoning).takeIf {
-        it.content.isNotEmpty() || it.reasoning.isNotEmpty()
+    val generatedByModel = payload.optString("generated_by_model").trim()
+    return StreamChunk(content = content, reasoning = reasoning, generatedByModel = generatedByModel).takeIf {
+        it.content.isNotEmpty() || it.reasoning.isNotEmpty() || it.generatedByModel.isNotEmpty()
     }
 }
 
@@ -104,6 +106,8 @@ class ChatApi(baseUrl: String) {
         model: ChatModel,
         messages: List<RemoteMessage>,
         webSearchEnabled: Boolean = false,
+        sessionId: String = "",
+        assistantMessageId: String = "",
     ): Flow<StreamChunk> = callbackFlow {
         val payload = JSONObject()
             .put("model", model.wireName)
@@ -122,6 +126,9 @@ class ChatApi(baseUrl: String) {
                     }
                 },
             )
+        if (sessionId.isNotBlank() && assistantMessageId.isNotBlank()) {
+            payload.put("session_id", sessionId).put("message_id", assistantMessageId)
+        }
 
         val requestBuilder = Request.Builder()
             .url(endpoint)
@@ -264,6 +271,7 @@ class ChatApi(baseUrl: String) {
                                     createdAt = message.optLong("createdAt"),
                                     isStreaming = message.optBoolean("isStreaming"),
                                     model = message.optString("modelId"),
+                                    generatedByModel = message.optString("generatedByModel", message.optString("generated_by_model")),
                                     errorText = message.optString("errorText"),
                                     parentMessageId = message.optString("parentMessageId"),
                                     updatedAt = message.optLong("updatedAt", message.optLong("createdAt")),
@@ -317,6 +325,7 @@ class ChatApi(baseUrl: String) {
                                 .put("attachments", runCatching { JSONArray(message.attachmentsJson) }.getOrDefault(JSONArray()))
                                 .put("reasoning", message.reasoning)
                                 .put("modelId", message.model)
+                                .put("generatedByModel", message.generatedByModel)
                                 .put("errorText", message.errorText)
                                 .put("isStreaming", message.isStreaming)
                                 .put("parentMessageId", message.parentMessageId.ifBlank { JSONObject.NULL })

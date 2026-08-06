@@ -95,6 +95,7 @@ type ChatMessage = {
   attachments: Attachment[];
   reasoning: string;
   modelId: string;
+  generatedByModel: string;
   errorText: string;
   isStreaming: boolean;
   parentMessageId: string | null;
@@ -136,6 +137,28 @@ function useGlobalMicroInteractions() {
     document.addEventListener("pointerdown", handlePointerDown, true);
     return () => document.removeEventListener("pointerdown", handlePointerDown, true);
   }, []);
+}
+
+function useExitPresence(visible: boolean, duration: number) {
+  const [mounted, setMounted] = useState(visible);
+  const [exiting, setExiting] = useState(false);
+
+  useEffect(() => {
+    if (visible) {
+      setMounted(true);
+      setExiting(false);
+      return;
+    }
+    if (!mounted) return;
+    setExiting(true);
+    const timer = window.setTimeout(() => {
+      setMounted(false);
+      setExiting(false);
+    }, duration);
+    return () => window.clearTimeout(timer);
+  }, [duration, mounted, visible]);
+
+  return { mounted, exiting };
 }
 
 const COPY = {
@@ -431,6 +454,8 @@ export default function WebChat() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [compactLayout, setCompactLayout] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [renderedConfirmation, setRenderedConfirmation] = useState<Confirmation | null>(null);
+  const [renderedAvatarCropFile, setRenderedAvatarCropFile] = useState<File | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const avatarInput = useRef<HTMLInputElement>(null);
   const messageViewport = useRef<HTMLDivElement>(null);
@@ -446,6 +471,9 @@ export default function WebChat() {
   const effectiveTheme: Exclude<Theme, "system"> = theme === "system" ? (systemDark ? "dark" : "light") : theme;
   const effectiveLanguage: Language = language === "system" ? systemLanguage : language;
   const copy = COPY[effectiveLanguage];
+  const settingsPresence = useExitPresence(settingsOpen, 240);
+  const confirmationPresence = useExitPresence(Boolean(confirmation), 220);
+  const avatarCropPresence = useExitPresence(Boolean(avatarCropFile), 240);
   streamingRef.current = streaming;
 
   const selected = sessions.find((session) => session.id === selectedId) ?? sessions[0];
@@ -464,6 +492,14 @@ export default function WebChat() {
     if (expertActive && visibleModelId) setExpertModelDraft(visibleModelId);
     else if (!expertActive) setExpertModelDraft("");
   }, [expertActive, visibleModelId]);
+
+  useEffect(() => {
+    if (confirmation) setRenderedConfirmation(confirmation);
+  }, [confirmation]);
+
+  useEffect(() => {
+    if (avatarCropFile) setRenderedAvatarCropFile(avatarCropFile);
+  }, [avatarCropFile]);
 
   const loadSessions = useCallback(async (currentToken: string, quiet = false) => {
     try {
@@ -850,6 +886,8 @@ export default function WebChat() {
         body: JSON.stringify({
           model: base.modelId,
           channel: base.channelId,
+          session_id: base.id,
+          message_id: assistantId,
           expert_mode: expertActive,
           stream: true,
           messages: [
@@ -867,7 +905,7 @@ export default function WebChat() {
       const decoder = new TextDecoder();
       let buffer = "";
       let completed = false;
-      const applyDelta = (content: string, reasoning: string, done: boolean) => {
+      const applyDelta = (content: string, reasoning: string, done: boolean, generatedByModel = "") => {
         rawContent += content;
         explicitReasoning += reasoning;
         const parsed = parseThinking(rawContent, done);
@@ -879,6 +917,7 @@ export default function WebChat() {
             ...message,
             content: parsed.content,
             reasoning: `${explicitReasoning}${parsed.reasoning}`,
+            generatedByModel: generatedByModel || message.generatedByModel,
             isStreaming: !done,
             updatedAt: timestamp,
           } : message),
@@ -902,10 +941,18 @@ export default function WebChat() {
           return;
         }
         const payload = JSON.parse(data) as {
+          generated_by_model?: string;
           choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }>;
         };
         const delta = payload.choices?.[0]?.delta;
-        if (delta) applyDelta(delta.content ?? "", delta.reasoning_content ?? delta.reasoning ?? "", false);
+        if (delta || payload.generated_by_model) {
+          applyDelta(
+            delta?.content ?? "",
+            delta?.reasoning_content ?? delta?.reasoning ?? "",
+            false,
+            payload.generated_by_model ?? "",
+          );
+        }
       };
       while (true) {
         const { value, done } = await reader.read();
@@ -975,14 +1022,14 @@ export default function WebChat() {
     } else {
       userMessage = {
         id: id(), sessionId: active.id, role: "user", content: draft.trim(), attachments,
-        reasoning: "", modelId: "", errorText: "", isStreaming: false, parentMessageId: null,
+        reasoning: "", modelId: "", generatedByModel: "", errorText: "", isStreaming: false, parentMessageId: null,
         createdAt: timestamp, updatedAt: timestamp,
       };
       source = [...active.messages, userMessage];
     }
     const assistant: ChatMessage = {
       id: id(), sessionId: active.id, role: "assistant", content: "", attachments: [], reasoning: "",
-      modelId: active.modelId, errorText: "", isStreaming: true, parentMessageId: userMessage.id,
+      modelId: active.modelId, generatedByModel: "", errorText: "", isStreaming: true, parentMessageId: userMessage.id,
       createdAt: timestamp + 1, updatedAt: timestamp + 1,
     };
     const next: ChatSession = {
@@ -1005,7 +1052,7 @@ export default function WebChat() {
     const index = selected.messages.findIndex((item) => item.id === message.id);
     if (index < 0) return;
     const timestamp = Date.now();
-    const assistant = { ...message, content: "", reasoning: "", errorText: "", isStreaming: true, updatedAt: timestamp };
+    const assistant = { ...message, content: "", reasoning: "", generatedByModel: "", errorText: "", isStreaming: true, updatedAt: timestamp };
     const source = selected.messages.slice(0, index);
     const next = { ...selected, updatedAt: timestamp, messages: [...source, assistant] };
     generationInFlight.current = true;
@@ -1301,6 +1348,7 @@ export default function WebChat() {
             <div className="message-list">
               {selected.messages.map((message) => {
                 const user = message.role === "user";
+                const generatedByModel = message.generatedByModel || (!message.isStreaming ? message.modelId : "");
                 return (
                   <article className={`message ${user ? "user-message" : "assistant-message"}`} key={message.id} onContextMenu={(event) => event.preventDefault()}>
                     {!user && message.reasoning && (
@@ -1311,12 +1359,12 @@ export default function WebChat() {
                     )}
                     <div className="message-bubble">
                       {user && <div className="user-identity"><UserAvatar profile={profile} email={email} /><strong>{profileLabel(profile, email)}</strong></div>}
-                      {!user && <div className="message-model">{channel?.displayName} · {channel?.models.find((item) => item.id === message.modelId)?.label ?? message.modelId}</div>}
                       {message.attachments.length > 0 && <div className="message-attachments">{message.attachments.map((item) => <img key={item.dataUrl} src={item.dataUrl} alt={item.fileName} />)}</div>}
                       {message.content && <Markdown value={message.content} />}
                       {message.isStreaming && !message.content && !message.reasoning && <div className="waiting-state"><span /><span /><span />{copy.waiting}</div>}
                       {message.errorText && <div className="message-error">{message.errorText}</div>}
                     </div>
+                    {!user && generatedByModel && <div className="message-model">{generatedByModel}</div>}
                     <div className="message-actions">
                       {user ? (
                         <>
@@ -1367,9 +1415,9 @@ export default function WebChat() {
       </section>
 
       {sidebarOpen && <button className="sidebar-scrim mobile-only" aria-label={copy.closeSidebar} onClick={() => setSidebarOpen(false)} />}
-      {settingsOpen && (
+      {settingsPresence.mounted && (
         <div
-          className="settings-backdrop"
+          className={`settings-backdrop ${settingsPresence.exiting ? "is-exiting" : ""}`}
           role="presentation"
           onMouseDown={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false); }}
         >
@@ -1456,24 +1504,29 @@ export default function WebChat() {
           </section>
         </div>
       )}
-      {avatarCropFile && <AvatarCropDialog
-        file={avatarCropFile}
+      {avatarCropPresence.mounted && renderedAvatarCropFile && <AvatarCropDialog
+        file={renderedAvatarCropFile}
+        exiting={avatarCropPresence.exiting}
         copy={{ title: copy.cropAvatar, detail: copy.cropAvatarDetail, zoom: copy.zoom, reset: copy.reset, cancel: copy.cancel, apply: copy.applyCrop, processing: copy.processingCrop, error: copy.cropError }}
         onApply={applyAvatarCrop}
         onCancel={() => setAvatarCropFile(null)}
       />}
-      {confirmation && (
-        <div className="modal-backdrop" role="presentation">
+      {confirmationPresence.mounted && renderedConfirmation && (
+        <div
+          className={`modal-backdrop ${confirmationPresence.exiting ? "is-exiting" : ""}`}
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirmation(null); }}
+        >
           <div className="confirmation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
-            <div className={`confirm-icon ${confirmation.kind === "branch" ? "branch-confirm-icon" : ""}`}>
-              {confirmation.kind === "branch" ? <GitFork size={20} /> : <Trash2 size={20} />}
+            <div className={`confirm-icon ${renderedConfirmation.kind === "branch" ? "branch-confirm-icon" : ""}`}>
+              {renderedConfirmation.kind === "branch" ? <GitFork size={20} /> : <Trash2 size={20} />}
             </div>
-            <h2 id="confirm-title">{confirmation.title}</h2>
-            <p>{confirmation.body}</p>
+            <h2 id="confirm-title">{renderedConfirmation.title}</h2>
+            <p>{renderedConfirmation.body}</p>
             <div className="dialog-actions">
               <button onClick={() => setConfirmation(null)}>{copy.cancel}</button>
-              <button className={confirmation.kind === "branch" ? "branch-command" : "danger-command"} onClick={() => { const action = confirmation.run; setConfirmation(null); action(); }}>
-                {confirmation.kind === "branch" ? <GitFork size={16} /> : <Trash2 size={16} />}{confirmation.confirm}
+              <button className={renderedConfirmation.kind === "branch" ? "branch-command" : "danger-command"} onClick={() => { const action = renderedConfirmation.run; setConfirmation(null); action(); }}>
+                {renderedConfirmation.kind === "branch" ? <GitFork size={16} /> : <Trash2 size={16} />}{renderedConfirmation.confirm}
               </button>
             </div>
           </div>

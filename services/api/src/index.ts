@@ -59,6 +59,8 @@ const chatRequestSchema = z.object({
   // Optional channel context is used only for Expert raw-model routing. Existing
   // OpenAI-compatible callers may omit it without changing their payload contract.
   channel: z.string().trim().min(1).max(120).optional(),
+  session_id: z.string().trim().min(1).max(160).optional(),
+  message_id: z.string().trim().min(1).max(160).optional(),
   expert_mode: z.boolean().default(false),
   stream: z.boolean().default(false),
   messages: z.array(
@@ -273,6 +275,7 @@ const conversationMessageSchema = z.object({
   attachments: z.array(conversationAttachmentSchema).max(12).default([]),
   reasoning: z.string().max(2_000_000).default(""),
   modelId: z.string().max(256).default(""),
+  generatedByModel: z.string().max(256).default(""),
   errorText: z.string().max(4_000).default(""),
   isStreaming: z.boolean().default(false),
   parentMessageId: z.string().trim().min(1).max(160).nullable().default(null),
@@ -378,12 +381,13 @@ function textContent(value: ChatRequest["messages"][number]["content"]) {
   return typeof value === "string" ? value : JSON.stringify(value ?? "");
 }
 
-function ssePayload(model: string, delta: Record<string, string>, finishReason: string | null = null) {
+function ssePayload(model: string, delta: Record<string, string>, finishReason: string | null = null, generatedByModel = model) {
   return JSON.stringify({
     id: `chatcmpl_${randomUUID().replaceAll("-", "")}`,
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1_000),
     model,
+    generated_by_model: generatedByModel,
     choices: [{ index: 0, delta, finish_reason: finishReason }],
   });
 }
@@ -535,7 +539,7 @@ function demoAnswer(request: ChatRequest, route: ModelRoute): { reasoning?: stri
 
 async function fetchUpstream(upstreams: SelectedUpstream[], body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
   let lastError: unknown;
-  const { expert_mode: _expertMode, channel: _channel, ...forwardBody } = body;
+  const { expert_mode: _expertMode, channel: _channel, session_id: _sessionId, message_id: _messageId, ...forwardBody } = body;
   for (const upstream of upstreams) {
     try {
       const headers: Record<string, string> = {
@@ -612,9 +616,10 @@ async function fetchFinalUpstream(
   prepared: PreparedSearchRequest,
   signal?: AbortSignal,
 ) {
+  type FinalUpstreamResult = { response: Response; upstream: SelectedUpstream };
   const forward = async (body: ChatRequest) => {
-    const { expert_mode: _expertMode, channel: _channel, ...openAiBody } = body;
-    let lastResponse: Response | undefined;
+    const { expert_mode: _expertMode, channel: _channel, session_id: _sessionId, message_id: _messageId, ...openAiBody } = body;
+    let lastResponse: FinalUpstreamResult | undefined;
     let lastError: unknown;
     for (const upstream of upstreams) {
       try {
@@ -622,8 +627,8 @@ async function fetchFinalUpstream(
           ...openAiBody,
           model: upstream.upstreamModel,
         }, signal);
-        lastResponse = response;
-        if (response.ok || ![400, 404, 422].includes(response.status)) return response;
+        lastResponse = { response, upstream };
+        if (response.ok || ![400, 404, 422].includes(response.status)) return lastResponse;
         await response.body?.cancel().catch(() => undefined);
       } catch (error) {
         if (signal?.aborted) throw error;
@@ -634,9 +639,9 @@ async function fetchFinalUpstream(
     throw lastError instanceof Error ? lastError : new Error("No upstream provider responded");
   };
   try {
-    const response = await forward(prepared.primary);
-    if (!prepared.fallback || ![400, 404, 422].includes(response.status)) return response;
-    await response.body?.cancel().catch(() => undefined);
+    const result = await forward(prepared.primary);
+    if (!prepared.fallback || ![400, 404, 422].includes(result.response.status)) return result;
+    await result.response.body?.cancel().catch(() => undefined);
   } catch (error) {
     if (signal?.aborted) throw error;
     if (!prepared.fallback) throw error;
@@ -665,12 +670,12 @@ function completionJsonAsSse(body: string, model: string) {
   return new ReadableStream<Uint8Array>({
     start(controller) {
       for (const piece of chunks(reasoning)) {
-        if (piece) controller.enqueue(encoder.encode(`data: ${ssePayload(model, { reasoning_content: piece })}\n\n`));
+        if (piece) controller.enqueue(encoder.encode(`data: ${ssePayload(model, { reasoning_content: piece }, null, model)}\n\n`));
       }
       for (const piece of chunks(content)) {
-        if (piece) controller.enqueue(encoder.encode(`data: ${ssePayload(model, { content: piece })}\n\n`));
+        if (piece) controller.enqueue(encoder.encode(`data: ${ssePayload(model, { content: piece }, null, model)}\n\n`));
       }
-      controller.enqueue(encoder.encode(`data: ${ssePayload(model, {}, "stop")}\n\ndata: [DONE]\n\n`));
+      controller.enqueue(encoder.encode(`data: ${ssePayload(model, {}, "stop", model)}\n\ndata: [DONE]\n\n`));
       controller.close();
     },
   });
@@ -679,6 +684,7 @@ function completionJsonAsSse(body: string, model: string) {
 function finalizedSseStream(
   source: ReadableStream<Uint8Array>,
   finalize: (status: RequestMetric["status"]) => Promise<void>,
+  generatedByModel: string,
   signal?: AbortSignal,
 ) {
   const reader = source.getReader();
@@ -686,6 +692,7 @@ function finalizedSseStream(
   const encoder = new TextEncoder();
   let tail = "";
   let finished = false;
+  let metadataSent = false;
   const settle = async (status: RequestMetric["status"]) => {
     if (finished) return;
     finished = true;
@@ -700,6 +707,11 @@ function finalizedSseStream(
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
+        if (!metadataSent) {
+          metadataSent = true;
+          controller.enqueue(encoder.encode(`data: ${ssePayload(generatedByModel, {}, null, generatedByModel)}\n\n`));
+          return;
+        }
         const result = await reader.read();
         if (!result.done) {
           tail = `${tail}${decoder.decode(result.value, { stream: true })}`.slice(-1_024);
@@ -790,6 +802,15 @@ export function createApp(options: CreateAppOptions = {}) {
 
   async function record(metric: RequestMetric) {
     await controlPlane.recordRequest(metric);
+  }
+
+  async function bindGeneratedModel(
+    policy: Awaited<ReturnType<typeof enforceClientPolicy>>,
+    request: ChatRequest,
+    generatedByModel: string,
+  ) {
+    if ("response" in policy || !policy.userId || !request.session_id || !request.message_id) return;
+    await conversations.recordGeneratedModel(policy.userId, request.session_id, request.message_id, generatedByModel);
   }
 
   async function enforceClientPolicy(context: Context) {
@@ -1409,6 +1430,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
     if (isDemo) {
       const answer = demoAnswer(request, route);
+      await bindGeneratedModel(policy, request, route.id);
       const completionTokens = Math.ceil(((answer.reasoning?.length ?? 0) + answer.content.length) / 4);
       if (!request.stream) {
         await record(makeMetric("success", completionTokens));
@@ -1417,6 +1439,7 @@ export function createApp(options: CreateAppOptions = {}) {
           object: "chat.completion",
           created: Math.floor(Date.now() / 1_000),
           model: route.id,
+          generated_by_model: route.id,
           choices: [{
             index: 0,
             message: { role: "assistant", content: answer.content, ...(answer.reasoning ? { reasoning_content: answer.reasoning } : {}) },
@@ -1454,13 +1477,27 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     try {
-      const response = await fetchFinalUpstream(upstreams, prepared, requestSignal);
+      const upstreamResult = await fetchFinalUpstream(upstreams, prepared, requestSignal);
+      const response = upstreamResult.response;
+      const generatedByModel = upstreamResult.upstream.upstreamModel;
+      await bindGeneratedModel(policy, request, generatedByModel);
       if (!request.stream) {
         const contentType = response.headers.get("content-type") ?? "application/json";
         const body = await response.text();
         const usage = usageFromBody(body);
         await record(makeMetric(response.ok ? "success" : "failure", response.ok ? usage.completionTokens : 0));
-        return new Response(body, { status: response.status, headers: { "Content-Type": contentType } });
+        let annotatedBody = body;
+        try {
+          const payload = JSON.parse(body) as Record<string, unknown>;
+          payload.generated_by_model = generatedByModel;
+          annotatedBody = JSON.stringify(payload);
+        } catch {
+          // Preserve non-JSON upstream error bodies while still exposing the header below.
+        }
+        return new Response(annotatedBody, {
+          status: response.status,
+          headers: { "Content-Type": contentType },
+        });
       }
       if (!response.ok || !response.body) {
         await record(makeMetric("failure"));
@@ -1470,7 +1507,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
       const source = contentType.includes("text/event-stream")
         ? response.body
-        : completionJsonAsSse(await response.text(), route.id);
+        : completionJsonAsSse(await response.text(), generatedByModel);
       await controlPlane.changeActiveStreams(1);
       let finalized = false;
       const finalize = async (status: RequestMetric["status"]) => {
@@ -1479,7 +1516,7 @@ export function createApp(options: CreateAppOptions = {}) {
         await controlPlane.changeActiveStreams(-1);
         await record(makeMetric(status));
       };
-      const body = finalizedSseStream(source, finalize, requestSignal);
+      const body = finalizedSseStream(source, finalize, generatedByModel, requestSignal);
       return new Response(body, {
         status: response.status,
         headers: {

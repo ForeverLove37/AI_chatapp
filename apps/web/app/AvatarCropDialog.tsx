@@ -21,6 +21,7 @@ type CropCopy = {
 
 type AvatarCropDialogProps = {
   copy: CropCopy;
+  exiting?: boolean;
   file: File;
   onApply: (file: File) => void;
   onCancel: () => void;
@@ -67,7 +68,7 @@ async function createCroppedAvatar(image: HTMLImageElement, zoom: number, pan: P
   return new File([blob], `avatar.${extension}`, { type: blob.type, lastModified: Date.now() });
 }
 
-export function AvatarCropDialog({ copy, file, onApply, onCancel }: AvatarCropDialogProps) {
+export function AvatarCropDialog({ copy, exiting = false, file, onApply, onCancel }: AvatarCropDialogProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragPoint = useRef<Point | null>(null);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
@@ -127,7 +128,7 @@ export function AvatarCropDialog({ copy, file, onApply, onCancel }: AvatarCropDi
     }
   }
 
-  return <div className="avatar-crop-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !processing) onCancel(); }}>
+  return <div className={`avatar-crop-backdrop ${exiting ? "is-exiting" : ""}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !processing) onCancel(); }}>
     <section className="avatar-crop-dialog" role="dialog" aria-modal="true" aria-labelledby="avatar-crop-title">
       <header><div><h2 id="avatar-crop-title">{copy.title}</h2><p>{copy.detail}</p></div><button className="icon-command" disabled={processing} title={copy.cancel} aria-label={copy.cancel} onClick={onCancel}><X size={19} /></button></header>
       <div className={`avatar-crop-frame ${image ? "crop-ready" : ""}`}>
