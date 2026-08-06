@@ -116,24 +116,22 @@ type Confirmation = { kind: "delete" | "branch"; title: string; body: string; co
 /** A single delegated interaction layer keeps ripple geometry and timing consistent. */
 function useGlobalMicroInteractions() {
   useEffect(() => {
+    const timers = new WeakMap<HTMLElement, number>();
     const handlePointerDown = (event: PointerEvent) => {
       const source = event.target as HTMLElement | null;
-      const surface = source?.closest<HTMLElement>("button, a, [role='button'], .select-wrap");
+      const surface = source?.closest<HTMLElement>("button, a, [role='button'], .select-wrap, .top-language-select");
       if (!surface || surface.getAttribute("aria-disabled") === "true" || (surface instanceof HTMLButtonElement && surface.disabled)) return;
-      surface.classList.add("ripple-surface");
       const rect = surface.getBoundingClientRect();
-      const ripple = document.createElement("span");
-      ripple.className = "material-ripple";
       const size = Math.max(rect.width, rect.height) * 1.35;
-      ripple.style.width = `${size}px`;
-      ripple.style.height = `${size}px`;
-      ripple.style.left = `${event.clientX - rect.left - size / 2}px`;
-      ripple.style.top = `${event.clientY - rect.top - size / 2}px`;
-      surface.appendChild(ripple);
-      window.setTimeout(() => {
-        ripple.remove();
-        surface.classList.remove("ripple-surface");
-      }, 560);
+      surface.style.setProperty("--ripple-x", `${event.clientX - rect.left}px`);
+      surface.style.setProperty("--ripple-y", `${event.clientY - rect.top}px`);
+      surface.style.setProperty("--ripple-size", `${size}px`);
+      surface.classList.remove("ripple-active");
+      void surface.offsetWidth;
+      surface.classList.add("ripple-active");
+      const currentTimer = timers.get(surface);
+      if (currentTimer) window.clearTimeout(currentTimer);
+      timers.set(surface, window.setTimeout(() => surface.classList.remove("ripple-active"), 560));
     };
     document.addEventListener("pointerdown", handlePointerDown, true);
     return () => document.removeEventListener("pointerdown", handlePointerDown, true);
@@ -1228,7 +1226,7 @@ export default function WebChat() {
       <section className="conversation-workspace">
         <header className="chat-header">
           <div className="channel-model-controls">
-            <label>
+            <div className="selector-field">
               <span>{copy.channel}</span>
               <div className="select-wrap">
                 {channel && <ChannelIcon channel={channel} />}
@@ -1240,8 +1238,8 @@ export default function WebChat() {
                   onChange={(value) => void updateSelection(value)}
                 />
               </div>
-            </label>
-            <label>
+            </div>
+            <div className="selector-field">
               <span>{copy.model}</span>
               <div className="select-wrap model-select">
                 <Sparkles size={17} />
@@ -1275,7 +1273,7 @@ export default function WebChat() {
                   />
                 )}
               </div>
-            </label>
+            </div>
           </div>
           <div className="header-actions">
             <div className="top-language-select" title={copy.language}>
